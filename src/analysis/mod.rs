@@ -3,6 +3,7 @@
 pub mod common;
 pub mod goalies;
 pub mod impact;
+pub mod matchups;
 pub mod models;
 pub mod pairs;
 pub mod passing;
@@ -99,6 +100,7 @@ pub struct GameTimeline {
     pub goals_for: u32,
     pub goals_against: u32,
     pub team_stats: Vec<TeamStatRow>,
+    pub matchups: matchups::GameMatchups,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -160,6 +162,7 @@ fn timeline(game: &Game, roster: &HashMap<PlayerId, PlayerRef>) -> GameTimeline 
         goals_for: game.goals_for,
         goals_against: game.goals_against,
         team_stats: game.team_stats.clone(),
+        matchups: matchups::game_matchups(game, roster),
     }
 }
 

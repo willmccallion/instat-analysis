@@ -9,11 +9,12 @@ use crate::cell::Cell;
 use crate::error::Error;
 use crate::model::{
     Advantage, AreaBattles, BattleArea, CellValue, DistanceSaves, Game, GameId, Goal, GoalieStats, HistoryKind, HistoryRow, Interval,
-    Jersey, Player, PlayerId, PlayerMatrix, Position, Seconds, ShotZone, SkaterStats, StatEntry,
+    Jersey, Matchup, Opponent, Player, PlayerId, PlayerMatrix, Position, Seconds, ShotZone, SkaterStats, StatEntry,
     Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
 };
 use crate::parse::common::{PlayerRow, RowLabel};
 use crate::parse::match_report::MatchReport;
+use crate::parse::matrix::RawMatrix;
 use crate::parse::players_report::{
     HistoryColumn, PageKind, PlayerPage, PlayersReport, infer_year,
 };
@@ -687,6 +688,12 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         .passes
         .as_ref()
         .and_then(|m| pass_matrix(m, &resolver, &mut warnings));
+    let matchups = report
+        .ours
+        .battles
+        .as_ref()
+        .map(|m| battle_matchups(m, &resolver, &mut warnings))
+        .unwrap_or_default();
 
     let context = PlayerContext {
         sources: skater_sources(tables, &mut warnings),
@@ -737,6 +744,7 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         opponent_summary: team_stats::summary(&report.team_stats.entries[1 - ours]),
         team_stats: team_stat_rows(report),
         shot_zones_against: shot_zones_against(&report.opponent_shots),
+        matchups,
         length,
         warnings,
     })
@@ -843,6 +851,41 @@ fn pass_matrix(
             .collect(),
         values,
     })
+}
+
+/// Rows are our skaters (labelled like the main table), columns the opponent's skaters.
+fn battle_matchups(raw: &RawMatrix, resolver: &Resolver<'_>, warnings: &mut Vec<String>) -> Vec<Matchup> {
+    let opponents: Vec<Opponent> = raw
+        .columns
+        .iter()
+        .map(|label| Opponent {
+            jersey: label.number.map(Jersey),
+            surname: label.surname.clone(),
+        })
+        .collect();
+    let mut matchups = Vec::new();
+    for (label, cells) in &raw.rows {
+        let Some(player) = resolver.by_table_label(label, None) else {
+            warnings.push(format!("challenge distribution row {} not matched to a player", label.surname));
+            continue;
+        };
+        for (opponent, cell) in opponents.iter().zip(cells) {
+            match cell.pair() {
+                Some((0, 0)) => {}
+                Some((battles_won, battles_lost)) => matchups.push(Matchup {
+                    player: player.clone(),
+                    opponent: opponent.clone(),
+                    battles_won,
+                    battles_lost,
+                }),
+                None => warnings.push(format!(
+                    "challenge distribution: unreadable cell {cell:?} for {} vs {}",
+                    label.surname, opponent.surname
+                )),
+            }
+        }
+    }
+    matchups
 }
 
 /// Latest shift end just before the marker, else the marker minus its usual lag.

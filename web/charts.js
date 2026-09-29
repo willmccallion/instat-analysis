@@ -439,33 +439,37 @@ function inkOn(hex) {
 }
 
 /**
- * Matrix heatmap. labels: row/column names; cell(i, j) -> {value, text?, tip?} or null.
+ * Matrix heatmap. labels: names shared by rows and columns, or {rows, columns} when they
+ * differ; cell(i, j) -> {value, text?, tip?} or null.
  * scale: {kind: "sequential"|"diverging", min, max, center}
  */
 function heatmap(container, labels, cell, scale, options = {}) {
+  const rowLabels = Array.isArray(labels) ? labels : labels.rows;
+  const columnLabels = Array.isArray(labels) ? labels : labels.columns;
   const width = measureWidth(container);
   const labelWidth = options.labelWidth ?? 130;
-  const n = labels.length;
-  const size = Math.max(14, Math.min(34, (width - labelWidth - 10) / n));
+  const size = Math.max(14, Math.min(34, (width - labelWidth - 10) / columnLabels.length));
   const top = options.columnLabels === false ? 8 : labelWidth * 0.8;
-  const height = top + n * size + 8;
+  const height = top + rowLabels.length * size + 8;
   // Room on the right for the last rotated column label.
-  const svgWidth = labelWidth + n * size + (options.columnLabels === false ? 10 : 70);
+  const svgWidth = labelWidth + columnLabels.length * size + (options.columnLabels === false ? 10 : 70);
   const root = svg("svg", { class: "chart", viewBox: `0 0 ${svgWidth} ${height}`, width: svgWidth, height, role: "img", "aria-label": options.title || "heatmap" });
-  labels.forEach((name, i) => {
+  rowLabels.forEach((name, i) => {
     const rowLabel = svg("text", { x: labelWidth - 6, y: top + i * size + size / 2 + 4, "text-anchor": "end", text: name });
     if (definition(name)) {
       rowLabel.setAttribute("class", "term-svg");
       explain(rowLabel, name);
     }
     root.append(rowLabel);
-    if (options.columnLabels !== false) {
-      const cx = labelWidth + i * size + size / 2;
-      root.append(svg("text", { x: 0, y: 0, transform: `translate(${cx + 4},${top - 6}) rotate(-55)`, text: name }));
-    }
   });
-  for (let i = 0; i < n; i += 1) {
-    for (let j = 0; j < n; j += 1) {
+  if (options.columnLabels !== false) {
+    columnLabels.forEach((name, j) => {
+      const cx = labelWidth + j * size + size / 2;
+      root.append(svg("text", { x: 0, y: 0, transform: `translate(${cx + 4},${top - 6}) rotate(-55)`, text: name }));
+    });
+  }
+  for (let i = 0; i < rowLabels.length; i += 1) {
+    for (let j = 0; j < columnLabels.length; j += 1) {
       const c = cell(i, j);
       const x = labelWidth + j * size;
       const y = top + i * size;
@@ -485,7 +489,7 @@ function heatmap(container, labels, cell, scale, options = {}) {
       if (c.text && size >= 24) {
         g.append(svg("text", { x: x + size / 2, y: y + size / 2 + 4, "text-anchor": "middle", style: `fill:${inkOn(fill)};font-size:10px`, text: c.text }));
       }
-      attachTooltip(g, c.title || `${labels[i]} × ${labels[j]}`, c.tip || [{ value: fmt(c.value), name: options.valueName || "" }]);
+      attachTooltip(g, c.title || `${rowLabels[i]} × ${columnLabels[j]}`, c.tip || [{ value: fmt(c.value), name: options.valueName || "" }]);
       if (c.onClick) g.addEventListener("click", c.onClick);
       root.append(g);
     }

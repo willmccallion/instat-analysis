@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::analysis::Context;
 use crate::analysis::common::{BetaPrior, Estimate, PlayerRef, Shrunk, per_60, share_pct, shrink};
+use crate::analysis::matchups::{PlayerMatchup, player_matchups};
 use crate::analysis::stints::Stint;
 use crate::model::{
     AreaBattles, Date, Game, GameId, HistoryKind, Player, PlayerId, Seconds, SkaterStats, StatEntry, Strength, ZoneShots,
@@ -175,6 +176,8 @@ pub struct PlayerSeason {
     pub focus: Vec<Comparison>,
     pub focus_details: Vec<StatEntry>,
     pub qualified: bool,
+    /// Opponent skaters they battled, latest game first.
+    pub matchups: Vec<PlayerMatchup>,
 }
 
 fn game_row(game: &Game, stats: &SkaterStats) -> PlayerGameRow {
@@ -440,6 +443,7 @@ pub fn player_seasons(context: &Context<'_>, corsi_prior: Option<BetaPrior>) -> 
                 focus,
                 focus_details,
                 qualified: totals.toi.0 >= context.min_toi.0,
+                matchups: player_matchups(&appearances.iter().map(|(g, _)| *g).collect::<Vec<_>>(), &id),
                 totals,
             })
         })

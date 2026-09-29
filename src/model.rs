@@ -565,6 +565,22 @@ pub struct Player {
     pub details: Vec<StatEntry>,
 }
 
+/// An opponent skater as InStat's distribution pages label them (number and surname).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Opponent {
+    pub jersey: Option<Jersey>,
+    pub surname: String,
+}
+
+/// One of our skaters against one opponent skater, from the challenge distribution page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Matchup {
+    pub player: PlayerId,
+    pub opponent: Opponent,
+    pub battles_won: u32,
+    pub battles_lost: u32,
+}
+
 /// Passes from row player to column player.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerMatrix {
@@ -620,6 +636,9 @@ pub struct Game {
     /// The opponent's shots by zone, i.e. where they shot on our net.
     #[serde(default)]
     pub shot_zones_against: Vec<ZoneShots>,
+    /// Our skaters against each opponent skater they met; pairs that never met are left out.
+    #[serde(default)]
+    pub matchups: Vec<Matchup>,
     /// Regulation plus any overtime.
     pub length: Seconds,
     pub warnings: Vec<String>,

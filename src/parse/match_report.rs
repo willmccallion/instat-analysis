@@ -38,6 +38,8 @@ pub struct TeamPages {
     pub units: Vec<RawUnit>,
     pub timeline: Option<Timeline>,
     pub passes: Option<RawMatrix>,
+    /// Puck battles won—lost against each opponent skater.
+    pub battles: Option<RawMatrix>,
 }
 
 /// Our team's pages in full; of the opponent's, only team-level stats and their shots table.
@@ -146,6 +148,7 @@ fn parse_team_page(page: &Page, title: &str, team: &mut TeamPages) -> Result<(),
                 player_table(&page.words, x, PAGE_RIGHT, y, "challenges")?;
         }
         "PASSES DISTRIBUTION" => team.passes = Some(matrix::parse(page)?),
+        "CHALLENGE DISTRIBUTION" => team.battles = Some(matrix::parse(page)?),
         _ => {}
     }
     Ok(())
