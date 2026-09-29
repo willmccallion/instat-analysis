@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use hockey_stats::analysis::{Request, analyse};
 use hockey_stats::error::Error;
 use hockey_stats::ingest::{build_games, parse_document};
+use hockey_stats::model::TeamPrefix;
 use hockey_stats::server::{self, RunningInstance};
 use hockey_stats::store::{self, Store};
 use hockey_stats::web;
@@ -14,10 +15,11 @@ use hockey_stats::web;
 const USAGE: &str = "\
 Hockey Stats
 
-  hockey-stats                        open the app in your browser
-  hockey-stats --report FILES… -o OUT write a standalone HTML report from PDFs
+  hockey-stats                                   open the app in your browser
+  hockey-stats --report FILES… --team NAME -o OUT write a standalone HTML report from PDFs
 
 Options:
+  --team NAME      start of your team's name in the reports, e.g. SSAC (--report only)
   --data-dir DIR   where games are stored (default: platform app-data folder)
   --port N         serve on a fixed port (default: any free port)
   --no-browser     do not open a browser window
@@ -27,7 +29,7 @@ Options:
 
 enum Mode {
     App,
-    Report { inputs: Vec<PathBuf>, output: PathBuf },
+    Report { inputs: Vec<PathBuf>, output: PathBuf, team: TeamPrefix },
     Help,
 }
 
@@ -49,6 +51,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     };
     let mut inputs = Vec::new();
     let mut output = None;
+    let mut team = None;
     let mut report = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -56,6 +59,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "-h" | "--help" => options.mode = Mode::Help,
             "--report" => report = true,
             "-o" | "--output" => output = Some(PathBuf::from(iter.next().ok_or("-o needs a file name")?)),
+            "--team" => {
+                team = Some(TeamPrefix::parse(iter.next().ok_or("--team needs a name")?).ok_or("--team needs a name")?);
+            }
             "--data-dir" => options.data_dir = PathBuf::from(iter.next().ok_or("--data-dir needs a folder")?),
             "--port" => {
                 options.port = iter
@@ -75,22 +81,23 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     }
     if report {
         let output = output.ok_or("--report needs -o OUTPUT.html")?;
+        let team = team.ok_or("--report needs --team NAME")?;
         if inputs.is_empty() {
             return Err("--report needs at least one PDF".into());
         }
-        options.mode = Mode::Report { inputs, output };
+        options.mode = Mode::Report { inputs, output, team };
     } else if !inputs.is_empty() && !matches!(options.mode, Mode::Help) {
         return Err("PDF files are only accepted with --report; in the app, drop them on the page".into());
     }
     Ok(options)
 }
 
-fn write_report(inputs: &[PathBuf], output: &PathBuf) -> Result<(), Error> {
+fn write_report(inputs: &[PathBuf], output: &PathBuf, team: &TeamPrefix) -> Result<(), Error> {
     let documents = inputs
         .iter()
         .map(|path| {
             let bytes = std::fs::read(path)?;
-            parse_document(&bytes).map_err(|e| Error::Pdf(format!("{}: {e}", path.display())))
+            parse_document(&bytes, team).map_err(|e| Error::Pdf(format!("{}: {e}", path.display())))
         })
         .collect::<Result<Vec<_>, Error>>()?;
     let (games, problems) = build_games(&documents);
@@ -183,7 +190,7 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             Ok(())
         }
-        Mode::Report { inputs, output } => write_report(inputs, output),
+        Mode::Report { inputs, output, team } => write_report(inputs, output, team),
         Mode::App => run_app(&options),
     };
     match result {

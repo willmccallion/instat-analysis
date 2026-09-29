@@ -2,7 +2,7 @@
 //! their player reports, and reconcile.
 
 use crate::error::Error;
-use crate::model::Game;
+use crate::model::{Game, TeamPrefix};
 use crate::parse::match_report::{self, MatchReport, Title};
 use crate::parse::players_report::{self, PlayersReport};
 use crate::pdf;
@@ -24,12 +24,12 @@ impl Document {
     }
 }
 
-pub fn parse_document(bytes: &[u8]) -> Result<Document, Error> {
+pub fn parse_document(bytes: &[u8], team: &TeamPrefix) -> Result<Document, Error> {
     let pages = pdf::extract_pages(bytes)?;
     if match_report::is_match_report(&pages) {
-        Ok(Document::Match(Box::new(match_report::parse(&pages)?)))
+        Ok(Document::Match(Box::new(match_report::parse(&pages, team)?)))
     } else if players_report::is_players_report(&pages) {
-        Ok(Document::Players(Box::new(players_report::parse(&pages)?)))
+        Ok(Document::Players(Box::new(players_report::parse(&pages, team)?)))
     } else {
         Err(Error::Pdf(
             "not an InStat match report or player report".to_owned(),

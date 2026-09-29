@@ -333,6 +333,44 @@ impl CellValue {
     }
 }
 
+/// How our team's name starts in InStat reports (e.g. `SSAC`), matched case-insensitively.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TeamPrefix(String);
+
+impl TeamPrefix {
+    /// Trims and upper-cases `text`; `None` when nothing is left.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        let trimmed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!trimmed.is_empty()).then(|| Self(trimmed.to_uppercase()))
+    }
+
+    #[must_use]
+    pub fn matches(&self, team: &TeamName) -> bool {
+        team.0.to_uppercase().starts_with(&self.0)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for TeamPrefix {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::parse(&text).ok_or_else(|| "team name is empty".to_owned())
+    }
+}
+
+impl From<TeamPrefix> for String {
+    fn from(team: TeamPrefix) -> Self {
+        team.0
+    }
+}
+
 /// Where a shot was taken from, as InStat divides the offensive zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ShotZone {

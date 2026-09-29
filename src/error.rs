@@ -13,6 +13,18 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("choose your team before adding games")]
+    NoTeam,
+    #[error("{matchup}: {}", wrong_team_reason(team, *both))]
+    WrongTeam { team: String, matchup: String, both: bool },
+}
+
+fn wrong_team_reason(team: &str, both: bool) -> String {
+    if both {
+        format!("both teams start with \"{team}\", so the app can't tell which is yours")
+    } else {
+        format!("neither team starts with \"{team}\"; check your team name at the top of the Games page")
+    }
 }
 
 impl Error {

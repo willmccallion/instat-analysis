@@ -2,7 +2,7 @@
 
 use crate::error::Error;
 use crate::layout;
-use crate::model::{Date, TeamName};
+use crate::model::{Date, TeamName, TeamPrefix};
 use crate::parse::common::{
     LINE_TOLERANCE, PAGE_RIGHT, PlayerRow, page_heading, player_table, require_phrase,
 };
@@ -51,24 +51,16 @@ pub struct MatchReport {
     pub opponent_shots: Vec<PlayerRow>,
 }
 
-/// The team this tool analyses.
-pub const OUR_TEAM_PREFIX: &str = "SSAC";
-
 /// Index of our team in the title (0 = listed first).
-pub fn our_index(title: &Title) -> Result<usize, Error> {
-    match (
-        title.teams[0].0.starts_with(OUR_TEAM_PREFIX),
-        title.teams[1].0.starts_with(OUR_TEAM_PREFIX),
-    ) {
+pub fn our_index(title: &Title, team: &TeamPrefix) -> Result<usize, Error> {
+    match (team.matches(&title.teams[0]), team.matches(&title.teams[1])) {
         (true, false) => Ok(0),
         (false, true) => Ok(1),
-        _ => Err(Error::parse(
-            SECTION,
-            format!(
-                "expected exactly one {OUR_TEAM_PREFIX} team, found {} vs {}",
-                title.teams[0].0, title.teams[1].0
-            ),
-        )),
+        (both, _) => Err(Error::WrongTeam {
+            team: team.as_str().to_owned(),
+            matchup: format!("{} vs {}", title.teams[0].0, title.teams[1].0),
+            both,
+        }),
     }
 }
 
@@ -107,12 +99,12 @@ pub fn parse_cover(page: &Page) -> Result<Title, Error> {
     })
 }
 
-pub fn parse(pages: &[Page]) -> Result<MatchReport, Error> {
+pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
     let cover = pages
         .first()
         .ok_or_else(|| Error::parse(SECTION, "empty document"))?;
     let title = parse_cover(cover)?;
-    let our_index = our_index(&title)?;
+    let our_index = our_index(&title, team)?;
     let our_name = &title.teams[our_index];
     let mut team_stats = None;
     let mut ours = TeamPages::default();

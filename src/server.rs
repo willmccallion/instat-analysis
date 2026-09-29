@@ -14,7 +14,7 @@ use tiny_http::{Header, Method, Request as HttpRequest, Response, Server, Status
 
 use crate::analysis::{Request, analyse};
 use crate::error::Error;
-use crate::model::GameId;
+use crate::model::{GameId, TeamPrefix};
 use crate::store::Store;
 use crate::web;
 
@@ -140,6 +140,7 @@ struct App {
 
 #[derive(Serialize)]
 struct StateResponse<'a> {
+    team: Option<&'a TeamPrefix>,
     games: usize,
     pending: Vec<String>,
     problems: &'a [String],
@@ -234,6 +235,7 @@ impl App {
             _ if !has_token(&request, &self.token) => error_json(request, 403, "missing or wrong token"),
             (Method::Get, "/api/state") => {
                 let state = StateResponse {
+                    team: self.store.team(),
                     games: self.store.games().len(),
                     pending: self.store.pending_descriptions(),
                     problems: &self.store.problems,
@@ -275,6 +277,19 @@ impl App {
                     }
                     Ok(false) => error_json(request, 404, "no such game"),
                     Err(e) => error_json(request, 500, e.to_string()),
+                }
+            }
+            (Method::Post, "/api/team") => {
+                let parsed = read_body(&mut request).and_then(|body| {
+                    let text = String::from_utf8(body).map_err(|_| Error::parse("team", "not text"))?;
+                    TeamPrefix::parse(&text).ok_or_else(|| Error::parse("team", "team name is empty"))
+                });
+                match parsed.and_then(|team| self.store.set_team(team)) {
+                    Ok(()) => {
+                        self.cache.clear();
+                        respond_json(request, 200, &self.store.team());
+                    }
+                    Err(e) => error_json(request, 400, e.to_string()),
                 }
             }
             (Method::Post, "/api/heartbeat") => respond_json(request, 200, &true),

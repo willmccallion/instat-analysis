@@ -3,7 +3,7 @@
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::layout::{self, Line};
-use crate::model::{Date, Jersey};
+use crate::model::{Date, Jersey, TeamPrefix};
 use crate::parse::common::LINE_TOLERANCE;
 use crate::parse::match_report::{Title, our_index, parse_cover};
 use crate::pdf::{Page, Word};
@@ -82,12 +82,12 @@ pub fn is_players_report(pages: &[Page]) -> bool {
         .is_some_and(|p| p.joined_text().starts_with("PLAYER REPORT"))
 }
 
-pub fn parse(pages: &[Page]) -> Result<PlayersReport, Error> {
+pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<PlayersReport, Error> {
     let cover = pages
         .first()
         .ok_or_else(|| Error::parse(SECTION, "empty document"))?;
     let title = parse_cover(cover)?;
-    let ours = our_index(&title)?;
+    let ours = our_index(&title, team)?;
     let team_of_page = contents_team_map(cover, &title)?;
     let mut players = Vec::new();
     for page in &pages[1..] {

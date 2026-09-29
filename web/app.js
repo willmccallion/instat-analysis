@@ -114,6 +114,8 @@ const state = {
   uploadLog: [],
   pending: [],
   problems: [],
+  team: null,
+  changingTeam: false,
 };
 
 const VIEWS = [
@@ -198,6 +200,7 @@ async function refresh() {
   main.classList.add("busy");
   try {
     const status = await api("/api/state");
+    state.team = status.team;
     state.pending = status.pending;
     state.problems = status.problems;
     state.analysis = await api("/api/analyze", { method: "POST", body: JSON.stringify(state.request) });
@@ -225,10 +228,13 @@ function setView(view) {
 
 function renderSidebar() {
   const nav = document.getElementById("nav");
-  nav.replaceChildren(...VIEWS.map((view) => el("button", { class: `nav-item ${state.view === view.id ? "active" : ""}`, text: view.label, onclick: () => setView(view.id) })));
+  const choosingTeam = !snapshot && !state.team;
+  nav.replaceChildren(...(choosingTeam ? [] : VIEWS).map((view) => el("button", { class: `nav-item ${state.view === view.id ? "active" : ""}`, text: view.label, onclick: () => setView(view.id) })));
   const footer = document.getElementById("sidebar-footer");
   footer.replaceChildren();
-  if (!snapshot) {
+  if (choosingTeam) {
+    footer.append(el("button", { text: "Quit app", onclick: quitApp }));
+  } else if (!snapshot) {
     footer.append(
       el("button", { class: state.view === "games" ? "primary" : "", text: "Add games / manage", onclick: () => setView("games") }),
       el("button", { text: "Save report (HTML)", onclick: exportReport, title: "Download a single file you can email or open anywhere" }),
@@ -407,7 +413,44 @@ function viewGames() {
     state.pending.length ? el("div", { class: "warning-box", style: "margin-top:12px" }, [`Waiting: ${state.pending.join("; ")}`]) : null,
     state.problems.length ? el("div", { class: "warning-box", style: "margin-top:12px" }, [`Problems: ${state.problems.join("; ")}`]) : null,
   ]);
-  return page("Games & uploads", "Everything stays on this computer. Reports are read, checked and stored in the app's library folder.", zone, el("div", { style: "height:16px" }), library);
+  const team = el("p", { class: "small muted" }, [
+    `Your team: ${state.team} `,
+    el("button", { class: "link small", text: "change", onclick: () => { state.changingTeam = true; render(); } }),
+  ]);
+  return page("Games & uploads", "Everything stays on this computer. Reports are read, checked and stored in the app's library folder.", team, zone, el("div", { style: "height:16px" }), library);
+}
+
+/** The preset for the team this app was built for; any other team can be typed in. */
+const PRESET_TEAM = "SSAC";
+
+async function chooseTeam(name) {
+  try {
+    state.team = await api("/api/team", { method: "POST", body: name });
+    state.changingTeam = false;
+    state.view = "games";
+    await refresh();
+  } catch (error) {
+    if (error instanceof ServerGone) showClosed();
+    else { state.error = error.message; render(); }
+  }
+}
+
+function viewSetup() {
+  const input = el("input", { type: "text", placeholder: "Start of your team's name", style: "min-width:260px" });
+  const useTyped = () => { if (input.value.trim()) chooseTeam(input.value); };
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") useTyped(); });
+  return [
+    el("h1", { text: state.team ? "Change your team" : "Welcome to Hockey Stats" }),
+    el("p", { class: "lede", text: "Which team do you coach? The app uses this to know which side of each InStat report is yours. You only do this once." }),
+    el("div", { class: "card setup" }, [
+      el("button", { class: "primary big-choice", text: PRESET_TEAM, onclick: () => chooseTeam(PRESET_TEAM) }),
+      el("p", { class: "small muted", text: `Choose this if your team's name starts with ${PRESET_TEAM} on the InStat reports.` }),
+      el("div", { class: "group-label", text: "Another team" }),
+      el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center" }, [input, el("button", { text: "Use this team", onclick: useTyped })]),
+      el("p", { class: "small muted", text: "Type the start of your team's name exactly as InStat prints it at the top of the reports (capital letters don't matter)." }),
+      state.team ? el("button", { class: "link small", text: "Cancel", onclick: () => { state.changingTeam = false; render(); } }) : null,
+    ]),
+  ];
 }
 
 async function filesFromDrop(transfer) {
@@ -1479,7 +1522,9 @@ function render() {
   const views = { games: viewGames, summary: viewSummary, rankings: viewRankings, players: viewPlayers, game: viewGame, help: viewHelp };
   if (a.games.length === 0 && !["games", "help"].includes(state.view)) state.view = "games";
   let content;
-  if (sections[state.view]) {
+  if (!snapshot && (!state.team || state.changingTeam)) {
+    content = viewSetup();
+  } else if (sections[state.view]) {
     const section = sections[state.view];
     const sub = state.sub[state.view] || SUBVIEWS[state.view][0][0];
     insideTabs = true;

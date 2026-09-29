@@ -334,3 +334,5 @@ button.link.quiet:hover, button.link.quiet:focus-visible { color: var(--series-1
 .takeaways.focus li > div { display: grid; gap: 3px; }
 .takeaways.focus .who { font-weight: 650; }
 .notes { margin: 8px 0 0; padding-left: 18px; }
+.setup { max-width: 560px; }
+.setup .big-choice { font-size: 22px; padding: 14px 40px; margin-bottom: 8px; }
