@@ -11,7 +11,7 @@ pub struct TTest {
     pub mean_difference: f64,
     /// 95% confidence interval for the mean difference.
     pub ci: (f64, f64),
-    /// Standardised effect (Cohen's d_z for paired data, d for independent).
+    /// Standardised effect (Cohen's `d_z` for paired data, `d` for independent).
     pub effect_size: f64,
 }
 
@@ -81,9 +81,10 @@ pub struct Wilcoxon {
     pub exact: bool,
 }
 
-/// Wilcoxon signed-rank test on paired differences; zero differences are dropped. Uses the
-/// exact null distribution for up to 50 differences when none were zero, else the normal
-/// approximation with tie correction (matching scipy's `method="auto"`).
+/// Wilcoxon signed-rank test on paired differences, dropping zero differences.
+///
+/// Uses the exact null distribution for up to 50 differences when none were zero, else the
+/// normal approximation with tie correction (matching scipy's `method="auto"`).
 #[must_use]
 pub fn wilcoxon_signed_rank(differences: &[f64]) -> Option<Wilcoxon> {
     let nonzero: Vec<f64> = differences.iter().copied().filter(|d| *d != 0.0).collect();
@@ -131,7 +132,7 @@ fn tie_groups(values: &[f64]) -> Vec<f64> {
     let mut groups = Vec::new();
     let mut run = 1.0;
     for window in sorted.windows(2) {
-        if window[0] == window[1] {
+        if window[0].total_cmp(&window[1]).is_eq() {
             run += 1.0;
         } else {
             if run > 1.0 {
@@ -157,7 +158,7 @@ fn exact_signed_rank_p(n: usize, w: f64) -> f64 {
         }
     }
     let total: f64 = counts.iter().sum();
-    let cutoff = w.floor() as usize;
+    let cutoff = crate::stats::describe::floor_index(w);
     let lower: f64 = counts.iter().take(cutoff + 1).sum();
     (2.0 * lower / total).min(1.0)
 }
@@ -219,10 +220,10 @@ pub fn fisher_exact(a: u64, b: u64, c: u64, d: u64) -> f64 {
     use statrs::function::gamma::ln_gamma;
     let ln_factorial = |n: u64| ln_gamma(n as f64 + 1.0);
     let (row1, row2, col1) = (a + b, c + d, a + c);
-    let n = row1 + row2;
+    let total = row1 + row2;
     let ln_p = |x: u64| {
-        ln_factorial(row1) + ln_factorial(row2) + ln_factorial(col1) + ln_factorial(n - col1)
-            - ln_factorial(n)
+        ln_factorial(row1) + ln_factorial(row2) + ln_factorial(col1) + ln_factorial(total - col1)
+            - ln_factorial(total)
             - ln_factorial(x)
             - ln_factorial(row1 - x)
             - ln_factorial(col1 - x)
@@ -231,7 +232,7 @@ pub fn fisher_exact(a: u64, b: u64, c: u64, d: u64) -> f64 {
     let low = col1.saturating_sub(row2);
     let high = row1.min(col1);
     let observed = ln_p(a);
-    let relative = (1.0 + 1e-7_f64).ln();
+    let relative = 1e-7_f64.ln_1p();
     (low..=high)
         .map(ln_p)
         .filter(|lp| *lp <= observed + relative)

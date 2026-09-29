@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod cell;
 pub mod error;
 pub mod ingest;

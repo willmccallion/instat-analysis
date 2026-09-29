@@ -86,7 +86,9 @@ fn penalised_hessian(problem: &PoissonProblem, mu: &DVector<f64>) -> DMatrix<f64
 #[must_use]
 pub fn fit_poisson(problem: &PoissonProblem) -> Option<PoissonFit> {
     let p = problem.x.ncols();
-    if problem.x.nrows() != problem.y.len() || problem.offset.len() != problem.y.len() || problem.penalty.len() != p {
+    let rows = problem.y.len();
+    let shapes_match = problem.x.nrows() == rows && problem.offset.len() == rows;
+    if !shapes_match || problem.penalty.len() != p {
         return None;
     }
     let mut beta = DVector::zeros(p);
@@ -208,23 +210,23 @@ fn sigmoid(z: f64) -> f64 {
 /// under separation and reduces small-sample bias. `x` includes the intercept column.
 #[must_use]
 pub fn fit_firth_logistic(x: &DMatrix<f64>, y: &DVector<f64>) -> Option<LogisticFit> {
-    let (n, p) = (x.nrows(), x.ncols());
-    if y.len() != n || n == 0 {
+    let (rows, cols) = (x.nrows(), x.ncols());
+    if y.len() != rows || rows == 0 {
         return None;
     }
-    let mut beta = DVector::zeros(p);
+    let mut beta = DVector::zeros(cols);
     let mut converged = false;
     for _ in 0..MAX_ITERATIONS {
         let pi = (x * &beta).map(sigmoid);
         let w = pi.map(|q| (q * (1.0 - q)).max(1e-12));
-        let weighted = DMatrix::from_fn(n, p, |i, j| x[(i, j)] * w[i]);
+        let weighted = DMatrix::from_fn(rows, cols, |i, j| x[(i, j)] * w[i]);
         let information = x.transpose() * &weighted;
         let inverse = information.clone().try_inverse()?;
-        let leverage = DVector::from_fn(n, |i, _| {
+        let leverage = DVector::from_fn(rows, |i, _| {
             let row = x.row(i);
             w[i] * (row * &inverse * row.transpose())[(0, 0)]
         });
-        let adjusted = DVector::from_fn(n, |i, _| y[i] - pi[i] + leverage[i] * (0.5 - pi[i]));
+        let adjusted = DVector::from_fn(rows, |i, _| y[i] - pi[i] + leverage[i] * (0.5 - pi[i]));
         let score = x.transpose() * adjusted;
         let step = &inverse * &score;
         let max_step = step.amax();
@@ -237,10 +239,10 @@ pub fn fit_firth_logistic(x: &DMatrix<f64>, y: &DVector<f64>) -> Option<Logistic
     }
     let pi = (x * &beta).map(sigmoid);
     let w = pi.map(|q| (q * (1.0 - q)).max(1e-12));
-    let weighted = DMatrix::from_fn(n, p, |i, j| x[(i, j)] * w[i]);
+    let weighted = DMatrix::from_fn(rows, cols, |i, j| x[(i, j)] * w[i]);
     let covariance = (x.transpose() * weighted).try_inverse()?;
     let standard_errors = covariance.diagonal().map(|v| v.max(0.0).sqrt());
-    let p_values = DVector::from_fn(p, |j, _| dist::normal_two_sided_p(beta[j] / standard_errors[j]));
+    let p_values = DVector::from_fn(cols, |j, _| dist::normal_two_sided_p(beta[j] / standard_errors[j]));
     Some(LogisticFit {
         coefficients: beta,
         standard_errors,

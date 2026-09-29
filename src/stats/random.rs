@@ -20,11 +20,13 @@ pub fn poisson(rng: &mut Rng, mean: f64) -> u64 {
         let limit = (-mean).exp();
         let mut product: f64 = rng.random();
         let mut count = 0;
-        while product > limit {
+        loop {
+            if product <= limit {
+                return count;
+            }
             product *= rng.random::<f64>();
             count += 1;
         }
-        return count;
     }
     let draw = standard_normal(rng).mul_add(mean.sqrt(), mean).round();
     // Clamped at zero and far below u64::MAX for any plausible hockey count.

@@ -18,6 +18,19 @@ pub fn sample_sd(values: &[f64]) -> Option<f64> {
     Some((ss / (values.len() - 1) as f64).sqrt())
 }
 
+/// Index for a non-negative position; negative or NaN inputs map to 0.
+#[must_use]
+pub fn floor_index(position: f64) -> usize {
+    let floored = position.floor();
+    if floored.is_nan() || floored <= 0.0 {
+        return 0;
+    }
+    // Callers pass positions bounded by a slice length, far below usize::MAX.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let index = floored as usize;
+    index
+}
+
 /// Linear-interpolated quantile (numpy's default), `q` in [0, 1].
 #[must_use]
 pub fn quantile(values: &[f64], q: f64) -> Option<f64> {
@@ -29,7 +42,7 @@ pub fn quantile(values: &[f64], q: f64) -> Option<f64> {
     let position = q * (sorted.len() - 1) as f64;
     let lower = position.floor();
     let fraction = position - lower;
-    let index = lower as usize;
+    let index = floor_index(lower);
     let next = sorted.get(index + 1).copied().unwrap_or(sorted[index]);
     Some(sorted[index] + fraction * (next - sorted[index]))
 }
@@ -41,7 +54,7 @@ pub fn percentile_rank(values: &[f64], value: f64) -> Option<f64> {
         return None;
     }
     let below = values.iter().filter(|v| **v < value).count() as f64;
-    let equal = values.iter().filter(|v| **v == value).count() as f64;
+    let equal = values.iter().filter(|v| v.total_cmp(&value).is_eq()).count() as f64;
     Some(100.0 * (below + 0.5 * equal) / values.len() as f64)
 }
 
@@ -68,7 +81,7 @@ pub fn ranks(values: &[f64]) -> Vec<f64> {
     let mut start = 0;
     while start < order.len() {
         let mut end = start;
-        while end + 1 < order.len() && values[order[end + 1]] == values[order[start]] {
+        while end + 1 < order.len() && values[order[end + 1]].total_cmp(&values[order[start]]).is_eq() {
             end += 1;
         }
         let rank = (start + end) as f64 / 2.0 + 1.0;

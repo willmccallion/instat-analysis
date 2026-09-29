@@ -215,7 +215,7 @@ pub fn period_of(t: Seconds) -> u32 {
     period
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum UnitKind {
     DefencePair,
     ForwardLine,

@@ -72,7 +72,7 @@ pub fn poisson_exact_two_sided(k: u64, mu: f64) -> f64 {
     }
     let observed = ln_poisson_pmf(k, mu);
     let tolerance = 1e-7;
-    let limit = (mu + 12.0 * mu.sqrt() + 20.0).ceil() as u64 + k;
+    let limit = crate::stats::describe::floor_index((mu + 12.0 * mu.sqrt() + 20.0).ceil()) as u64 + k;
     let total: f64 = (0..=limit)
         .map(|j| ln_poisson_pmf(j, mu))
         .filter(|lp| *lp <= observed + tolerance)
