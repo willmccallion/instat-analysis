@@ -15,7 +15,7 @@ use crate::parse::match_report::Title;
 use crate::reconcile::reconcile;
 
 /// Bump when parsing or reconciliation changes, to rebuild cached games.
-pub const PARSER_VERSION: u32 = 10;
+pub const PARSER_VERSION: u32 = 11;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Settings {

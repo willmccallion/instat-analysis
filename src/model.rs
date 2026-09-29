@@ -429,6 +429,45 @@ pub struct ZoneShots {
     pub on_goal: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum RinkEventKind {
+    Recovery,
+    Loss,
+    Hit,
+    HitTaken,
+    BattleWon,
+    BattleLost,
+}
+
+/// Something a skater did where the player report's rink maps drew it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RinkEvent {
+    pub kind: RinkEventKind,
+    pub at: RinkPoint,
+}
+
+/// A skater's shots on goal aimed at one part of the net, and the goals among them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetShots {
+    pub area: NetArea,
+    pub on_goal: u32,
+    pub goals: u32,
+}
+
+/// Adds `extra` into `totals` area by area, keeping areas in [`NetArea`] order.
+pub fn add_net_shots(totals: &mut Vec<NetShots>, extra: &[NetShots]) {
+    for e in extra {
+        match totals.iter_mut().find(|t| t.area == e.area) {
+            Some(t) => {
+                t.on_goal += e.on_goal;
+                t.goals += e.goals;
+            }
+            None => totals.push(*e),
+        }
+    }
+    totals.sort_by_key(|t| t.area);
+}
+
 /// One of our shots where the match report's shooting chart drew it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChartedShot {
@@ -847,6 +886,12 @@ pub struct SkaterStats {
     pub puck_recoveries_offensive_zone: u32,
     #[serde(default)]
     pub entry_types: EntryTypes,
+    /// From the player report's rink maps.
+    #[serde(default)]
+    pub rink_events: Vec<RinkEvent>,
+    /// From the player report's "Shots on goal" net diagram.
+    #[serde(default)]
+    pub net_shots: Vec<NetShots>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

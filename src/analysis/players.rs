@@ -10,8 +10,9 @@ use crate::analysis::matchups::{PlayerMatchup, player_matchups};
 use crate::analysis::shots::{ShotDot, shot_dots};
 use crate::analysis::stints::Stint;
 use crate::model::{
-    AreaBattles, Date, EntryTypes, Game, GameId, HistoryKind, Player, PlayerId, Seconds, ShotSources, SkaterStats, StatEntry,
-    Strength, Tally, TypeShots, ZoneShots, add_area_battles, add_type_shots, add_zone_shots,
+    AreaBattles, Date, EntryTypes, Game, GameId, HistoryKind, NetShots, Player, PlayerId, RinkEvent, Seconds, ShotSources,
+    SkaterStats, StatEntry, Strength, Tally, TypeShots, ZoneShots, add_area_battles, add_net_shots, add_type_shots,
+    add_zone_shots,
 };
 use crate::stats::describe::{mean, percentile_rank, sample_sd, wilson_interval};
 
@@ -57,6 +58,9 @@ pub struct SkaterTotals {
     pub puck_losses_defensive_zone: u32,
     pub puck_recoveries_offensive_zone: u32,
     pub entry_types: EntryTypes,
+    /// Recoveries, losses, hits and battles where the player report's maps drew them.
+    pub rink_events: Vec<RinkEvent>,
+    pub net_shots: Vec<NetShots>,
 }
 
 impl SkaterTotals {
@@ -98,6 +102,8 @@ impl SkaterTotals {
         self.puck_losses_defensive_zone += s.puck_losses_defensive_zone;
         self.puck_recoveries_offensive_zone += s.puck_recoveries_offensive_zone;
         self.entry_types.add(s.entry_types);
+        self.rink_events.extend_from_slice(&s.rink_events);
+        add_net_shots(&mut self.net_shots, &s.net_shots);
     }
 }
 

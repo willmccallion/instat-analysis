@@ -3,9 +3,10 @@
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::layout::{self, Line};
-use crate::model::{Date, Jersey, NetArea, ShotZone, TeamPrefix};
+use crate::model::{Date, Jersey, NetArea, RinkEvent, ShotZone, TeamPrefix};
 use crate::parse::common::LINE_TOLERANCE;
 use crate::parse::diagrams;
+use crate::parse::rink;
 use crate::parse::match_report::{Title, our_index, parse_cover};
 use crate::pdf::{Page, Rect, Word};
 
@@ -58,10 +59,13 @@ pub struct PlayerPage {
     /// (label, game value, season value) from the Statistics block.
     pub stats: Vec<(String, String, String)>,
     pub history: Vec<RawHistoryRow>,
-    /// Goalie pages: shots / saves in each part of the net, this game.
+    /// Each part of the net: shots / saves on goalie pages, shots on goal / goals on
+    /// skater pages; this game only.
     pub net: Vec<(NetArea, (u32, u32))>,
     /// Goalie pages: shots / saves from each of InStat's seven zones, this game.
     pub zones: Vec<(ShotZone, (u32, u32))>,
+    /// Skater pages: recoveries, losses, hits and battles where the rink maps drew them.
+    pub events: Vec<RinkEvent>,
 }
 
 impl PlayerPage {
@@ -173,12 +177,21 @@ fn parse_player_page(page: &Page) -> Result<PlayerPage, Error> {
         PageKind::Skater
     };
     let history = history(&page.words, kind)?;
-    let (net, zones) = match (kind, goalie_diagrams(&page.words)) {
-        (PageKind::Goalie, Some(regions)) => (
-            diagrams::net_grid(&page.words, &regions.net).unwrap_or_default(),
-            diagrams::zone_grid(&page.words, &regions.rink).unwrap_or_default(),
+    let (net, zones, events) = match kind {
+        PageKind::Goalie => goalie_diagrams(&page.words).map_or_else(Default::default, |regions| {
+            (
+                diagrams::net_grid(&page.words, &regions.net).unwrap_or_default(),
+                diagrams::zone_grid(&page.words, &regions.rink).unwrap_or_default(),
+                Vec::new(),
+            )
+        }),
+        PageKind::Skater => (
+            skater_net_region(&lines)
+                .and_then(|region| diagrams::net_grid(&page.words, &region))
+                .unwrap_or_default(),
+            Vec::new(),
+            rink::rink_maps(page),
         ),
-        _ => (Vec::new(), Vec::new()),
     };
     Ok(PlayerPage {
         kind,
@@ -188,6 +201,24 @@ fn parse_player_page(page: &Page) -> Result<PlayerPage, Error> {
         history,
         net,
         zones,
+        events,
+    })
+}
+
+/// The "Shots on goal" net diagram: below its heading, left of "Shift log", above the
+/// "Puck losses" map heading.
+fn skater_net_region(lines: &[Line<'_>]) -> Option<Rect> {
+    let (heading_y, x0) = lines.iter().find_map(|l| l.find_phrase("Shots on goal").map(|x| (l.y, x)))?;
+    let x1 = lines.iter().find_map(|l| l.find_phrase("Shift log"))?;
+    let bottom = lines
+        .iter()
+        .filter(|l| l.y > heading_y)
+        .find_map(|l| l.find_phrase("Puck losses").filter(|x| (x - x0).abs() < 5.0).map(|_| l.y))?;
+    Some(Rect {
+        x0: x0 - 10.0,
+        x1: x1 - 5.0,
+        top: heading_y + 5.0,
+        bottom: bottom - 5.0,
     })
 }
 

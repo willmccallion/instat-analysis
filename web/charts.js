@@ -908,6 +908,70 @@ function shotPlot(container, shots, options = {}) {
   ]));
 }
 
+/** Our zone, the neutral zone or theirs, by where a rink point lies against the blue lines. */
+function rinkZone(at) {
+  if (at.along < -25) return "ours";
+  return at.along > 25 ? "theirs" : "neutral";
+}
+
+/**
+ * Events on a full rink in feet, our net on the left. events: [{kind, at: {along, across}}];
+ * styles: {kind: {label, color, mark: "dot" | "ring" | "cross"}} (kinds without a style are
+ * skipped). The legend counts each kind by zone.
+ */
+function rinkPlot(container, events, styles, options = {}) {
+  const width = Math.min(measureWidth(container), options.maxWidth ?? 640);
+  const height = Math.round((width * 89) / 204);
+  const root = svg("svg", { class: "chart", viewBox: "-102 -44.5 204 89", width, height, role: "img", "aria-label": options.title || "rink map" });
+  const outline = "M-72,-42.5H72A28,28 0 0 1 100,-14.5V14.5A28,28 0 0 1 72,42.5H-72A28,28 0 0 1 -100,14.5V-14.5A28,28 0 0 1 -72,-42.5Z";
+  const id = `rink${Math.random().toString(36).slice(2)}`;
+  const clip = svg("clipPath", { id });
+  clip.append(svg("path", { d: outline }));
+  root.append(clip, svg("path", { d: outline, fill: css("--surface-2"), stroke: "none" }));
+  const red = css("--div-neg");
+  const blue = css("--series-1");
+  const lines = svg("g", { "clip-path": `url(#${id})`, "pointer-events": "none" });
+  const vertical = (x, color, w, opacity = 0.7) => svg("line", { x1: x, x2: x, y1: -42.5, y2: 42.5, stroke: color, "stroke-width": w, opacity });
+  lines.append(
+    vertical(-89, red, 0.4), vertical(89, red, 0.4), vertical(0, red, 1, 0.5), vertical(-25, blue, 1.6, 0.6), vertical(25, blue, 1.6, 0.6),
+    svg("circle", { cx: 0, cy: 0, r: 15, fill: "none", stroke: blue, "stroke-width": 0.3, opacity: 0.6 }),
+    ...[-69, 69].flatMap((cx) => [-22, 22].map((cy) => svg("circle", { cx, cy, r: 15, fill: "none", stroke: red, "stroke-width": 0.3, opacity: 0.5 }))),
+    ...[-69, -20, 20, 69].flatMap((cx) => [-22, 22].map((cy) => svg("circle", { cx, cy, r: 0.9, fill: red, opacity: 0.5 }))),
+    ...[-1, 1].map((side) => svg("rect", { x: side < 0 ? -92.3 : 89, y: -3, width: 3.3, height: 6, fill: "none", stroke: css("--text-muted"), "stroke-width": 0.5 })),
+  );
+  root.append(lines, svg("path", { d: outline, fill: "none", stroke: css("--axis"), "stroke-width": 0.6, "pointer-events": "none" }));
+  for (const event of events) {
+    const style = styles[event.kind];
+    if (!style) continue;
+    const [x, y] = [event.at.along, event.at.across];
+    const r = 2;
+    let mark;
+    if (style.mark === "cross") {
+      mark = svg("path", { d: `M${x - r},${y - r}L${x + r},${y + r}M${x - r},${y + r}L${x + r},${y - r}`, stroke: style.color, "stroke-width": 0.9, "stroke-linecap": "round" });
+    } else {
+      mark = svg("circle", { cx: x, cy: y, r, fill: style.mark === "ring" ? css("--surface-1") : style.color, stroke: style.mark === "ring" ? style.color : css("--surface-1"), "stroke-width": style.mark === "ring" ? 0.8 : 0.4 });
+    }
+    const hit = svg("g", { class: "mark" }, [svg("circle", { cx: x, cy: y, r: r + 1.5, fill: "transparent" }), mark]);
+    attachTooltip(hit, style.label, () => [{ value: { ours: "our zone", neutral: "neutral zone", theirs: "their zone" }[rinkZone(event.at)], name: "" }]);
+    root.append(hit);
+  }
+  container.replaceChildren(root);
+  const counts = (kind) => ["ours", "neutral", "theirs"].map((zone) => events.filter((e) => e.kind === kind && rinkZone(e.at) === zone).length);
+  container.append(el("div", { class: "legend" }, [
+    ...Object.entries(styles).map(([kind, style]) => {
+      const [ours, neutral, theirs] = counts(kind);
+      const keys = {
+        dot: () => el("span", { class: "key", style: `background:${style.color};border-radius:50%` }),
+        ring: () => el("span", { class: "key", style: `border:1.5px solid ${style.color};border-radius:50%;background:transparent` }),
+        cross: () => el("span", { style: `color:${style.color};font-weight:700;margin-right:4px`, text: "×" }),
+      };
+      const key = keys[style.mark]();
+      return el("span", {}, [key, `${style.label}: ${ours} · ${neutral} · ${theirs}`]);
+    }),
+    el("span", { class: "muted", text: "counts: our zone · neutral · their zone · our net on the left" }),
+  ]));
+}
+
 // Full rink in a 300×130 box, our net on the left; corners are one area drawn top and bottom.
 const BATTLE_AREA_SHAPES = {
   BehindOwnGoal: [[[0, 0], [22, 0], [22, 130], [0, 130]]],
@@ -1106,6 +1170,6 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
   hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
-  zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
+  zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, rinkPlot, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
 };
 })();

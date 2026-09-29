@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::model::{
     Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, Game, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
     Jersey, Matchup, Opponent, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
-    ShotSituation, ShotSources, ShotType, ShotZone, SkaterStats, StatEntry, Tally, TypeShots, EntryTypes,
+    ShotSituation, ShotSources, ShotType, ShotZone, SkaterStats, StatEntry, Tally, TypeShots, EntryTypes, NetArea, NetShots,
     Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
 };
 use crate::parse::common::{PlayerRow, RowLabel};
@@ -251,7 +251,16 @@ fn skater_stats(
         puck_losses_defensive_zone: in_turnovers("In defensive zone"),
         puck_recoveries_offensive_zone: in_turnovers("In attacking zone"),
         entry_types: table(ENTRIES_TABLE).map(entry_types).unwrap_or_default(),
+        rink_events: page.map(|p| p.events.clone()).unwrap_or_default(),
+        net_shots: page.map(|p| net_shots(&p.net)).unwrap_or_default(),
     }
+}
+
+fn net_shots(counts: &[(NetArea, (u32, u32))]) -> Vec<NetShots> {
+    counts
+        .iter()
+        .map(|&(area, (on_goal, goals))| NetShots { area, on_goal, goals })
+        .collect()
 }
 
 /// Indexes of tables among the extra tables passed to [`skater_stats`].
