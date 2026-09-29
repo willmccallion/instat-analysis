@@ -198,10 +198,8 @@ pub fn rate(inputs: &[RatingInput], position: Position) -> Vec<RankingRow> {
             .then(b.rating.total_cmp(&a.rating))
             .then_with(|| a.player.id.cmp(&b.player.id))
     });
-    let mut next = 1;
-    for row in rows.iter_mut().filter(|r| r.qualified) {
-        row.rank = Some(next);
-        next += 1;
+    for (rank, row) in (1..).zip(rows.iter_mut().filter(|r| r.qualified)) {
+        row.rank = Some(rank);
     }
     rows
 }
@@ -345,7 +343,7 @@ pub fn rankings(context: &Context<'_>, seasons: &[PlayerSeason]) -> RankingsRepo
         .filter_map(|s| {
             let loaded = per_game.get(&s.player.id).map_or(&[][..], Vec::as_slice);
             let focus_index = |series: &[(Date, f64)], date: Option<Date>| {
-                date.and_then(|d| series.iter().position(|(sd, _)| *sd == d)).unwrap_or(series.len().saturating_sub(1))
+                date.and_then(|d| series.iter().position(|(sd, _)| *sd == d)).unwrap_or_else(|| series.len().saturating_sub(1))
             };
             let focus_date = context.focus.map(|g| g.date);
             if loaded.len() >= MIN_LOADED_GAMES_FOR_COMPOSITE_FORM {
