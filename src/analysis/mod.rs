@@ -8,6 +8,7 @@ pub mod pairs;
 pub mod passing;
 pub mod players;
 pub mod profiles;
+pub mod rankings;
 pub mod significance;
 pub mod stints;
 pub mod team;
@@ -107,6 +108,7 @@ pub struct Analysis {
     pub request: Request,
     pub team: team::TeamReport,
     pub players: Vec<players::PlayerSeason>,
+    pub rankings: rankings::RankingsReport,
     pub goalies: Vec<goalies::GoalieSeason>,
     pub units: units::UnitsReport,
     pub pairs: Vec<PairRow>,
@@ -254,6 +256,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         focus: focus_id,
         request: request.clone(),
         team: team_report,
+        rankings: rankings::rankings(&context, &player_seasons),
         players: player_seasons,
         goalies: goalies::goalies(&context),
         units: units_report,

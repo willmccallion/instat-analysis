@@ -1,6 +1,92 @@
 "use strict";
 
-const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, dataTable, chartCard } = window.Charts;
+const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, dataTable, chartCard } = window.Charts;
+
+// Plain-English definitions; any label matching a key explains itself on hover or tap.
+const PER_60 = "per 60 minutes of ice time, so players with different ice time compare fairly";
+window.Charts.setGlossary({
+  "Points/60": `Goals plus assists ${PER_60}.`,
+  "P/60": `Points (goals + assists) ${PER_60}.`,
+  "Goals/60": `Goals ${PER_60}.`,
+  "Shots/60": `Shots taken (on goal, missed or blocked) ${PER_60}.`,
+  "xG/60": `Expected goals ${PER_60}. xG credits each shot with its chance of scoring based on where and how it was taken, so it measures the quality of chances, not luck in finishing.`,
+  "xG": "Expected goals: the sum of every shot's chance of scoring (based on location and shot type). A 0.3 xG shot scores about 3 times in 10.",
+  "xGF": "Expected goals for: the quality of the chances we created.",
+  "xGA": "Expected goals against: the quality of the chances we allowed.",
+  "xG against on ice/60": `Expected goals the opponent generated while this player was on the ice, ${PER_60}. Lower is better.`,
+  "Expected-goals share": "Our expected goals divided by both teams' expected goals. Above 50% means we created better chances than we allowed.",
+  "Entries/60": `Times the player carried or passed the puck into the offensive zone with control, ${PER_60}.`,
+  "Recoveries/60": `Loose pucks won back (takeaways, rebounds, battles) ${PER_60}.`,
+  "Puck losses/60": `Times the player lost possession (giveaways, turnovers) ${PER_60}. Lower is better.`,
+  "Passes/60": `Completed passes to teammates ${PER_60}.`,
+  "Blocks/60": `Opponent shots blocked ${PER_60}.`,
+  "Hits/60": `Body checks delivered ${PER_60}.`,
+  "Battles won/60": `Puck battles won ${PER_60}.`,
+  "Battles won %": "Share of one-on-one puck battles the player won.",
+  "Battles won": "Share of one-on-one puck battles the player won.",
+  "Shot share vs team": "The team's share of shot attempts with this player on the ice, minus the share without them. Positive means the team does better when they're out there.",
+  "CF% rel": "The team's share of shot attempts with this player on the ice, minus the share without them. Positive means the team does better when they're out there.",
+  "Attempts against/60": `Opponent shot attempts while the player is on the ice at even strength, ${PER_60}. Lower is better.`,
+  "Attempts for on ice/60": `Our shot attempts while the player is on the ice at even strength, ${PER_60}.`,
+  "CF": "Corsi for: our shot attempts (on goal, missed and blocked) while this player or unit was on the ice at even strength.",
+  "CA": "Corsi against: opponent shot attempts while this player or unit was on the ice at even strength.",
+  "CF%": "Corsi for %: our share of all shot attempts while on the ice at even strength. 50% = even; it's the best available predictor of future results.",
+  "CF/60": `Our shot attempts ${PER_60} at even strength.`,
+  "CA/60": `Opponent shot attempts ${PER_60} at even strength. Lower is better.`,
+  "Adj. CF%": "CF% adjusted for sample size: blended with the team average in proportion to how little the player or unit has played, so a hot 3-minute stretch doesn't look like a great unit. The range is where the true value probably lies (90%).",
+  "Above avg?": "The model's probability that the unit's true shot share is above the team average for that kind of unit.",
+  "Even-strength CF%": "Our share of shot attempts when both teams had the same number of skaters.",
+  "EV goal share": "Goals for divided by goals for + against while the player was on the ice at even strength.",
+  "Shot share": "Our shots divided by all shots in the game(s). Above 50% means we out-shot the opponent.",
+  "GF": "Goals for while on the ice.",
+  "GA": "Goals against while on the ice.",
+  "SF": "Shots for.",
+  "SA": "Shots against.",
+  "Poss%": "Share of puck-possession time.",
+  "Pen ±": "Penalties drawn minus penalties taken while the unit was on the ice.",
+  "Pen": "Penalties drawn minus penalties taken while the unit was on the ice.",
+  "TOI": "Time on ice.",
+  "Pos": "Position: D = defence, F = forward.",
+  "TOI/GP": "Average time on ice per game.",
+  "Min": "Minutes played.",
+  "GP": "Games played.",
+  "G": "Goals.",
+  "A": "Assists.",
+  "P": "Points: goals plus assists.",
+  "+/-": "Plus/minus: even-strength and short-handed goals for minus goals against while on the ice (power-play goals don't count).",
+  "InStat": "InStat Index: InStat's own overall rating for a game, based on every action the player made. Higher is better; roughly 100 is a typical game.",
+  "InStat Index": "InStat's own overall rating for a game, based on every action the player made. Higher is better; roughly 100 is a typical game.",
+  "Rating": "This app's position rating: 50 = average at the player's position, 60+ clearly above, 40 or less clearly below. Built from Offence, Defence and Puck play stats compared with teammates at the same position.",
+  "Form": "Last few games compared with the player's own usual level, in standard deviations. ▲ 1.0 means one typical game-to-game swing above normal.",
+  "Off": "Offence part of the rating (points, shots, chance quality, zone entries; for defence also shot attempts for).",
+  "Def": "Defence part of the rating (shot attempts and chances allowed on ice, shot share vs team; for defence also blocks).",
+  "Puck": "Puck play part of the rating (battles won, recoveries, passes, and fewer puck losses).",
+  "Power play": "Goals scored on the power play divided by power-play chances.",
+  "Penalty kill": "Share of short-handed situations where we didn't allow a goal.",
+  "PP": "Power play: goals / chances.",
+  "PK": "Penalty kill: kills / times short-handed.",
+  "PDO (luck gauge)": "Shooting % plus save %. Around 100 is normal; well above means some luck is helping and will likely fade, well below means bad luck.",
+  "PDO": "Shooting % plus save %. Around 100 is normal; well above means some luck is helping and will likely fade, well below means bad luck.",
+  "Shooting %": "Goals divided by shots on goal.",
+  "Save %": "Saves divided by shots on goal faced.",
+  "Sv%": "Save percentage: saves divided by shots on goal faced.",
+  "Goals minus xG": "Actual goals minus expected goals. Positive = finishing better than chances suggest (often luck that evens out).",
+  "FO%": "Faceoff win percentage.",
+  "Goals against avg": "Goals allowed per 60 minutes played.",
+  "p": "p-value: how often a difference this big would appear by pure chance if there were no real effect. Small (under 0.05) = unlikely to be chance.",
+  "Adj. p": "p-value adjusted for testing many things at once (Benjamini–Hochberg), so running lots of tests doesn't create false alarms.",
+  "df": "Degrees of freedom: how much independent information the test used.",
+  "Statistic": "The test's raw result (e.g. chi-square or t). Bigger means a bigger departure from 'no effect'.",
+  "Effect [95% CI]": "How big the difference is, with the range it probably lies in (95%).",
+  "Verdict": "Likely real: adjusted p < 0.05. Maybe: < 0.20. Could be noise: otherwise. Not enough data: the test needs more games.",
+  "Record": "Wins–losses (–overtime losses).",
+  "Goals": "Goals for – goals against.",
+  "Even-strength minutes together": "Minutes both players were on the ice together with equal numbers of skaters.",
+  "Goals together (EV)": "Even-strength goals for and against while both were on the ice.",
+  "Shot attempts together": "Shot attempts for and against while both were on the ice (from InStat's line tables).",
+  "Passes": "Passes between the two players, both directions.",
+  "SDs vs position": "Standard deviations above (+) or below (−) the average of teammates at the same position.",
+});
 
 const params = new URLSearchParams(location.search);
 const snapshot = window.HOCKEY_SNAPSHOT || null;
@@ -9,7 +95,10 @@ const state = {
   token: params.get("t") || "",
   analysis: snapshot,
   request: snapshot ? snapshot.request : { games: [], focus: null, min_minutes: 10, min_unit_minutes: 3 },
-  view: "overview",
+  view: "summary",
+  sub: {},
+  rankingTab: "forwards",
+  playerColumns: "key",
   player: null,
   goalie: null,
   unitTab: "defence_pairs",
@@ -23,20 +112,21 @@ const state = {
 };
 
 const VIEWS = [
-  { group: "Start", id: "games", label: "Games & uploads" },
-  { group: "Start", id: "overview", label: "Overview" },
-  { group: "Start", id: "game", label: "Single game" },
-  { group: "Lines", id: "lines", label: "Lines & pairs" },
-  { group: "Lines", id: "chemistry", label: "Pair chemistry" },
-  { group: "Lines", id: "passing", label: "Passing network" },
-  { group: "Players", id: "players", label: "Players" },
-  { group: "Players", id: "goalies", label: "Goalies" },
-  { group: "Players", id: "impact", label: "Individual impact" },
-  { group: "Players", id: "profiles", label: "Player styles" },
-  { group: "Team", id: "team", label: "Team" },
-  { group: "Team", id: "advanced", label: "Advanced statistics" },
-  { group: "Team", id: "help", label: "How to read this" },
+  { id: "summary", label: "Summary" },
+  { id: "rankings", label: "Rankings" },
+  { id: "lines", label: "Lines & pairs" },
+  { id: "players", label: "Players" },
+  { id: "game", label: "Game" },
+  { id: "team", label: "Team & goalies" },
+  { id: "deep", label: "Deep dive" },
+  { id: "help", label: "How to read this" },
 ];
+
+const SUBVIEWS = {
+  lines: [["units", "Lines"], ["chemistry", "Pair chemistry"], ["passing", "Passing"]],
+  team: [["team", "Team"], ["goalies", "Goalies"]],
+  deep: [["impact", "Individual impact"], ["profiles", "Player styles"], ["advanced", "Statistical tests"]],
+};
 
 const VERDICT_TEXT = {
   LikelyReal: "Likely real",
@@ -118,20 +208,12 @@ function setView(view) {
 
 function renderSidebar() {
   const nav = document.getElementById("nav");
-  nav.replaceChildren();
-  let group = null;
-  for (const view of VIEWS) {
-    if (snapshot && view.id === "games") continue;
-    if (view.group !== group) {
-      group = view.group;
-      nav.append(el("div", { class: "nav-group", text: group }));
-    }
-    nav.append(el("button", { class: `nav-item ${state.view === view.id ? "active" : ""}`, text: view.label, onclick: () => setView(view.id) }));
-  }
+  nav.replaceChildren(...VIEWS.map((view) => el("button", { class: `nav-item ${state.view === view.id ? "active" : ""}`, text: view.label, onclick: () => setView(view.id) })));
   const footer = document.getElementById("sidebar-footer");
   footer.replaceChildren();
   if (!snapshot) {
     footer.append(
+      el("button", { class: state.view === "games" ? "primary" : "", text: "Add games / manage", onclick: () => setView("games") }),
       el("button", { text: "Save report (HTML)", onclick: exportReport, title: "Download a single file you can email or open anywhere" }),
       el("button", { text: "Quit app", onclick: quitApp }),
     );
@@ -173,27 +255,37 @@ function renderFilters() {
   bar.append(el("label", { title: "Players below this total ice time are shown but not ranked" }, ["Min. minutes to rank", minInput]));
   bar.append(el("span", { class: "spacer" }));
   const inScope = a.games.filter((g) => g.in_scope).length;
-  bar.append(el("span", { class: "muted small", text: `${inScope} of ${a.games.length} game${a.games.length === 1 ? "" : "s"} in scope` }));
+  if (inScope < 10) {
+    const pill = el("span", { class: "badge", title: "Numbers are real but noisy with few games. Estimates are already pulled toward average for small samples, and verdicts say \"not enough data\" where needed. Some models switch on at 5 and 10 games." }, [`Early season: ${inScope} game${inScope === 1 ? "" : "s"}, treat as first impressions`]);
+    bar.append(pill);
+  } else {
+    bar.append(el("span", { class: "muted small", text: `${inScope} of ${a.games.length} games in scope` }));
+  }
 }
 
+let insideTabs = false;
+
 function page(title, lede, ...children) {
-  return [el("h1", { text: title }), lede ? el("p", { class: "lede", text: lede }) : null, ...children];
+  return [insideTabs ? null : el("h1", { text: title }), lede ? el("p", { class: "lede", text: lede }) : null, ...children];
+}
+
+/** A collapsed section for detail that most readers can skip. */
+function more(label, ...children) {
+  return el("details", { class: "more" }, [el("summary", { text: label }), el("div", { class: "more-body" }, children)]);
+}
+
+function subTabs(view) {
+  const tabs = SUBVIEWS[view];
+  const current = state.sub[view] || tabs[0][0];
+  return el("div", { class: "tabs" }, tabs.map(([id, label]) => el("button", { class: current === id ? "on" : "", text: label, onclick: () => { state.sub[view] = id; render(); } })));
 }
 
 function tiles(items) {
   return el("div", { class: "tiles" }, items.map((t) => el("div", { class: "tile" }, [
-    el("div", { class: "label", text: t.label }),
+    el("div", { class: "label" }, [term(t.label)]),
     el("div", { class: "value", text: t.value }),
     t.note ? el("div", { class: "note", text: t.note }) : null,
   ])));
-}
-
-function smallSampleNote(a) {
-  const n = a.team.games;
-  if (n >= 10) return null;
-  return el("div", { class: "warning-box" }, [
-    `Only ${n} game${n === 1 ? "" : "s"} loaded. Numbers are real but noisy: the shrunk estimates, intervals and "likely real / could be noise" verdicts already account for that, and the win and opponent models switch on at 10 and 5 games.`,
-  ]);
 }
 
 // ---------- Games & uploads ----------
@@ -332,85 +424,231 @@ async function quitApp() {
 
 // ---------- Overview ----------
 
-function bestUnits(list, minSeconds, count = 3) {
-  return list
-    .filter((u) => u.shrunk_corsi && u.toi >= minSeconds)
-    .sort((a, b) => b.shrunk_corsi.prob_above_average - a.shrunk_corsi.prob_above_average)
-    .slice(0, count);
+
+
+function goToPlayer(id) {
+  state.player = id;
+  setView("players");
 }
 
-function trendDelta(player) {
-  const points = player.trend.filter((p) => p.instat_index !== null);
-  if (points.length < 6) return null;
-  const recent = points.slice(-3).map((p) => p.instat_index);
-  const earlier = points.slice(-8, -3).map((p) => p.instat_index);
-  const avg = (xs) => xs.reduce((s, v) => s + v, 0) / xs.length;
-  return avg(recent) - avg(earlier);
+function playerLink(player) {
+  return el("button", { class: "link who", text: player.name, onclick: () => goToPlayer(player.id) });
 }
 
-function viewOverview() {
+/** Plain-sentence takeaways, good and bad, ordered by how notable they are. */
+function takeaways(a) {
+  const t = a.team;
+  const items = [];
+  // Tier orders the list (team result first, individual form last); weight orders within a tier.
+  const add = (tone, tier, weight, text, go) => items.push({ tone, tier, weight, text, go });
+  if (t.shot_share !== null) {
+    if (t.shot_share < 45) add("bad", 1, 50 - t.shot_share, `Out-shot: only ${pct(t.shot_share, 0)} of shots (${t.shots_for}–${t.shots_against}).`, () => setView("team"));
+    else if (t.shot_share > 55) add("good", 1, t.shot_share - 50, `Controlling play: ${pct(t.shot_share, 0)} of shots (${t.shots_for}–${t.shots_against}).`, () => setView("team"));
+  }
+  if (t.goals_minus_xg !== null && Math.abs(t.goals_minus_xg) >= 1) {
+    add(t.goals_minus_xg > 0 ? "info" : "bad", 1, Math.abs(t.goals_minus_xg),
+      t.goals_minus_xg > 0 ? `Scored ${fmt(t.goals_minus_xg, 1)} more goals than our chances usually produce, so expect some cooling off.` : `Scored ${fmt(-t.goals_minus_xg, 1)} fewer goals than our chances deserved, so finishing should improve.`, () => setView("team"));
+  }
+  const periods = t.periods.filter((p) => p.shots_for + p.shots_against > 0);
+  if (periods.length >= 2) {
+    const share = (p) => 100 * p.shots_for / (p.shots_for + p.shots_against);
+    const worst = periods.reduce((x, y) => (share(y) < share(x) ? y : x));
+    const best = periods.reduce((x, y) => (share(y) > share(x) ? y : x));
+    if (share(best) - share(worst) >= 10) add("bad", 2, share(best) - share(worst), `Period ${worst.period} is the weak spot: ${worst.shots_for}–${worst.shots_against} in shots, ${worst.goals_for}–${worst.goals_against} in goals.`, () => setView("team"));
+  }
+  if (t.power_play_chances >= 3) {
+    if (t.power_play_pct >= 25) add("good", 2, t.power_play_pct, `Power play is working: ${t.power_play_goals} goals on ${t.power_play_chances} chances.`, () => { state.sub.lines = "units"; state.unitTab = "power_play"; setView("lines"); });
+    else if (t.power_play_pct < 12) add("bad", 2, 30, `Power play is struggling: ${t.power_play_goals} goals on ${t.power_play_chances} chances.`, () => { state.sub.lines = "units"; state.unitTab = "power_play"; setView("lines"); });
+  }
+  if (t.times_short_handed >= 3 && t.penalty_kill_pct < 75) add("bad", 2, 100 - t.penalty_kill_pct, `Penalty kill allowed ${t.power_play_goals_against} goals in ${t.times_short_handed} times short-handed.`, () => { state.sub.lines = "units"; state.unitTab = "penalty_kill"; setView("lines"); });
+  const pairs = a.units.defence_pairs.filter((u) => u.shrunk_corsi && u.toi >= a.request.min_unit_minutes * 60);
+  if (pairs.length >= 2) {
+    const best = pairs.reduce((x, y) => (y.shrunk_corsi.prob_above_average > x.shrunk_corsi.prob_above_average ? y : x));
+    const worst = pairs.reduce((x, y) => (y.shrunk_corsi.prob_above_average < x.shrunk_corsi.prob_above_average ? y : x));
+    add("good", 3, best.shrunk_corsi.prob_above_average, `Best defence pair so far: ${names(best.players)} (${pct(best.corsi_pct, 0)} of shot attempts).`, () => { state.sub.lines = "units"; state.unitTab = "defence_pairs"; setView("lines"); });
+    add("bad", 3, 1 - worst.shrunk_corsi.prob_above_average, `Toughest defence pair: ${names(worst.players)} (${worst.corsi_for}–${worst.corsi_against} in shot attempts).`, () => { state.sub.lines = "units"; state.unitTab = "defence_pairs"; setView("lines"); });
+  }
+  const form = a.rankings.form;
+  if (form.length >= 2) {
+    const hot = form[0];
+    const cold = form[form.length - 1];
+    if (hot.recent_z >= 1) add("good", 4, hot.recent_z, `${hot.player.name} is in form: well above their usual over the last ${hot.recent_games} games.`, () => goToPlayer(hot.player.id));
+    if (cold.recent_z <= -1) add("bad", 4, -cold.recent_z, `${cold.player.name} is below their usual over the last ${cold.recent_games} games.`, () => goToPlayer(cold.player.id));
+  }
+  return items.sort((x, y) => x.tier - y.tier || y.weight - x.weight).slice(0, 7);
+}
+
+function takeawayList(items) {
+  const icon = { good: "▲", bad: "▼", info: "●" };
+  return el("ul", { class: "takeaways" }, items.map((item) => el("li", { class: `tone-${item.tone}` }, [
+    el("span", { class: "icon", text: icon[item.tone], "aria-hidden": "true" }),
+    el("span", { class: "sr-only", text: item.tone === "good" ? "Good: " : item.tone === "bad" ? "Needs attention: " : "Note: " }),
+    el("span", { text: item.text }),
+    item.go ? el("button", { class: "link small", text: "see why", onclick: item.go }) : null,
+  ])));
+}
+
+function miniRow(name, detail, onClick) {
+  return el("div", { class: "mini-row" }, [
+    onClick ? el("button", { class: "link quiet who", text: name, onclick: onClick }) : el("span", { class: "who", text: name }),
+    el("div", { class: "small muted", text: detail }),
+  ]);
+}
+
+function extremes(list, count) {
+  const qualified = list.filter((r) => r.qualified);
+  return { top: qualified.slice(0, count), bottom: qualified.slice(-count).reverse().filter((r) => !qualified.slice(0, count).includes(r)) };
+}
+
+function viewSummary() {
   const a = state.analysis;
   const t = a.team;
   const record = `${t.wins}-${t.losses}${t.overtime_losses ? `-${t.overtime_losses}` : ""}`;
+  const f = extremes(a.rankings.forwards, 2);
+  const d = extremes(a.rankings.defence, 1);
+  const units = (list) => list.filter((u) => u.shrunk_corsi && u.toi >= a.request.min_unit_minutes * 60).sort((x, y) => y.shrunk_corsi.prob_above_average - x.shrunk_corsi.prob_above_average);
+  const dPairs = units(a.units.defence_pairs);
+  const fLines = units(a.units.forward_lines);
+  const form = a.rankings.form;
+  const ratingNote = (r, good) => `${good ? "strong" : "weak"}: ${(good ? r.strengths : r.weaknesses).join(", ") || "overall"}`;
+  const unitNote = (u) => `${pct(u.corsi_pct, 0)} of shot attempts (${u.corsi_for}–${u.corsi_against}) in ${minutes(u.toi)} min`;
+  const formNote = (r) => `${signed(r.recent_z, 1)} SD vs their usual (last ${r.recent_games} games)`;
+  const good = el("div", { class: "card column good" }, [
+    el("h3", { text: "Going well" }),
+    el("div", { class: "group-label", text: "Top-rated players" }),
+    ...[...f.top, ...d.top].map((r) => miniRow(`${r.player.name} (${positionShort(r.player.position)})`, ratingNote(r, true), () => goToPlayer(r.player.id))),
+    el("div", { class: "group-label", text: "Best units" }),
+    ...[dPairs[0], fLines[0]].filter(Boolean).map((u) => miniRow(names(u.players), unitNote(u), () => { state.sub.lines = "units"; setView("lines"); })),
+    el("div", { class: "group-label", text: "In form" }),
+    ...form.filter((r) => r.recent_z > 0).slice(0, 2).map((r) => miniRow(r.player.name, formNote(r), () => goToPlayer(r.player.id))),
+  ]);
+  const bad = el("div", { class: "card column bad" }, [
+    el("h3", { text: "Needs attention" }),
+    el("div", { class: "group-label", text: "Lowest-rated players" }),
+    ...[...f.bottom, ...d.bottom].map((r) => miniRow(`${r.player.name} (${positionShort(r.player.position)})`, ratingNote(r, false), () => goToPlayer(r.player.id))),
+    el("div", { class: "group-label", text: "Toughest units" }),
+    ...[dPairs[dPairs.length - 1], fLines[fLines.length - 1]].filter((u) => u && dPairs.length + fLines.length > 2).map((u) => miniRow(names(u.players), unitNote(u), () => { state.sub.lines = "units"; setView("lines"); })),
+    el("div", { class: "group-label", text: "Below their usual" }),
+    ...form.filter((r) => r.recent_z < 0).slice(-2).reverse().map((r) => miniRow(r.player.name, formNote(r), () => goToPlayer(r.player.id))),
+  ]);
   const kpis = tiles([
     { label: "Record", value: record, note: `${t.games} game${t.games === 1 ? "" : "s"}` },
-    { label: "Goals", value: `${t.goals_for}–${t.goals_against}`, note: t.goal_differential ? `${signed(t.goal_differential.value, 2)} per game (95%: ${signed(t.goal_differential.low, 1)} to ${signed(t.goal_differential.high, 1)})` : "per game CI needs 3+ games" },
-    { label: "Shot share", value: pct(t.shot_share, 0), note: `${t.shots_for} for, ${t.shots_against} against` },
-    { label: "Expected-goals share", value: pct(t.xg_share, 0), note: `xG ${fmt(t.xg_for, 1)} – ${fmt(t.xg_against, 1)}` },
-    { label: "Even-strength CF%", value: pct(t.even_strength_corsi_pct, 0), note: "shot attempts at 5v5-type play" },
+    { label: "Goals", value: `${t.goals_for}–${t.goals_against}` },
+    { label: "Shot share", value: pct(t.shot_share, 0), note: `${t.shots_for}–${t.shots_against}` },
+    { label: "Expected-goals share", value: pct(t.xg_share, 0), note: `quality of chances, ${fmt(t.xg_for, 1)}–${fmt(t.xg_against, 1)}` },
+  ]);
+  const extra = tiles([
+    { label: "Even-strength CF%", value: pct(t.even_strength_corsi_pct, 0), note: "shot attempts, even strength" },
     { label: "Power play", value: pct(t.power_play_pct, 0), note: `${t.power_play_goals}/${t.power_play_chances}` },
     { label: "Penalty kill", value: pct(t.penalty_kill_pct, 0), note: `${t.power_play_goals_against} allowed in ${t.times_short_handed}` },
     { label: "PDO (luck gauge)", value: fmt(t.pdo, 1), note: "shooting % + save %; ~100 is normal" },
   ]);
-  const unitCallout = (title, list) => el("div", { class: "card" }, [
-    el("h3", { text: title }),
-    ...(list.length ? list.map((u) => el("div", { class: "callout", style: "margin-top:8px" }, [
-      el("div", { class: "who", text: names(u.players) }),
-      el("div", { class: "small", text: `${pct(u.shrunk_corsi.estimate.value, 0)} of shot attempts (range ${pct(u.shrunk_corsi.estimate.low, 0)}–${pct(u.shrunk_corsi.estimate.high, 0)}) · ${minutes(u.toi)} min` }),
-      el("div", { class: "small muted", text: probabilityWords(u.shrunk_corsi.prob_above_average) }),
-    ])) : [el("p", { class: "muted small", text: "Not enough ice time yet." })]),
-  ]);
-  const topPairs = a.pairs
-    .filter((p) => p.corsi && p.corsi.shrunk && p.together.toi >= a.request.min_unit_minutes * 60)
-    .sort((x, y) => y.corsi.shrunk.prob_above_average - x.corsi.shrunk.prob_above_average)
-    .slice(0, 3);
-  const pairCallout = el("div", { class: "card" }, [
-    el("h3", { text: "Best-looking pairs" }),
-    ...(topPairs.length ? topPairs.map((p) => el("div", { class: "callout", style: "margin-top:8px" }, [
-      el("div", { class: "who", text: `${p.a.name} & ${p.b.name}` }),
-      el("div", { class: "small", text: `${minutes(p.together.toi)} min together · CF% ${pct(p.corsi.corsi_pct, 0)} (expected ${pct(p.corsi.expected_pct, 0)})` }),
-      el("div", { class: "small muted", text: probabilityWords(p.corsi.shrunk.prob_above_average) }),
-    ])) : [el("p", { class: "muted small", text: "Not enough data." })]),
-  ]);
-  const movers = a.players.map((p) => ({ p, d: trendDelta(p) })).filter((x) => x.d !== null).sort((x, y) => y.d - x.d);
-  const moversCard = el("div", { class: "card" }, [
-    el("h3", { text: "Trending (InStat Index, last 3 vs previous 5 games)" }),
-    ...(movers.length ? [...movers.slice(0, 3), ...movers.slice(-2).reverse()].map(({ p, d }) => el("div", { class: "callout", style: `margin-top:8px;border-left-color:${d >= 0 ? css("--good") : css("--critical")}` }, [
-      el("button", { class: "link who", text: p.player.name, onclick: () => { state.player = p.player.id; setView("players"); } }),
-      el("div", { class: "small", text: `${d >= 0 ? "▲" : "▼"} ${signed(d, 0)} points` }),
-    ])) : [el("p", { class: "muted small", text: "Needs 6+ games of history." })]),
-  ]);
   const log = t.game_log;
-  const charts = el("div", { class: "grid two", style: "margin-top:16px" }, [
-    chartCard(log.length < 2 ? "Goals by period" : "Goal differential by game", log.length < 2 ? "Ours vs theirs in each period." : "Green bars are wins, red are losses; length is the margin.", (c) => {
-      if (log.length < 2) { groupedColumns(c, t.periods.map((p) => ({ label: p.period <= 3 ? `P${p.period}` : "OT", values: [p.goals_for, p.goals_against] })), [{ name: "Our goals", color: css("--series-1") }, { name: "Their goals", color: css("--series-2") }]); return; }
-      hBarChart(c, log.map((g) => ({ label: `${g.date} ${g.opponent}`, value: g.goals_for - g.goals_against, color: g.goals_for >= g.goals_against ? css("--good") : css("--critical") })), { valueFormat: (v) => signed(v, 0), labelWidth: 200 });
-    }, (c) => dataTable(c, [
-      { key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true },
-      { key: "gf", label: "GF", value: (g) => g.goals_for }, { key: "ga", label: "GA", value: (g) => g.goals_against },
-    ], log)),
-    chartCard(log.length < 2 ? "Shots by period" : "Shot share by game", log.length < 2 ? "Ours vs theirs in each period of this game." : "Our share of all shots; above 50% means we out-shot them.", (c) => {
-      if (log.length < 2) { groupedColumns(c, t.periods.map((p) => ({ label: p.period <= 3 ? `P${p.period}` : "OT", values: [p.shots_for, p.shots_against] })), [{ name: "Our shots", color: css("--series-1") }, { name: "Their shots", color: css("--series-2") }]); return; }
-      lineChart(c, [{ name: "Shot share", color: css("--series-1"), points: log.map((g, i) => ({ x: i, y: 100 * g.shots_for / Math.max(1, g.shots_for + g.shots_against), label: g.opponent })) }], { reference: 50, yFormat: (v) => pct(v, 0), xFormat: (i) => log[i]?.date || "" });
-    }, (c) => dataTable(c, [
-      { key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true },
-      { key: "sf", label: "Shots for", value: (g) => g.shots_for }, { key: "sa", label: "Shots against", value: (g) => g.shots_against },
-    ], log)),
-  ]);
-  return page("Overview", `${a.team_name} — the headline numbers for the games in scope.`,
-    smallSampleNote(a), kpis,
-    el("div", { class: "callouts" }, [unitCallout("Best defence pairs", bestUnits(a.units.defence_pairs, a.request.min_unit_minutes * 60)), unitCallout("Best forward lines", bestUnits(a.units.forward_lines, a.request.min_unit_minutes * 60)), pairCallout, moversCard]),
-    charts);
+  const chart = log.length >= 2
+    ? chartCard("Results by game", "Goal differential; green = win, red = loss.", (c) => hBarChart(c, log.map((g) => ({ label: `${g.date.slice(5)} ${g.opponent}`, value: g.goals_for - g.goals_against, color: g.goals_for >= g.goals_against ? css("--good") : css("--critical") })), { valueFormat: (v) => signed(v, 0), labelWidth: 220 }), null)
+    : chartCard("Shots by period", "Where the game was won or lost.", (c) => groupedColumns(c, t.periods.map((p) => ({ label: p.period <= 3 ? `Period ${p.period}` : "OT", values: [p.shots_for, p.shots_against] })), [{ name: "Our shots", color: css("--series-1") }, { name: "Their shots", color: css("--series-2") }]), null);
+  return page("Summary", `${a.team_name}: what stands out in the games in scope.`,
+    kpis,
+    el("div", { class: "card" }, [el("h3", { text: "Key takeaways" }), takeawayList(takeaways(a))]),
+    el("div", { class: "grid two", style: "margin-top:16px" }, [good, bad]),
+    el("div", { style: "margin-top:16px" }, [chart]),
+    more("More team numbers", extra));
+}
+
+// ---------- Rankings ----------
+
+function termList(labels) {
+  return labels.flatMap((label, i) => (i ? [", ", term(label)] : [term(label)]));
+}
+
+function scoreColor(rating) {
+  return window.Charts.divergingColor(Math.max(-1, Math.min(1, (rating - 50) / 15)));
+}
+
+function rankingList(rows) {
+  // Ratings cluster near 50, so the bar spans 35–65 (±1.5 SD).
+  const scale = (v) => Math.max(0, Math.min(100, ((v - 35) / 30) * 100));
+  return el("div", { class: "rank-list" }, rows.map((r) => el("div", { class: `rank-row ${r.qualified ? "" : "dim"}`, onclick: () => goToPlayer(r.player.id) }, [
+    el("div", { class: "rank-num", text: r.rank ?? "–" }),
+    el("div", { class: "rank-name" }, [
+      el("div", { class: "who", text: `${r.player.jersey ?? ""} ${r.player.name}`.trim() }),
+      el("div", { class: "small" }, [
+        r.strengths.length ? el("span", { class: "ok" }, ["+ ", ...termList(r.strengths)]) : null,
+        r.strengths.length && r.weaknesses.length ? "   " : null,
+        r.weaknesses.length ? el("span", { class: "err" }, ["− ", ...termList(r.weaknesses)]) : null,
+        r.qualified ? null : el("span", { class: "muted", text: `under ${state.request.min_minutes} min, not ranked` }),
+      ]),
+    ]),
+    el("div", { class: "rank-bar", title: `Rating ${fmt(r.rating, 0)} (50 = position average)` }, [
+      el("div", { class: "rank-mid" }),
+      el("div", { class: "rank-fill", style: `left:${Math.min(scale(50), scale(r.rating))}%;width:${Math.abs(scale(r.rating) - scale(50))}%;background:${scoreColor(r.rating)}` }),
+    ]),
+    el("div", { class: "rank-value", text: fmt(r.rating, 0) }),
+    el("div", { class: "rank-cats" }, [["Off", r.offence], ["Def", r.defence], ["Puck", r.puck_play]].map(([label, v]) => {
+      const chip = el("span", {
+        class: "cat term", style: v === null ? "" : `background:${scoreColor(v)};color:${Math.abs(v - 50) > 8 ? "#fff" : "inherit"}`,
+      }, [`${label} ${fmt(v, 0)}`]);
+      window.Charts.explain(chip, label);
+      return chip;
+    })),
+  ])));
+}
+
+function sparkline(values, width = 90, height = 22) {
+  const { svg } = window.Charts;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const x = (i) => (i / Math.max(1, values.length - 1)) * (width - 6) + 3;
+  const y = (v) => height - 3 - ((v - min) / ((max - min) || 1)) * (height - 6);
+  const root = svg("svg", { width, height, class: "chart", "aria-hidden": "true" });
+  root.append(svg("path", { d: values.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(""), fill: "none", stroke: css("--deemphasis"), "stroke-width": 1.5 }));
+  const last = values.length - 1;
+  root.append(svg("circle", { cx: x(last), cy: y(values[last]), r: 3, fill: css("--series-1") }));
+  return root;
+}
+
+function formList(rows) {
+  return el("div", { class: "rank-list" }, rows.map((r) => el("div", { class: "rank-row compact", onclick: () => goToPlayer(r.player.id) }, [
+    el("div", { class: "rank-name" }, [
+      el("div", { class: "who", text: r.player.name }),
+      el("div", { class: "small muted", text: `${r.source === "InstatIndex" ? "InStat Index" : "Rating"} ${fmt(r.recent_mean, 0)} lately vs ${fmt(r.baseline_mean, 0)} usual` }),
+    ]),
+    sparkline(r.series.map(([, v]) => v)),
+    el("span", { class: `badge ${r.recent_z >= 0 ? "up" : "down"}`, text: `${r.recent_z >= 0 ? "▲" : "▼"} ${fmt(Math.abs(r.recent_z), 1)} SD` }),
+  ])));
+}
+
+function viewRankings() {
+  const a = state.analysis;
+  const r = a.rankings;
+  const rows = state.rankingTab === "defence" ? r.defence : r.forwards;
+  const tabs = el("div", { class: "tabs" }, [["forwards", `Forwards (${r.forwards.length})`], ["defence", `Defence (${r.defence.length})`]].map(([id, label]) => el("button", { class: state.rankingTab === id ? "on" : "", text: label, onclick: () => { state.rankingTab = id; render(); } })));
+  const hot = r.form.filter((f) => f.recent_z > 0).slice(0, 5);
+  const cold = r.form.filter((f) => f.recent_z < 0).slice(-5).reverse();
+  const formSource = r.form[0]?.source === "CompositeRating" ? "their game ratings" : "InStat Index (loaded games plus InStat's recent-games history)";
+  const breakdown = el("div");
+  dataTable(breakdown, [
+    { key: "name", label: "Player", left: true, value: (x) => x.player.name },
+    { key: "rating", label: "Rating", format: (v) => fmt(v, 0) },
+    ...rows[0]?.components.map((c, i) => ({ key: `c${i}`, label: c.metric, value: (x) => x.components[i].score, render: (x) => `${fmt(x.components[i].value, 1)} (${signed(x.components[i].score, 1)})`, title: "value (standing vs position, in SDs)" })) ?? [],
+  ], rows, { sortKey: "rating" });
+  return page("Rankings", "Who is playing best at each position, and who is above or below their own usual level.",
+    el("div", {}, [
+      el("div", { class: "card" }, [
+        el("h3", { text: "Position rankings" }),
+        el("p", { class: "desc", text: "Rating: 50 = average at the position, 60+ = clearly above, 40- = clearly below. Off / Def / Puck show where it comes from. Click a player for their card." }),
+        tabs, rankingList(rows),
+      ]),
+      el("div", { class: "card", style: "margin-top:16px" }, [
+        el("h3", { text: "Form: last few games vs their usual" }),
+        el("p", { class: "desc", text: `Compares each player's last ${r.recent_window} games with the rest of their games, using ${formSource}.` }),
+        el("div", { class: "group-label", text: "Above their usual" }),
+        hot.length ? formList(hot) : el("p", { class: "muted small", text: "Nobody yet." }),
+        el("div", { class: "group-label", text: "Below their usual" }),
+        cold.length ? formList(cold) : el("p", { class: "muted small", text: "Nobody yet." }),
+      ]),
+    ]),
+    more("How the rating is built, stat by stat", el("p", { class: "small muted", text: "Each stat is compared with same-position teammates (in standard deviations; positive is always good), after pulling low-ice-time players toward the average. Offence, Defence and Puck play each count one third." }), breakdown));
 }
 
 // ---------- Single game ----------
@@ -442,20 +680,23 @@ function viewGame() {
   const comparisons = a.players
     .filter((p) => p.focus.length)
     .map((p) => ({ p, badges: p.focus.filter((c) => c.badge) }));
-  const compareCard = el("div", { class: "card" }, [
-    el("h3", { text: "This game vs each player's usual" }),
-    el("p", { class: "desc", text: "Badges flag a season best or a value 2+ standard deviations from the player's average in the games in scope." }),
-    ...(a.team.games < 3 ? [el("p", { class: "muted small", text: "Load at least 3 games for game-vs-season comparisons to mean much." })] : []),
-    el("div", {}, comparisons.filter((x) => x.badges.length).map(({ p, badges }) => el("div", { class: "callout", style: "margin-top:6px" }, [
-      el("button", { class: "link who", text: p.player.name, onclick: () => { state.player = p.player.id; setView("players"); } }),
-      el("div", { class: "pill-row" }, badges.map((b) => el("span", { class: "badge", text: b.badge }))),
-    ]))),
+  const vsUsual = a.rankings.form
+    .filter((r) => r.latest_date === timeline.date || a.timelines.length === 1)
+    .sort((x, y) => y.latest_z - x.latest_z);
+  const usualRow = (r) => miniRow(r.player.name, `${r.source === "InstatIndex" ? "InStat Index" : "Rating"} ${fmt(r.latest_value, 0)} vs usual ${fmt(r.baseline_mean, 0)} (${signed(r.latest_z, 1)} SD)`, () => goToPlayer(r.player.id));
+  const compareCard = el("div", { class: "grid two" }, [
+    el("div", { class: "card column good" }, [el("h3", { text: "Above their usual in this game" }), ...vsUsual.filter((r) => r.latest_z > 0.5).slice(0, 5).map(usualRow), vsUsual.some((r) => r.latest_z > 0.5) ? null : el("p", { class: "muted small", text: "Nobody clearly above their usual." })]),
+    el("div", { class: "card column bad" }, [el("h3", { text: "Below their usual in this game" }), ...vsUsual.filter((r) => r.latest_z < -0.5).slice(-5).reverse().map(usualRow), vsUsual.some((r) => r.latest_z < -0.5) ? null : el("p", { class: "muted small", text: "Nobody clearly below their usual." })]),
   ]);
+  const badgeRows = comparisons.filter((x) => x.badges.length);
+  const badges = badgeRows.length ? more("Season bests and unusual numbers", ...badgeRows.map(({ p, badges: list }) => el("div", { class: "callout", style: "margin-top:6px" }, [
+    playerLink(p.player),
+    el("div", { class: "pill-row" }, list.map((b) => el("span", { class: "badge", text: b.badge }))),
+  ]))) : null;
   const groupOrder = [...new Set(timeline.team_stats.map((r) => r.group))];
   const statsRows = [...timeline.team_stats].sort((x, y) => groupOrder.indexOf(x.group) - groupOrder.indexOf(y.group));
-  const teamStatsCard = el("div", { class: "card", style: "margin-top:16px" }, [el("h3", { text: `Every team stat vs ${timeline.opponent}` })]);
   const statsBody = el("div");
-  teamStatsCard.append(statsBody);
+  const teamStatsCard = more(`Every team stat vs ${timeline.opponent}`, statsBody);
   dataTable(statsBody, [
     { key: "group", label: "Section", left: true },
     { key: "label", label: "Stat", left: true },
@@ -464,7 +705,7 @@ function viewGame() {
   ], statsRows, {});
   return page("Single game", "Pick a game to see its shifts, goals and how each player compared with their usual.",
     el("div", { style: "margin-bottom:14px" }, [select]),
-    shiftCard, el("div", { style: "margin-top:16px" }, [compareCard]), teamStatsCard);
+    compareCard, el("div", { style: "margin-top:16px" }, [shiftCard]), badges, teamStatsCard);
 }
 
 // ---------- Lines & pairs ----------
@@ -480,7 +721,7 @@ const UNIT_TABS = [
 function viewLines() {
   const a = state.analysis;
   const list = a.units[state.unitTab];
-  const tabs = el("div", { class: "tabs" }, UNIT_TABS.map(([id, label]) => el("button", { class: state.unitTab === id ? "on" : "", text: `${label} (${a.units[id].length})`, onclick: () => { state.unitTab = id; render(); } })));
+  const tabs = el("div", { class: "segmented", style: "margin-bottom:14px" }, UNIT_TABS.map(([id, label]) => el("button", { class: state.unitTab === id ? "on" : "", text: `${label} (${a.units[id].length})`, onclick: () => { state.unitTab = id; render(); } })));
   const special = state.unitTab === "power_play" || state.unitTab === "penalty_kill";
   const prior = a.units.priors.find(([k]) => ({ defence_pairs: "DefencePair", forward_lines: "ForwardLine", full_units: "FullUnit" })[state.unitTab] === k);
   const ranked = list.filter((u) => u.toi >= a.request.min_unit_minutes * 60);
@@ -524,11 +765,10 @@ function viewLines() {
     { key: "shots_60", label: "Shots/60", format: (v) => fmt(v, 0) },
     { key: "offensive_zone_share", label: "Time in their zone", format: (v) => pct(v, 0) },
   ];
-  const tableCard = el("div", { class: "card", style: "margin-top:16px" }, [el("h3", { text: "All combinations" }), el("p", { class: "desc", text: "Sorted by ice time. Grey rows are under the minimum and not ranked." })]);
   const body = el("div");
-  tableCard.append(body);
+  const tableCard = more("All combinations as a table (sorted by ice time; grey = under the minimum)", body);
   dataTable(body, special ? specialColumns : evenColumns, list, { sortKey: "toi", dim: (u) => u.toi < a.request.min_unit_minutes * 60 });
-  return page("Lines & pairs", "Every combination InStat tracked, pooled over the games in scope.", smallSampleNote(a), tabs, chart, tableCard);
+  return page("Lines & pairs", "Every combination InStat tracked, pooled over the games in scope.", tabs, chart, tableCard);
 }
 
 // ---------- Pair chemistry ----------
@@ -585,7 +825,7 @@ function viewChemistry() {
     { key: "metric", label: metric.label, value: metric.value, format: (v) => (v === null || v === undefined ? "—" : metric.text(v)) },
   ], a.pairs, { sortKey: "metric" }));
   return page("Pair chemistry", "Who plays well together, from shifts (time and goals together) and InStat's line tables (shot attempts together).",
-    smallSampleNote(a), el("div", { style: "margin-bottom:12px" }, [el("label", {}, ["Colour by ", select])]), heat, pairExplorer(a, players));
+    el("div", { style: "margin-bottom:12px" }, [el("label", {}, ["Colour by ", select])]), heat, pairExplorer(a, players));
 }
 
 function pairExplorer(a, players) {
@@ -670,12 +910,21 @@ function viewPlayers() {
   }
   const skaters = a.players;
   const body = el("div");
-  const card = el("div", { class: "card" }, [el("p", { class: "desc", text: "Click a player for their card. Rates are per 60 minutes; CF% is even-strength shot-attempt share; adjusted CF% is shrunk toward the team for small samples." }), body]);
-  dataTable(body, [
+  const ratingOf = (p) => [...a.rankings.forwards, ...a.rankings.defence].find((r) => r.player.id === p.player.id);
+  const formOf = (p) => a.rankings.form.find((r) => r.player.id === p.player.id);
+  const keyColumns = [
     { key: "name", label: "Player", left: true, value: (p) => `${p.player.jersey ?? ""} ${p.player.name}`.trim() },
     { key: "pos", label: "Pos", left: true, value: (p) => positionShort(p.player.position) },
     { key: "gp", label: "GP", value: (p) => p.totals.games },
     { key: "toi", label: "TOI/GP", value: (p) => p.totals.toi / Math.max(1, p.totals.games), format: (v) => clock(v) },
+    { key: "pts", label: "P", value: (p) => p.totals.points },
+    { key: "rating", label: "Rating", value: (p) => ratingOf(p)?.rating, format: (v) => fmt(v, 0), title: "50 = average at their position" },
+    { key: "form", label: "Form", value: (p) => formOf(p)?.recent_z, format: (v) => (v === undefined || v === null ? "—" : `${v >= 0 ? "▲" : "▼"} ${fmt(Math.abs(v), 1)}`), title: "Last few games vs their usual, in standard deviations" },
+    { key: "rel", label: "Shot share vs team", value: (p) => p.shares.corsi_rel, format: (v) => signed(v, 1), title: "On-ice CF% minus team CF% without them" },
+    { key: "idx", label: "InStat", value: (p) => p.instat_mean, format: (v) => fmt(v, 0) },
+  ];
+  const allColumns = [
+    ...keyColumns,
     { key: "g", label: "G", value: (p) => p.totals.goals },
     { key: "a", label: "A", value: (p) => p.totals.assists },
     { key: "pm", label: "+/-", value: (p) => p.totals.plus_minus, format: (v) => signed(v, 0) },
@@ -683,13 +932,15 @@ function viewPlayers() {
     { key: "s60", label: "Shots/60", value: (p) => p.rates.shots, format: (v) => fmt(v, 1) },
     { key: "xg60", label: "xG/60", value: (p) => p.rates.xg, format: (v) => fmt(v, 2) },
     { key: "cf", label: "CF%", value: (p) => p.shares.corsi_pct, format: (v) => pct(v, 0) },
-    { key: "rel", label: "CF% rel", value: (p) => p.shares.corsi_rel, format: (v) => signed(v, 1), title: "On-ice CF% minus team CF% without them" },
     { key: "adj", label: "Adj. CF%", value: (p) => p.shrunk_corsi?.estimate.value, format: (v) => pct(v, 0) },
     { key: "gfp", label: "EV goal share", value: (p) => p.shares.goals_pct, format: (v) => pct(v, 0) },
     { key: "bat", label: "Battles won", value: (p) => p.shares.battles_pct?.value, format: (v) => pct(v, 0) },
-    { key: "idx", label: "InStat", value: (p) => p.instat_mean, format: (v) => fmt(v, 0) },
-  ], skaters, { sortKey: "toi", onRow: (p) => { state.player = p.player.id; render(); window.scrollTo(0, 0); }, dim: (p) => !p.qualified });
-  return page("Players", "Season numbers for every skater in scope.", smallSampleNote(a), card);
+  ];
+  const columns = state.playerColumns === "all" ? allColumns : keyColumns;
+  const toggle = el("button", { class: "small", text: state.playerColumns === "all" ? "Key columns only" : "All columns", onclick: () => { state.playerColumns = state.playerColumns === "all" ? "key" : "all"; render(); } });
+  const card = el("div", { class: "card" }, [el("div", { class: "card-head" }, [el("p", { class: "desc", text: "Click a player for their card. Rating = position ranking (50 = average); Form = recent games vs their usual." }), el("div", { class: "actions" }, [toggle])]), body]);
+  dataTable(body, columns, skaters, { sortKey: "toi", onRow: (p) => { state.player = p.player.id; render(); window.scrollTo(0, 0); }, dim: (p) => !p.qualified });
+  return page("Players", "Season numbers for every skater in scope.", card);
 }
 
 function playerDetail(a, s) {
@@ -709,6 +960,9 @@ function playerDetail(a, s) {
     { label: "InStat Index", value: fmt(s.instat_mean, 0), note: s.instat_sd ? `± ${fmt(s.instat_sd, 0)} game to game` : "" },
   ]);
   const PERCENTILE_ORDER = ["InStat Index", "Points/60", "Shots/60", "xG/60", "CF%", "CF% rel", "Passes/60", "Recoveries/60", "Battles won %", "Blocks/60"];
+  const ranking = [...a.rankings.forwards, ...a.rankings.defence].find((r) => r.player.id === s.player.id);
+  const form = a.rankings.form.find((r) => r.player.id === s.player.id);
+  const ratingCard = ranking ? chartCard(`Rating ${fmt(ranking.rating, 0)}${ranking.rank ? `, #${ranking.rank} of the ${s.player.position === "Defence" ? "defence" : "forwards"}` : ""}`, `Each stat vs other ${s.player.position === "Defence" ? "defencemen" : "forwards"} (right = better).${form ? ` Form: ${signed(form.recent_z, 1)} SD vs their usual over the last ${form.recent_games} games.` : ""}`, (c) => hBarChart(c, ranking.components.filter((x) => x.score !== null).map((x) => ({ label: x.metric, value: x.score, color: x.score >= 0 ? css("--div-pos") : css("--div-neg"), note: `value ${fmt(x.value, 2)}` })), { min: -3, max: 3, valueFormat: (v) => signed(v, 1), labelWidth: 160, valueName: "SDs vs position" }), null) : null;
   const pctRows = PERCENTILE_ORDER.filter((label) => label in s.percentiles).map((label) => ({ label, value: s.percentiles[label] }));
   const percentileCard = chartCard("Where they rank on this team", "Percentile among qualified skaters (50 = middle of the team).", (c) => (pctRows.length ? percentileBars(c, pctRows) : c.replaceChildren(el("p", { class: "muted", text: "Below the minimum ice time for ranking." }))), (c) => dataTable(c, [{ key: "label", label: "Metric", left: true }, { key: "value", label: "Percentile", format: (v) => fmt(v, 0) }], pctRows));
   const trendPoints = s.trend.map((p, i) => ({ ...p, i }));
@@ -740,13 +994,14 @@ function playerDetail(a, s) {
   ], units, { sortKey: "toi" });
   const partners = a.pairs.filter((p) => p.a.id === s.player.id || p.b.id === s.player.id).map((p) => ({ partner: p.a.id === s.player.id ? p.b : p.a, pair: p }));
   const partnerCard = chartCard("Most frequent linemates", "Even-strength minutes together (from shifts).", (c) => hBarChart(c, partners.sort((x, y) => y.pair.together.toi - x.pair.together.toi).slice(0, 10).map(({ partner, pair }) => ({ label: partner.name, value: pair.together.toi / 60, note: `goals ${pair.together.goals_for}–${pair.together.goals_against}${pair.corsi ? ` · CF% ${pct(pair.corsi.corsi_pct, 0)}` : ""}` })), { valueFormat: (v) => `${fmt(v, 0)} min`, labelWidth: 150 }), null);
-  const detailCard = el("div", { class: "card" }, [el("h3", { text: "Every InStat number (latest game in scope)" }), el("div")]);
-  dataTable(detailCard.lastChild, [
+  const detailBody = el("div");
+  const detailCard = more("Every InStat number (latest game in scope)", detailBody);
+  dataTable(detailBody, [
     { key: "group", label: "Table", left: true },
     { key: "label", label: "Stat", left: true },
     { key: "value", label: "Value", value: (r) => r.value.text },
   ], s.focus_details);
-  return [back, head, kpis, el("div", { class: "grid two" }, [percentileCard, trendCard, toiCard, partnerCard, focus, unitsCard].filter(Boolean)), el("div", { style: "height:16px" }), detailCard];
+  return [back, head, kpis, el("div", { class: "grid two" }, [ratingCard, trendCard, partnerCard, unitsCard].filter(Boolean)), more("More: percentiles, ice time, selected game", el("div", { class: "grid two" }, [percentileCard, toiCard, focus].filter(Boolean))), el("div", { style: "height:16px" }), detailCard];
 }
 
 // ---------- Goalies ----------
@@ -795,8 +1050,9 @@ function viewTeam() {
     chartCard("Goals by strength", "", (c) => groupedColumns(c, t.strength_goals.map((s) => ({ label: { Even: "Even", PowerPlay: "Power play", ShortHanded: "Short-handed" }[s.strength], values: [s.goals_for, s.goals_against] })), series), null),
     t.cumulative.length >= 2 ? chartCard("Standings points over the season", "2 per win, 1 per overtime loss.", (c) => lineChart(c, [{ name: "Points", color: css("--series-1"), points: t.cumulative.map((p, i) => ({ x: i, y: p.points, label: p.date })) }], { xFormat: (i) => t.cumulative[i]?.date.slice(5) || "", yFormat: (v) => fmt(v, 0), integer: true }), null) : null,
   ].filter(Boolean));
-  const logCard = el("div", { class: "card", style: "margin-top:16px" }, [el("h3", { text: "Game log" }), el("div")]);
-  dataTable(logCard.lastChild, [
+  const logBody = el("div");
+  const logCard = more("Game log", logBody);
+  dataTable(logBody, [
     { key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true },
     { key: "score", label: "Score", value: (g) => `${g.goals_for}-${g.goals_against}` },
     { key: "outcome", label: "", format: (v) => ({ Win: "W", Loss: "L", OvertimeLoss: "OTL" })[v] },
@@ -841,7 +1097,7 @@ function viewImpact() {
       { key: "net_per_60", label: "Net /60", format: (v) => signed(v, per) },
     ], m.rows, { sortKey: "net_per_60" }));
   });
-  return page("Individual impact", "Plus/minus-style numbers are unfair to players stuck on weak lines. These models credit each player only for the difference they make once their linemates are accounted for.", smallSampleNote(a), el("div", { class: "grid two" }, cards));
+  return page("Individual impact", "Plus/minus-style numbers are unfair to players stuck on weak lines. These models credit each player only for the difference they make once their linemates are accounted for.", el("div", { class: "grid two" }, cards));
 }
 
 // ---------- Profiles ----------
@@ -874,7 +1130,11 @@ function viewAdvanced() {
   const sections = families.map((family) => {
     const rows = a.tests.filter((t) => t.family === family);
     const heading = family.charAt(0).toUpperCase() + family.slice(1);
-    const card = el("div", { class: "card section" }, [el("h3", { text: heading }), el("div")]);
+    const counts = ["LikelyReal", "Maybe", "CouldBeNoise", "NotEnoughData"].map((v) => [v, rows.filter((t) => t.verdict === v).length]).filter(([, n]) => n);
+    const card = el("details", { class: "more family" }, [
+      el("summary", {}, [el("span", { class: "family-name", text: heading }), ...counts.map(([v, n]) => el("span", { class: `badge verdict-${v}` }, [el("span", { class: "dot" }), `${n} ${VERDICT_TEXT[v].toLowerCase()}`]))]),
+      el("div"),
+    ]);
     const pValue = (v) => (v === null || v === undefined ? "—" : v < 0.001 ? "<0.001" : fmt(v, 3));
     dataTable(card.lastChild, [
       { key: "verdict", label: "Verdict", left: true, render: (t) => verdictBadge(t.verdict), value: (t) => ({ LikelyReal: 0, Maybe: 1, CouldBeNoise: 2, NotEnoughData: 3 })[t.verdict] },
@@ -898,7 +1158,7 @@ function viewAdvanced() {
     ], rows, { sortKey: "verdict", descending: false });
     return card;
   });
-  const powerCard = el("div", { class: "card section" }, [el("h3", { text: "How many games until we know? (power analysis)" }), el("p", { class: "desc", text: "Simulates future games at each unit's current usage, assuming its adjusted shot share is its true level, and finds how many games give an 80% chance of a significant result." }), el("div")]);
+  const powerCard = el("details", { class: "more family" }, [el("summary", {}, [el("span", { class: "family-name", text: "How many games until we know? (power analysis)" })]), el("p", { class: "desc", text: "Simulates future games at each unit's current usage, assuming its adjusted shot share is its true level, and finds how many games give an 80% chance of a significant result." }), el("div")]);
   dataTable(powerCard.lastChild, [
     { key: "subject", label: "Unit", left: true, wrap: true },
     { key: "assumed_share", label: "Assumed CF%", format: (v) => pct(v, 0) },
@@ -969,7 +1229,7 @@ function viewHelp() {
     ["Shift data", "Rebuilt from InStat's time-distribution chart. The reader checks itself: every player's +/- rebuilt from shifts must match InStat's own column, or the game shows a warning."],
     ["Where the numbers come from", "InStat's Match report (team, player, line, shot, challenge and pass tables plus the shift chart) and Player report (full names, jersey numbers, xG, goalie details and each player's recent-games history). InStat prints wrong jersey numbers in some Match-report tables; the reader uses names and ice time instead."],
   ];
-  return page("How to read this", "Short explanations of every number in the report.", el("dl", { class: "explain" }, terms.flatMap(([t, d]) => [el("dt", { text: t }), el("dd", { text: d })])));
+  return page("How to read this", "Short explanations of every number in the report. Anywhere in the app, a stat name with a dotted underline explains itself: hover over it, tap it, or tab to it.", el("dl", { class: "explain" }, terms.flatMap(([t, d]) => [el("dt", { text: t }), el("dd", { text: d })])));
 }
 
 // ---------- Render ----------
@@ -988,13 +1248,26 @@ function render() {
     main.replaceChildren(el("div", { class: "empty", text: "Loading…" }));
     return;
   }
-  const views = {
-    games: viewGames, overview: viewOverview, game: viewGame, lines: viewLines, chemistry: viewChemistry,
-    passing: viewPassing, players: viewPlayers, goalies: viewGoalies, team: viewTeam, impact: viewImpact,
-    profiles: viewProfiles, advanced: viewAdvanced, help: viewHelp,
+  const sections = {
+    lines: { title: "Lines & pairs", views: { units: viewLines, chemistry: viewChemistry, passing: viewPassing } },
+    team: { title: "Team & goalies", views: { team: viewTeam, goalies: viewGoalies } },
+    deep: { title: "Deep dive", views: { impact: viewImpact, profiles: viewProfiles, advanced: viewAdvanced } },
   };
+  const views = { games: viewGames, summary: viewSummary, rankings: viewRankings, players: viewPlayers, game: viewGame, help: viewHelp };
   if (a.games.length === 0 && !["games", "help"].includes(state.view)) state.view = "games";
-  const content = views[state.view]();
+  let content;
+  if (sections[state.view]) {
+    const section = sections[state.view];
+    const sub = state.sub[state.view] || SUBVIEWS[state.view][0][0];
+    insideTabs = true;
+    try {
+      content = [el("h1", { text: section.title }), subTabs(state.view), ...[].concat(section.views[sub]())];
+    } finally {
+      insideTabs = false;
+    }
+  } else {
+    content = (views[state.view] || viewSummary)();
+  }
   main.replaceChildren(...[].concat(content).filter(Boolean));
 }
 
@@ -1008,6 +1281,7 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", ren
 const [initialView, initialPlayer] = decodeURIComponent(location.hash.slice(1)).split(":");
 if (VIEWS.some((v) => v.id === initialView)) state.view = initialView;
 if (initialView === "players" && initialPlayer) state.player = initialPlayer;
+if (SUBVIEWS[initialView] && SUBVIEWS[initialView].some(([id]) => id === initialPlayer)) state.sub[initialView] = initialPlayer;
 
 if (!snapshot) {
   setInterval(() => { api("/api/heartbeat", { method: "POST" }).catch(() => {}); }, 60000);

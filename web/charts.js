@@ -104,6 +104,58 @@ const Tooltip = {
   },
 };
 
+// Stat definitions, registered by the app; labels with a definition get a dotted underline.
+let glossary = {};
+
+function setGlossary(map) {
+  glossary = map;
+}
+
+function definition(label) {
+  if (label === null || label === undefined) return null;
+  const key = String(label).trim();
+  return glossary[key] || glossary[key.replace(/\s*\(.*\)$/, "")] || glossary[key.replace(/\s+\d+$/, "")] || null;
+}
+
+let pinnedTerm = null;
+
+function explain(node, label) {
+  const text = definition(label);
+  if (!text) return;
+  const show = (event) => {
+    Tooltip.show(event, label, []);
+    Tooltip.node.append(el("div", { class: "tt-explain", text }));
+    Tooltip.move(event);
+  };
+  node.addEventListener("pointerenter", (e) => { if (!pinnedTerm) show(e); });
+  node.addEventListener("pointermove", (e) => { if (!pinnedTerm) Tooltip.move(e); });
+  node.addEventListener("pointerleave", () => { if (!pinnedTerm) Tooltip.hide(); });
+  node.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (pinnedTerm === node) { pinnedTerm = null; Tooltip.hide(); return; }
+    pinnedTerm = node;
+    show(e);
+  });
+  node.addEventListener("focus", () => {
+    const r = node.getBoundingClientRect();
+    show({ clientX: r.left, clientY: r.bottom });
+  });
+  node.addEventListener("blur", () => { if (pinnedTerm === node) pinnedTerm = null; Tooltip.hide(); });
+  node.setAttribute("tabindex", "0");
+}
+
+document.addEventListener("click", () => {
+  if (pinnedTerm) { pinnedTerm = null; Tooltip.hide(); }
+});
+
+/** A label that explains itself on hover, tap or keyboard focus. */
+function term(label, className = "") {
+  if (!definition(label)) return document.createTextNode(String(label));
+  const span = el("span", { class: `term ${className}`, text: label });
+  explain(span, label);
+  return span;
+}
+
 function attachTooltip(node, title, rows) {
   const show = (e) => Tooltip.show(e, title, typeof rows === "function" ? rows() : rows);
   node.addEventListener("pointerenter", show);
@@ -183,6 +235,10 @@ function hBarChart(container, rows, options = {}) {
     const y = margin.top + i * rowHeight + (rowHeight - barHeight) / 2;
     const label = svg("text", { x: margin.left - 8, y: y + barHeight / 2 + 4, "text-anchor": "end", text: row.label });
     if (row.emphasis) label.setAttribute("class", "value-label");
+    if (definition(row.label)) {
+      label.setAttribute("class", "term-svg");
+      explain(label, row.label);
+    }
     root.append(label);
     const g = svg("g", { class: "mark" });
     const color = row.color || css(options.color || "--series-1");
@@ -397,7 +453,12 @@ function heatmap(container, labels, cell, scale, options = {}) {
   const svgWidth = labelWidth + n * size + (options.columnLabels === false ? 10 : 70);
   const root = svg("svg", { class: "chart", viewBox: `0 0 ${svgWidth} ${height}`, width: svgWidth, height, role: "img", "aria-label": options.title || "heatmap" });
   labels.forEach((name, i) => {
-    root.append(svg("text", { x: labelWidth - 6, y: top + i * size + size / 2 + 4, "text-anchor": "end", text: name }));
+    const rowLabel = svg("text", { x: labelWidth - 6, y: top + i * size + size / 2 + 4, "text-anchor": "end", text: name });
+    if (definition(name)) {
+      rowLabel.setAttribute("class", "term-svg");
+      explain(rowLabel, name);
+    }
+    root.append(rowLabel);
     if (options.columnLabels !== false) {
       const cx = labelWidth + i * size + size / 2;
       root.append(svg("text", { x: 0, y: 0, transform: `translate(${cx + 4},${top - 6}) rotate(-55)`, text: name }));
@@ -675,7 +736,8 @@ function dataTable(container, columns, rows, options = {}) {
       });
     }
     const head = el("tr", {}, columns.map((col) => {
-      const th = el("th", { class: col.left ? "left" : "", title: col.title || "" }, [col.label]);
+      // Clicking a defined term explains it; clicking elsewhere on the header sorts.
+      const th = el("th", { class: col.left ? "left" : "", title: col.title || "" }, [term(col.label)]);
       if (sortKey === col.key) th.append(el("span", { class: "arrow", text: descending ? "▼" : "▲" }));
       th.addEventListener("click", () => {
         if (sortKey === col.key) descending = !descending;
@@ -726,7 +788,7 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 }
 
 window.Charts = {
-  el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip,
+  el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
   hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
   dataTable, chartCard, sequentialColor, divergingColor,
 };

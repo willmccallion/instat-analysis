@@ -46,7 +46,7 @@ pub struct SkaterTotals {
 }
 
 impl SkaterTotals {
-    fn add(&mut self, s: &SkaterStats) {
+    pub(crate) fn add(&mut self, s: &SkaterStats) {
         self.games += 1;
         self.goals += s.goals;
         self.assists += s.assists;
