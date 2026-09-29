@@ -236,10 +236,12 @@ impl PositionWeights {
         }
     }
 
-    /// Doubles `category` (up to the maximum weight).
-    fn emphasise(mut self, category: Category) -> Self {
-        let doubled = (self.category(category) * 2.0).min(Weight::MAX);
-        self.categories.insert(category, Weight(doubled));
+    /// `category` counts most (3) and the other two least (0.5); stat weights are unchanged.
+    fn focus_on(mut self, category: Category) -> Self {
+        for c in Category::ALL {
+            let weight = if c == category { Weight::MAX } else { 0.5 };
+            self.categories.insert(c, Weight(weight));
+        }
         self
     }
 }
@@ -332,18 +334,18 @@ pub fn presets() -> Vec<Preset> {
         },
         Preset {
             name: "Offence first",
-            description: "The recommended weights with offence counting double.",
-            weights: both(&|w| w.clone().emphasise(O)),
+            description: "Offence counts most (3) and the other two parts least (0.5); the stats inside each part keep their recommended weights.",
+            weights: both(&|w| w.clone().focus_on(O)),
         },
         Preset {
             name: "Defence first",
-            description: "The recommended weights with defence counting double.",
-            weights: both(&|w| w.clone().emphasise(D)),
+            description: "Defence counts most (3) and the other two parts least (0.5); the stats inside each part keep their recommended weights.",
+            weights: both(&|w| w.clone().focus_on(D)),
         },
         Preset {
             name: "Puck control",
-            description: "The recommended weights with puck play (battles, recoveries, giveaways, passing) counting double.",
-            weights: both(&|w| w.clone().emphasise(P)),
+            description: "Puck play (battles, recoveries, giveaways, passing) counts most (3) and the other two parts least (0.5).",
+            weights: both(&|w| w.clone().focus_on(P)),
         },
         Preset {
             name: "Simple balanced",

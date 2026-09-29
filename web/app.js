@@ -60,7 +60,7 @@ window.Charts.setGlossary({
   "+/-": "Plus/minus: even-strength and short-handed goals for minus goals against while on the ice (power-play goals don't count).",
   "InStat": "InStat Index: InStat's own overall rating for a game, based on every action the player made. Higher is better; roughly 100 is a typical game.",
   "InStat Index": "InStat's own overall rating for a game, based on every action the player made. Higher is better; roughly 100 is a typical game.",
-  "Rating": "This app's position rating: 50 = average at the player's position, 60+ clearly above, 40 or less clearly below. Built from Offence, Defence and Puck play stats compared with teammates at the same position, each weighted by importance (change the weights under Rankings → Customise the ranking).",
+  "Rating": "This app's position rating out of 100: 50 = average among teammates at the same position, 65+ clearly above, 35 or less clearly below (15 points is one standard deviation). Built from Offence, Defence and Puck play stats compared with teammates at the same position, each weighted by importance (change the weights under Rankings → Customise the ranking).",
   "Form": "Last few games compared with the player's own usual level, in standard deviations. ▲ 1.0 means one typical game-to-game swing above normal.",
   "Off": "Offence part of the rating: points, goals, shots, chance quality (xG), shot attempts for, zone entries and recoveries in their zone, each weighted by importance.",
   "Def": "Defence part of the rating: shot share vs team, shot attempts and chances allowed on ice, own-zone giveaways, blocks and hits, each weighted by importance.",
@@ -350,7 +350,7 @@ function cardTitle(title, ...chips) {
 
 function ratingDot(rating) {
   if (rating === null || rating === undefined) return null;
-  const color = window.Charts.divergingColor(Math.max(-1, Math.min(1, (rating - 50) / 6)));
+  const color = window.Charts.divergingColor(Math.max(-1, Math.min(1, (rating - 50) / 20)));
   return el("span", { class: "rating-dot", style: `background:${color}`, title: `Rating ${fmt(rating, 0)}` });
 }
 
@@ -745,12 +745,11 @@ function termList(labels) {
 }
 
 function scoreColor(rating) {
-  return window.Charts.divergingColor(Math.max(-1, Math.min(1, (rating - 50) / 15)));
+  return window.Charts.divergingColor(Math.max(-1, Math.min(1, (rating - 50) / 30)));
 }
 
 function rankingList(rows) {
-  // Ratings cluster near 50, so the bar spans 35–65 (±1.5 SD).
-  const scale = (v) => Math.max(0, Math.min(100, ((v - 35) / 30) * 100));
+  const scale = (v) => Math.max(0, Math.min(100, v));
   return el("div", { class: "rank-list" }, rows.map((r) => el("div", { class: `rank-row ${r.qualified ? "" : "dim"}`, onclick: () => goToPlayer(r.player.id) }, [
     el("div", { class: "rank-num", text: r.rank ?? "–" }),
     el("div", { class: "rank-name" }, [
@@ -769,7 +768,7 @@ function rankingList(rows) {
     el("div", { class: "rank-value", text: fmt(r.rating, 0) }),
     el("div", { class: "rank-cats" }, [["Off", r.offence], ["Def", r.defence], ["Puck", r.puck_play]].map(([label, v]) => {
       const chip = el("span", {
-        class: "cat term", style: v === null ? "" : `background:${scoreColor(v)};color:${Math.abs(v - 50) > 8 ? "#fff" : "inherit"}`,
+        class: "cat term", style: v === null ? "" : `background:${scoreColor(v)};color:${Math.abs(v - 50) > 15 ? "#fff" : "inherit"}`,
       }, [`${label} ${fmt(v, 0)}`]);
       window.Charts.explain(chip, label);
       return chip;
@@ -871,6 +870,23 @@ function weightsEditor(a) {
   return panel;
 }
 
+/** How to read a rating, with a colour key for the 0–100 scale. */
+function ratingScaleNote() {
+  const bands = [
+    [20, "20", "well below"],
+    [35, "35", "below"],
+    [50, "50", "average"],
+    [65, "65", "above"],
+    [80, "80", "well above"],
+  ];
+  return el("div", { class: "callout", style: "margin:8px 0 12px" }, [
+    el("div", { style: "font-weight:600;margin-bottom:4px", text: "How to read the numbers" }),
+    el("p", { class: "small", style: "margin:0 0 6px", text: "Every rating is out of 100 and compares a player with teammates at the same position over the games in scope. 50 is the average player. Each 15 points is one standard deviation (a typical gap between players): about two thirds of players land between 35 and 65, 65+ is clearly above average, 80+ is standing out (two standard deviations), and 35 or less is clearly below. Off, Def and Puck use the same scale for each part of the game. Ratings are relative to this team, not to other teams." }),
+    el("div", { class: "pill-row" }, bands.map(([value, label, meaning]) => el("span", { class: "badge", style: `background:${scoreColor(value)};color:${Math.abs(value - 50) > 15 ? "#fff" : "inherit"}` }, [`${label} ${meaning}`]))),
+    el("p", { class: "small muted", style: "margin:6px 0 0", text: "Click a player for their card." }),
+  ]);
+}
+
 function viewRankings() {
   const a = state.analysis;
   const r = a.rankings;
@@ -894,7 +910,7 @@ function viewRankings() {
     el("div", {}, [
       el("div", { class: "card" }, [
         cardTitle("Position rankings", custom ? customChip() : null),
-        el("p", { class: "desc", text: "Rating: 50 = average at the position, 60+ = clearly above, 40- = clearly below. Off / Def / Puck show where it comes from. Click a player for their card." }),
+        ratingScaleNote(),
         tabs, rankingList(rows),
       ]),
       weightsEditor(a),
@@ -1410,7 +1426,7 @@ function playerOverview(a, s) {
   const PERCENTILE_ORDER = ["InStat Index", "Points/60", "Shots/60", "xG/60", "CF%", "CF% rel", "Passes/60", "Recoveries/60", "Battles won %", "Blocks/60"];
   const ranking = [...a.rankings.forwards, ...a.rankings.defence].find((r) => r.player.id === s.player.id);
   const form = a.rankings.form.find((r) => r.player.id === s.player.id);
-  const ratingCard = ranking ? chartCard(`Rating ${fmt(ranking.rating, 0)}${ranking.rank ? `, #${ranking.rank} of the ${s.player.position === "Defence" ? "defence" : "forwards"}` : ""}`, `Each stat vs other ${s.player.position === "Defence" ? "defencemen" : "forwards"} (right = better).${form ? ` Form: ${signed(form.recent_z, 1)} SD vs their usual over the last ${form.recent_games} games.` : ""}`, (c) => hBarChart(c, ranking.components.filter((x) => x.score !== null).map((x) => ({ label: x.metric, value: x.score, color: x.score >= 0 ? css("--div-pos") : css("--div-neg"), note: `value ${fmt(x.value, 2)}` })), { min: -3, max: 3, valueFormat: (v) => signed(v, 1), labelWidth: 160, valueName: "SDs vs position" }), null, { source: a.rating_options.default_weights ? [] : customChip() }) : null;
+  const ratingCard = ranking ? chartCard(`Rating ${fmt(ranking.rating, 0)}/100${ranking.rank ? `, #${ranking.rank} of the ${s.player.position === "Defence" ? "defence" : "forwards"}` : ""}`, `Each stat vs other ${s.player.position === "Defence" ? "defencemen" : "forwards"} (right = better).${form ? ` Form: ${signed(form.recent_z, 1)} SD vs their usual over the last ${form.recent_games} games.` : ""}`, (c) => hBarChart(c, ranking.components.filter((x) => x.score !== null).map((x) => ({ label: x.metric, value: x.score, color: x.score >= 0 ? css("--div-pos") : css("--div-neg"), note: `value ${fmt(x.value, 2)}` })), { min: -3, max: 3, valueFormat: (v) => signed(v, 1), labelWidth: 160, valueName: "SDs vs position" }), null, { source: a.rating_options.default_weights ? [] : customChip() }) : null;
   const pctRows = PERCENTILE_ORDER.filter((label) => label in s.percentiles).map((label) => ({ label, value: s.percentiles[label] }));
   const percentileCard = chartCard("Where they rank on this team", "Percentile among qualified skaters (50 = middle of the team).", (c) => (pctRows.length ? percentileBars(c, pctRows) : c.replaceChildren(el("p", { class: "muted", text: "Below the minimum ice time for ranking." }))), (c) => dataTable(c, [{ key: "label", label: "Metric", left: true }, { key: "value", label: "Percentile", format: (v) => fmt(v, 0) }], pctRows));
   const trendPoints = s.trend.map((p, i) => ({ ...p, i }));

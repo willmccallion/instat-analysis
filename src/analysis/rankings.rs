@@ -4,7 +4,8 @@
 //! Each stat is rated against same-position teammates (z-score), after pulling low-ice-time
 //! values toward the position average. Stats are grouped into Offence, Defence and Puck play
 //! and combined with the coach's weights (see [`rating_setup`](super::rating_setup)); the
-//! result is shown on a 50 ± 10 scale.
+//! result is graded out of 100 against same-position teammates (average 50, 15 points per
+//! standard deviation).
 
 use std::collections::BTreeMap;
 
@@ -51,7 +52,7 @@ pub struct RankingRow {
     pub player: PlayerRef,
     /// 1 = best among qualified players at the position.
     pub rank: Option<usize>,
-    /// 50 = position average; each 10 points is one standard deviation.
+    /// Out of 100: 50 = average of same-position teammates; 15 points per standard deviation.
     pub rating: f64,
     pub offence: Option<f64>,
     pub defence: Option<f64>,
@@ -75,6 +76,39 @@ fn weighted_mean(pairs: impl Iterator<Item = (Option<f64>, f64)>) -> Option<f64>
         .filter(|(_, weight)| *weight > 0.0)
         .fold((0.0, 0.0), |(sum, total), (value, weight)| (sum + value * weight, total + weight));
     (total > 0.0).then(|| sum / total)
+}
+
+/// A grade out of 100: teammates at the position average this, and each standard deviation
+/// above or below them moves it this many points.
+const AVERAGE_GRADE: f64 = 50.0;
+const GRADE_PER_SD: f64 = 15.0;
+
+type RatingField = fn(&mut RankingRow) -> Option<&mut f64>;
+
+const RATING_FIELDS: [RatingField; 4] = [
+    |r| Some(&mut r.rating),
+    |r| r.offence.as_mut(),
+    |r| r.defence.as_mut(),
+    |r| r.puck_play.as_mut(),
+];
+
+/// Turns raw composites into grades. Averaging many stats squeezes composites together, so
+/// each one is re-spread over same-position teammates before grading.
+fn grade_against_teammates(rows: &mut [RankingRow]) {
+    let qualified = rows.iter().filter(|r| r.qualified).count();
+    let is_reference = |r: &RankingRow| r.qualified || qualified < 3;
+    for field in RATING_FIELDS {
+        let reference: Vec<f64> = rows
+            .iter_mut()
+            .filter(|r| is_reference(r))
+            .filter_map(|r| field(r).map(|v| *v))
+            .collect();
+        let spread = mean(&reference).zip(sample_sd(&reference)).filter(|(_, sd)| *sd > 0.0);
+        for value in rows.iter_mut().filter_map(field) {
+            let z = spread.map_or(*value, |(average, sd)| (*value - average) / sd);
+            *value = (AVERAGE_GRADE + GRADE_PER_SD * z).clamp(0.0, 100.0);
+        }
+    }
 }
 
 /// Rates one position group. Only qualified players set the averages, but everyone is rated.
@@ -135,10 +169,10 @@ pub fn rate(inputs: &[RatingInput], position: Position, weights: &PositionWeight
             RankingRow {
                 player: input.player.clone(),
                 rank: None,
-                rating: 50.0 + 10.0 * overall,
-                offence: offence.map(|v| 50.0 + 10.0 * v),
-                defence: defence.map(|v| 50.0 + 10.0 * v),
-                puck_play: puck_play.map(|v| 50.0 + 10.0 * v),
+                rating: overall,
+                offence,
+                defence,
+                puck_play,
                 components,
                 strengths,
                 weaknesses,
@@ -148,6 +182,7 @@ pub fn rate(inputs: &[RatingInput], position: Position, weights: &PositionWeight
             }
         })
         .collect();
+    grade_against_teammates(&mut rows);
     rows.sort_by(|a, b| {
         b.qualified
             .cmp(&a.qualified)
@@ -364,12 +399,24 @@ mod tests {
 
     #[test]
     fn low_ice_time_is_pulled_toward_average() {
-        let full = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0)], Position::Forward, &RatingWeights::default().forwards);
-        let short = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0), input("d", 1, 3, 2.0)], Position::Forward, &RatingWeights::default().forwards);
-        let d = short.iter().find(|r| r.player.name == "d").unwrap();
-        let offence_short = d.offence.unwrap();
-        let top = full.iter().map(|r| r.offence.unwrap()).fold(f64::MIN, f64::max);
-        assert!(offence_short < top, "a 2-minute player should not top the list on rates alone");
+        let rows = rate(
+            &[input("a", 0, 1, 15.0), input("b", 1, 2, 15.0), input("short", 1, 4, 3.0), input("long", 5, 20, 15.0)],
+            Position::Forward,
+            &RatingWeights::default().forwards,
+        );
+
+        let offence = |name: &str| rows.iter().find(|r| r.player.name == name).unwrap().offence.unwrap();
+        assert!(offence("short") < offence("long"), "same scoring rate, fewer minutes, less certain");
+    }
+
+    #[test]
+    fn grades_are_out_of_100_with_the_average_at_50() {
+        let rows = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0)], Position::Forward, &RatingWeights::default().forwards);
+
+        let ratings: Vec<f64> = rows.iter().map(|r| r.rating).collect();
+        let average = ratings.iter().sum::<f64>() / 3.0;
+        assert!((average - 50.0).abs() < 1e-9, "{average}");
+        assert!(ratings.iter().all(|r| (0.0..=100.0).contains(r)));
     }
 
     /// `(stat, weight)` pairs for one position, with the given category weights.
