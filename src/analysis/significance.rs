@@ -349,7 +349,7 @@ fn team_tables(team: &TeamReport) -> Vec<TestRow> {
     let shots: Vec<Vec<f64>> = team
         .periods
         .iter()
-        .map(|p| vec![f64::from(p.shots_for), f64::from(p.shots_against)])
+        .map(|p| vec![f64::from(p.shots_on_goal_for), f64::from(p.shots_on_goal_against)])
         .collect();
     vec![
         chi_square_row(
@@ -362,11 +362,11 @@ fn team_tables(team: &TeamReport) -> Vec<TestRow> {
         ),
         chi_square_row(
             "Team patterns",
-            "Does our share of shots change from period to period?",
+            "Does our share of shots on goal change from period to period?",
             &shots,
-            "shots",
-            "Yes: our shot share really changes between periods.",
-            "Shot share by period is within normal variation.",
+            "shots on goal",
+            "Yes: our share of shots on goal really changes between periods.",
+            "Share of shots on goal by period is within normal variation.",
         ),
     ]
 }

@@ -36,8 +36,9 @@ pub struct GameLogRow {
     pub goals_for: u32,
     pub goals_against: u32,
     pub outcome: Outcome,
-    pub shots_for: u32,
-    pub shots_against: u32,
+    /// InStat's "shots": every attempt directed at the net, on goal or not.
+    pub attempts_for: u32,
+    pub attempts_against: u32,
     pub shots_on_goal_for: u32,
     pub shots_on_goal_against: u32,
     pub xg_for: Option<f64>,
@@ -54,8 +55,10 @@ pub struct GameLogRow {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PeriodSplit {
     pub period: u32,
-    pub shots_for: u32,
-    pub shots_against: u32,
+    pub shots_on_goal_for: u32,
+    pub shots_on_goal_against: u32,
+    pub attempts_for: u32,
+    pub attempts_against: u32,
     pub goals_for: u32,
     pub goals_against: u32,
     pub possession_pct: Option<f64>,
@@ -98,13 +101,16 @@ pub struct TeamReport {
     pub overtime_losses: u32,
     pub goals_for: u32,
     pub goals_against: u32,
-    pub shots_for: u32,
-    pub shots_against: u32,
+    pub attempts_for: u32,
+    pub attempts_against: u32,
     pub shots_on_goal_for: u32,
     pub shots_on_goal_against: u32,
     pub xg_for: f64,
     pub xg_against: f64,
+    /// Our share of shots on goal.
     pub shot_share: Option<f64>,
+    /// Our share of all shot attempts (InStat's "shots").
+    pub attempt_share: Option<f64>,
     pub xg_share: Option<f64>,
     pub even_strength_corsi_pct: Option<f64>,
     pub shooting_pct: Option<f64>,
@@ -126,7 +132,7 @@ pub struct TeamReport {
     pub cumulative: Vec<Cumulative>,
     /// Mean goal differential per game with a bootstrap 95% interval (≥ 3 games).
     pub goal_differential: Option<Estimate>,
-    /// Mean per-game shot share with a bootstrap 95% interval (≥ 3 games).
+    /// Mean per-game share of shots on goal with a bootstrap 95% interval (≥ 3 games).
     pub shot_share_by_game: Option<Estimate>,
     /// Our shots by zone (sum over skaters).
     pub shot_zones: Vec<ZoneShots>,
@@ -147,8 +153,8 @@ fn game_log(game: &Game) -> GameLogRow {
         goals_for: game.goals_for,
         goals_against: game.goals_against,
         outcome: outcome(game),
-        shots_for: s.shots,
-        shots_against: o.shots,
+        attempts_for: s.shots,
+        attempts_against: o.shots,
         shots_on_goal_for: s.shots_on_goal,
         shots_on_goal_against: o.shots_on_goal,
         xg_for: s.xg,
@@ -166,7 +172,7 @@ fn game_log(game: &Game) -> GameLogRow {
 fn periods(games: &[&Game]) -> Vec<PeriodSplit> {
     let mut result: Vec<PeriodSplit> = Vec::new();
     for game in games {
-        for (index, (&(sf, _, _), &(sa, _, _))) in game
+        for (index, (&(attempts_for, on_goal_for, _), &(attempts_against, on_goal_against, _))) in game
             .summary
             .shots_by_period
             .iter()
@@ -177,15 +183,19 @@ fn periods(games: &[&Game]) -> Vec<PeriodSplit> {
             if result.len() <= index {
                 result.push(PeriodSplit {
                     period,
-                    shots_for: 0,
-                    shots_against: 0,
+                    shots_on_goal_for: 0,
+                    shots_on_goal_against: 0,
+                    attempts_for: 0,
+                    attempts_against: 0,
                     goals_for: 0,
                     goals_against: 0,
                     possession_pct: None,
                 });
             }
-            result[index].shots_for += sf;
-            result[index].shots_against += sa;
+            result[index].shots_on_goal_for += on_goal_for;
+            result[index].shots_on_goal_against += on_goal_against;
+            result[index].attempts_for += attempts_for;
+            result[index].attempts_against += attempts_against;
         }
         for goal in &game.goals {
             let index = (goal.period() as usize).saturating_sub(1);
@@ -371,7 +381,7 @@ pub fn team(context: &Context<'_>) -> TeamReport {
     let sum = |f: fn(&GameLogRow) -> u32| log.iter().map(f).sum::<u32>();
     let count = |o: Outcome| u32::try_from(log.iter().filter(|r| r.outcome == o).count()).unwrap_or(u32::MAX);
     let (goals_for, goals_against) = (sum(|r| r.goals_for), sum(|r| r.goals_against));
-    let (shots_for, shots_against) = (sum(|r| r.shots_for), sum(|r| r.shots_against));
+    let (attempts_for, attempts_against) = (sum(|r| r.attempts_for), sum(|r| r.attempts_against));
     let (sog_for, sog_against) = (sum(|r| r.shots_on_goal_for), sum(|r| r.shots_on_goal_against));
     let xg_for: f64 = log.iter().filter_map(|r| r.xg_for).sum();
     let xg_against: f64 = log.iter().filter_map(|r| r.xg_against).sum();
@@ -387,7 +397,7 @@ pub fn team(context: &Context<'_>) -> TeamReport {
     let differentials: Vec<f64> = log.iter().map(|r| f(r.goals_for) - f(r.goals_against)).collect();
     let shot_shares: Vec<f64> = log
         .iter()
-        .filter_map(|r| share_pct(f(r.shots_for), f(r.shots_against)))
+        .filter_map(|r| share_pct(f(r.shots_on_goal_for), f(r.shots_on_goal_against)))
         .collect();
     TeamReport {
         games: games.len(),
@@ -396,13 +406,14 @@ pub fn team(context: &Context<'_>) -> TeamReport {
         overtime_losses: count(Outcome::OvertimeLoss),
         goals_for,
         goals_against,
-        shots_for,
-        shots_against,
+        attempts_for,
+        attempts_against,
         shots_on_goal_for: sog_for,
         shots_on_goal_against: sog_against,
         xg_for,
         xg_against,
-        shot_share: share_pct(f(shots_for), f(shots_against)),
+        shot_share: share_pct(f(sog_for), f(sog_against)),
+        attempt_share: share_pct(f(attempts_for), f(attempts_against)),
         xg_share: share_pct(xg_for, xg_against),
         even_strength_corsi_pct: share_pct(f(ev_for), f(ev_against)),
         shooting_pct,

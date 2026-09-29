@@ -37,11 +37,13 @@ window.Charts.setGlossary({
   "Above avg?": "The model's probability that the unit's true shot share is above the team average for that kind of unit.",
   "Even-strength CF%": "Our share of shot attempts when both teams had the same number of skaters.",
   "EV goal share": "Goals for divided by goals for + against while the player was on the ice at even strength.",
-  "Shot share": "Our shots divided by all shots in the game(s). Above 50% means we out-shot the opponent.",
+  "Shot share": "Our shots on goal divided by both teams' shots on goal (the game-sheet count). Above 50% means we out-shot the opponent.",
+  "Shot attempts": "InStat's 'shots': every attempt directed at the net, whether it hit the net or not.",
+  "Attempts": "InStat's 'shots': every attempt directed at the net, whether it hit the net or not.",
+  "SF": "Shots on goal for.",
+  "SA": "Shots on goal against.",
   "GF": "Goals for while on the ice.",
   "GA": "Goals against while on the ice.",
-  "SF": "Shots for.",
-  "SA": "Shots against.",
   "Poss%": "Share of puck-possession time.",
   "Pen ±": "Penalties drawn minus penalties taken while the unit was on the ice.",
   "Pen": "Penalties drawn minus penalties taken while the unit was on the ice.",
@@ -491,19 +493,20 @@ function takeaways(a) {
   // Tier orders the list (team result first, individual form last); weight orders within a tier.
   const add = (tone, tier, weight, text, go) => items.push({ tone, tier, weight, text, go });
   if (t.shot_share !== null) {
-    if (t.shot_share < 45) add("bad", 1, 50 - t.shot_share, `Out-shot: only ${pct(t.shot_share, 0)} of shots (${t.shots_for}–${t.shots_against}).`, () => setView("team"));
-    else if (t.shot_share > 55) add("good", 1, t.shot_share - 50, `Controlling play: ${pct(t.shot_share, 0)} of shots (${t.shots_for}–${t.shots_against}).`, () => setView("team"));
+    const counts = `${t.shots_on_goal_for}–${t.shots_on_goal_against} on goal; attempts ${t.attempts_for}–${t.attempts_against}`;
+    if (t.shot_share < 45) add("bad", 1, 50 - t.shot_share, `Out-shot: only ${pct(t.shot_share, 0)} of shots on goal (${counts}).`, () => setView("team"));
+    else if (t.shot_share > 55) add("good", 1, t.shot_share - 50, `Out-shooting them: ${pct(t.shot_share, 0)} of shots on goal (${counts}).`, () => setView("team"));
   }
   if (t.goals_minus_xg !== null && Math.abs(t.goals_minus_xg) >= 1) {
     add(t.goals_minus_xg > 0 ? "info" : "bad", 1, Math.abs(t.goals_minus_xg),
       t.goals_minus_xg > 0 ? `Scored ${fmt(t.goals_minus_xg, 1)} more goals than our chances usually produce, so expect some cooling off.` : `Scored ${fmt(-t.goals_minus_xg, 1)} fewer goals than our chances deserved, so finishing should improve.`, () => setView("team"));
   }
-  const periods = t.periods.filter((p) => p.shots_for + p.shots_against > 0);
+  const periods = t.periods.filter((p) => p.shots_on_goal_for + p.shots_on_goal_against > 0);
   if (periods.length >= 2) {
-    const share = (p) => 100 * p.shots_for / (p.shots_for + p.shots_against);
+    const share = (p) => 100 * p.shots_on_goal_for / (p.shots_on_goal_for + p.shots_on_goal_against);
     const worst = periods.reduce((x, y) => (share(y) < share(x) ? y : x));
     const best = periods.reduce((x, y) => (share(y) > share(x) ? y : x));
-    if (share(best) - share(worst) >= 10) add("bad", 2, share(best) - share(worst), `Period ${worst.period} is the weak spot: ${worst.shots_for}–${worst.shots_against} in shots, ${worst.goals_for}–${worst.goals_against} in goals.`, () => setView("team"));
+    if (share(best) - share(worst) >= 10) add("bad", 2, share(best) - share(worst), `Period ${worst.period} is the weak spot: ${worst.shots_on_goal_for}–${worst.shots_on_goal_against} in shots on goal, ${worst.goals_for}–${worst.goals_against} in goals.`, () => setView("team"));
   }
   if (t.power_play_chances >= 3) {
     if (t.power_play_pct >= 25) add("good", 2, t.power_play_pct, `Power play is working: ${t.power_play_goals} goals on ${t.power_play_chances} chances.`, () => { state.sub.lines = "units"; state.unitTab = "power_play"; setView("lines"); });
@@ -583,7 +586,7 @@ function viewSummary() {
   const kpis = tiles([
     { label: "Record", value: record, note: `${t.games} game${t.games === 1 ? "" : "s"}` },
     { label: "Goals", value: `${t.goals_for}–${t.goals_against}` },
-    { label: "Shot share", value: pct(t.shot_share, 0), note: `${t.shots_for}–${t.shots_against}` },
+    { label: "Shot share", value: pct(t.shot_share, 0), note: `${t.shots_on_goal_for}–${t.shots_on_goal_against} on goal · attempts ${t.attempts_for}–${t.attempts_against}` },
     { label: "Expected-goals share", value: pct(t.xg_share, 0), note: `quality of chances, ${fmt(t.xg_for, 1)}–${fmt(t.xg_against, 1)}` },
   ]);
   const extra = tiles([
@@ -595,7 +598,7 @@ function viewSummary() {
   const log = t.game_log;
   const chart = log.length >= 2
     ? chartCard("Results by game", "Goal differential; green = win, red = loss.", (c) => hBarChart(c, log.map((g) => ({ label: `${g.date.slice(5)} ${g.opponent}`, value: g.goals_for - g.goals_against, color: g.goals_for >= g.goals_against ? css("--good") : css("--critical") })), { valueFormat: (v) => signed(v, 0), labelWidth: 220 }), null)
-    : chartCard("Shots by period", "Where the game was won or lost.", (c) => groupedColumns(c, t.periods.map((p) => ({ label: p.period <= 3 ? `Period ${p.period}` : "OT", values: [p.shots_for, p.shots_against] })), [{ name: "Our shots", color: css("--series-1") }, { name: "Their shots", color: css("--series-2") }]), null);
+    : chartCard("Shots on goal by period", "Where the game was won or lost.", (c) => groupedColumns(c, t.periods.map((p) => ({ label: p.period <= 3 ? `Period ${p.period}` : "OT", values: [p.shots_on_goal_for, p.shots_on_goal_against] })), [{ name: "Our shots on goal", color: css("--series-1") }, { name: "Their shots on goal", color: css("--series-2") }]), periodTable);
   return page("Summary", `${a.team_name}: what stands out in the games in scope.`,
     kpis,
     el("div", { class: "card" }, [cardTitle("Key takeaways"), takeawayList(takeaways(a))]),
@@ -1095,14 +1098,24 @@ function viewGoalies() {
 
 // ---------- Team ----------
 
+function periodTable(c) {
+  dataTable(c, [
+    { key: "period", label: "Period", left: true, format: (v) => (v <= 3 ? `${v}` : "OT") },
+    { key: "shots_on_goal_for", label: "SF" }, { key: "shots_on_goal_against", label: "SA" },
+    { key: "attempts_for", label: "Attempts for" }, { key: "attempts_against", label: "Attempts against" },
+    { key: "goals", label: "Goals", value: (p) => `${p.goals_for}–${p.goals_against}` },
+    { key: "possession_pct", label: "Poss%", format: (v) => pct(v, 0) },
+  ], state.analysis.team.periods);
+}
+
 function viewTeam() {
   const a = state.analysis;
   const t = a.team;
-  const periods = t.periods.map((p) => ({ label: p.period <= 3 ? `Period ${p.period}` : "OT", values: [p.shots_for, p.shots_against] }));
+  const periods = t.periods.map((p) => ({ label: p.period <= 3 ? `Period ${p.period}` : "OT", values: [p.shots_on_goal_for, p.shots_on_goal_against] }));
   const goalsByPeriod = t.periods.map((p) => ({ label: p.period <= 3 ? `Period ${p.period}` : "OT", values: [p.goals_for, p.goals_against] }));
   const series = [{ name: "Us", color: css("--series-1") }, { name: "Them", color: css("--series-2") }];
   const grid = el("div", { class: "grid two" }, [
-    chartCard("Shots by period", "Watch for fades late in games.", (c) => groupedColumns(c, periods, series), (c) => dataTable(c, [{ key: "period", label: "Period", left: true }, { key: "shots_for", label: "For" }, { key: "shots_against", label: "Against" }, { key: "possession_pct", label: "Possession", format: (v) => pct(v, 0) }], t.periods)),
+    chartCard("Shots on goal by period", "Watch for fades late in games. The table also lists all shot attempts.", (c) => groupedColumns(c, periods, series), periodTable),
     chartCard("Goals by period", "", (c) => groupedColumns(c, goalsByPeriod, series), null),
     chartCard("Faceoffs won by zone", "", (c) => hBarChart(c, t.faceoffs.map((z) => ({ label: z.zone, value: z.pct, note: `${z.won} won, ${z.lost} lost` })), { min: 0, max: 100, reference: 50, valueFormat: (v) => pct(v, 0) }), (c) => dataTable(c, [{ key: "zone", label: "Zone", left: true }, { key: "won", label: "Won" }, { key: "lost", label: "Lost" }, { key: "pct", label: "Win %", format: (v) => pct(v, 0) }], t.faceoffs)),
     chartCard("Time by score", "How long we spent leading, tied and trailing.", (c) => hBarChart(c, t.score_states.map((s) => ({ label: s.state, value: s.time / 60 })), { valueFormat: (v) => `${fmt(v, 0)} min` }), null),
@@ -1115,7 +1128,8 @@ function viewTeam() {
     { key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true },
     { key: "score", label: "Score", value: (g) => `${g.goals_for}-${g.goals_against}` },
     { key: "outcome", label: "", format: (v) => ({ Win: "W", Loss: "L", OvertimeLoss: "OTL" })[v] },
-    { key: "shots_for", label: "SF" }, { key: "shots_against", label: "SA" },
+    { key: "shots_on_goal_for", label: "SF" }, { key: "shots_on_goal_against", label: "SA" },
+    { key: "attempts", label: "Attempts", value: (g) => `${g.attempts_for}-${g.attempts_against}` },
     { key: "xg_for", label: "xGF", format: (v) => fmt(v, 2) }, { key: "xg_against", label: "xGA", format: (v) => fmt(v, 2) },
     { key: "even_strength_corsi_pct", label: "EV CF%", format: (v) => pct(v, 0) },
     { key: "pp", label: "PP", value: (g) => `${g.power_play[0]}/${g.power_play[1]}` },
