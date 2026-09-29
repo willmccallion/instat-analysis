@@ -1,6 +1,6 @@
 "use strict";
 
-const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, shotMap, shotZoneName, battleMap, battleAreaName, dataTable, chartCard } = window.Charts;
+const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, zoneMap, shotMap, shotZoneName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, inkOn } = window.Charts;
 
 // Plain-English definitions; any label matching a key explains itself on hover or tap.
 const PER_60 = "per 60 minutes of ice time, so players with different ice time compare fairly";
@@ -107,6 +107,7 @@ const state = {
   player: null,
   playerTab: "overview",
   gameTab: "overview",
+  goalieTab: "overview",
   goalie: null,
   unitTab: "defence_pairs",
   chemistryMetric: "toi",
@@ -1325,35 +1326,154 @@ function playerNumbers(a, s) {
 
 // ---------- Goalies ----------
 
+const GOALIE_TABS = [["overview", "Overview"], ["net", "Net & body"], ["location", "Shot location"], ["types", "Shot types & situations"], ["numbers", "All numbers"]];
+
+const SPLIT_NAMES = {
+  distance: { Slot: "Slot", CloseRange: "Close range", MidRange: "Mid-range", LongRange: "Long range" },
+  shot_type: { Wrist: "Wrist shots", Snap: "Snap shots", Slap: "Slap shots", Deflection: "Deflections" },
+  situation: { OneOnOne: "1-on-1 with the shooter", Screened: "Screened", CleanView: "Clear view" },
+  goalie_state: { Splitting: "Goalie splitting", Beaten: "Goalie beaten", Moving: "Goalie in movement" },
+  body_area: {
+    AboveRightShoulder: "Above right shoulder", AboveLeftShoulder: "Above left shoulder", AboveBlocker: "Above the blocker", AboveGlove: "Above the glove",
+    ChestHead: "Chest, head", RightArmpit: "Right armpit", LeftArmpit: "Left armpit", UnderBlocker: "Under the blocker", UnderGlove: "Under the glove",
+    RightPad: "Right pad", LeftPad: "Left pad", BetweenLegs: "Between the legs",
+  },
+};
+
+const savePct = (x) => (x && x.shots ? (100 * x.saves) / x.shots : null);
+
+/** Blue when a split's save % beats the goalie's overall, red when it falls short. */
+function saveColor(value, overall) {
+  if (value === null || overall === null || overall === undefined) return css("--surface-2");
+  return window.Charts.divergingColor(Math.max(-1, Math.min(1, (value - overall) / 10)));
+}
+
+function saveTable(c, rows, name) {
+  dataTable(c, [
+    { key: "kind", label: "", left: true, format: name },
+    { key: "shots", label: "Shots" },
+    { key: "saves", label: "Saves" },
+    { key: "goals", label: "Goals", value: (x) => x.shots - x.saves },
+    { key: "pct", label: "Sv%", value: savePct, format: (v) => pct(v, 1), tone: "higher" },
+  ], rows);
+}
+
+/** Save % per category of one split, against the goalie's overall save %. */
+function saveSplitCard(g, split, title, description) {
+  const names = SPLIT_NAMES[split];
+  const rows = g.splits[split].filter((x) => x.shots > 0);
+  if (!rows.length) return null;
+  const overall = g.save_pct ? g.save_pct.value : null;
+  return chartCard(title, description, (c) => hBarChart(c, rows.map((x) => ({
+    label: names[x.kind] || x.kind,
+    value: savePct(x),
+    color: saveColor(savePct(x), overall),
+    note: `${x.saves} saves on ${x.shots} shots`,
+  })), { min: 0, max: 100, reference: overall ?? undefined, referenceLabel: "overall", valueFormat: (v) => pct(v, 0), labelWidth: 160, valueName: "save %" }), (c) => saveTable(c, g.splits[split], (k) => names[k] || k));
+}
+
+function goalieNetCard(g) {
+  const cells = g.splits.net_area.map((x) => ({ ...x, area: x.kind }));
+  if (!cells.some((x) => x.shots > 0)) return null;
+  const overall = g.save_pct ? g.save_pct.value : null;
+  return chartCard("Where shots were headed on the net", "Seen from the shooter's side (glove on the right for a regular catcher). Each ninth shows save %, then saves / shots on goal; red = below their overall save %.", (c) => netMap(c, cells, (x) => {
+    const data = x || { shots: 0, saves: 0 };
+    const fill = data.shots ? saveColor(savePct(data), overall) : css("--surface-2");
+    return {
+      fill,
+      ink: data.shots ? inkOn(fill) : css("--text-muted"),
+      lines: data.shots ? [pct(savePct(data), 0), `${data.saves} / ${data.shots}`] : ["—"],
+      tip: [{ value: `${data.shots}`, name: "shots" }, { value: `${data.saves}`, name: "saves" }, { value: `${data.shots - data.saves}`, name: "goals" }],
+    };
+  }), (c) => saveTable(c, cells, netAreaName));
+}
+
+function goalieZoneCard(g) {
+  const zones = g.splits.zone.map((x) => ({ ...x, zone: x.kind }));
+  if (!zones.some((x) => x.shots > 0)) return null;
+  const overall = g.save_pct ? g.save_pct.value : null;
+  return chartCard("Save % by shot zone", "Where the shots they faced came from (net at the top). Each zone shows save %, then saves / shots; red = below their overall save %.", (c) => zoneMap(c, zones, (x) => {
+    const data = x || { shots: 0, saves: 0 };
+    const fill = data.shots ? saveColor(savePct(data), overall) : css("--surface-2");
+    return {
+      fill,
+      ink: data.shots ? inkOn(fill) : css("--text-muted"),
+      lines: data.shots ? [pct(savePct(data), 0), `${data.saves} / ${data.shots}`] : ["—"],
+      tip: [{ value: `${data.shots}`, name: "shots" }, { value: `${data.saves}`, name: "saves" }, { value: `${data.shots - data.saves}`, name: "goals" }],
+    };
+  }), (c) => saveTable(c, zones, shotZoneName));
+}
+
+function reboundCard(g) {
+  const r = g.rebounds;
+  const saves = r ? r.uncontrolled + r.controlled + r.frozen_after_rebound + r.frozen_immediately : 0;
+  if (!saves) return null;
+  const rows = [
+    { label: "Froze it straight away", value: r.frozen_immediately, color: css("--good") },
+    { label: "Controlled the rebound", value: r.controlled, color: css("--good") },
+    { label: "Froze it after a rebound", value: r.frozen_after_rebound, color: css("--deemphasis") },
+    { label: "Loose rebound", value: r.uncontrolled, color: css("--critical") },
+  ];
+  return chartCard("What happened after each save", "Share of saves by what the goalie did with the puck. Loose rebounds give the other team a second chance.", (c) => hBarChart(c, rows.map((x) => ({ ...x, value: (100 * x.value) / saves, note: `${x.value} of ${saves} saves` })), { min: 0, max: 100, valueFormat: (v) => pct(v, 0), labelWidth: 170, valueName: "of saves" }), (c) => dataTable(c, [
+    { key: "label", label: "", left: true }, { key: "value", label: "Saves" }, { key: "share", label: "Share", value: (x) => (100 * x.value) / saves, format: (v) => pct(v, 0) },
+  ], rows));
+}
+
+function goalieTrendCard(g) {
+  const points = g.trend.map((p, i) => ({ ...p, i }));
+  return chartCard("Save % by game", "Hollow dots come from InStat's recent-games table.", (c) => lineChart(c, [{ name: "Save %", color: css("--series-1"), points: points.map((p) => ({ x: p.i, y: p.save_pct, hollow: !p.loaded, label: `${p.saves}/${p.shots_against} vs ${p.opponent}` })) }], { xFormat: (i) => points[i]?.date.slice(5) || "", yFormat: (v) => pct(v, 0) }), (c) => dataTable(c, [
+    { key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true }, { key: "shots_against", label: "SA" }, { key: "saves", label: "Saves" }, { key: "save_pct", label: "Sv%", format: (v) => pct(v, 1) },
+  ], g.trend), { source: historyChip() });
+}
+
+function goalieNumbers(g) {
+  const card = el("div", { class: "card" }, [cardTitle("Every InStat goalie number (latest game in scope)"), el("div")]);
+  dataTable(card.lastChild, [{ key: "label", label: "Stat", left: true }, { key: "v", label: "Value", value: (r) => r.value.text }], g.focus_details);
+  return card;
+}
+
+function goalieTab(g, tab) {
+  const grid = (cards, empty) => (cards.some(Boolean) ? el("div", { class: "grid two" }, cards.filter(Boolean)) : emptyNote(empty));
+  switch (tab) {
+    case "net":
+      return grid([goalieNetCard(g), saveSplitCard(g, "body_area", "Save % by where the puck met them", "InStat's body areas (the goalie's own left and right). Red = below their overall save %.")], "No net or body-area breakdown in the games in scope.");
+    case "location":
+      return grid([goalieZoneCard(g), saveSplitCard(g, "distance", "Save % by shot distance", "Closer shots are harder to stop; compare each band with the overall save %.")], "No shot-location breakdown in the games in scope.");
+    case "types":
+      return grid([
+        saveSplitCard(g, "shot_type", "Save % by shot type", "InStat only types some shots, so these may not add up to every shot."),
+        saveSplitCard(g, "situation", "Screened, clear view and 1-on-1", "Screened and clear-view shots cover every shot; 1-on-1 chances are counted separately."),
+        saveSplitCard(g, "goalie_state", "Save % by the goalie's state", "InStat's own categories for what the goalie was doing as the shot came."),
+      ], "No shot-type breakdown in the games in scope.");
+    case "numbers":
+      return goalieNumbers(g);
+    default:
+      return grid([goalieTrendCard(g), reboundCard(g)], "");
+  }
+}
+
 function viewGoalies() {
   const a = state.analysis;
   if (!a.goalies.length) return page("Goalies", "No goalie pages in scope (they come from the Player report).");
-  return page("Goalies", "Save percentage with 95% ranges; small numbers of shots give wide ranges.", ...a.goalies.map((g) => {
-    const points = g.trend.map((p, i) => ({ ...p, i }));
-    return el("div", { class: "section" }, [
-      el("h2", { text: g.player.name }),
-      tiles([
-        { label: "Save %", value: g.save_pct ? pct(g.save_pct.value, 1) : "—", note: g.save_pct ? `95%: ${fmt(g.save_pct.low, 1)}–${fmt(g.save_pct.high, 1)}` : "" },
-        { label: "Even strength", value: g.even_strength_save_pct ? pct(g.even_strength_save_pct.value, 1) : "—" },
-        { label: "Short-handed", value: g.short_handed_save_pct ? pct(g.short_handed_save_pct.value, 1) : "—" },
-        { label: "Goals against avg", value: fmt(g.goals_against_average, 2), note: `${g.goals_against} GA in ${minutes(g.toi)} min` },
-        { label: "Shots faced", value: String(g.shots_against), note: `${g.games} GP` },
-      ]),
-      el("div", { class: "grid two" }, [
-        chartCard("Save % by game", "Hollow dots come from InStat's recent-games table.", (c) => lineChart(c, [{ name: "Save %", color: css("--series-1"), points: points.map((p) => ({ x: p.i, y: p.save_pct, hollow: !p.loaded, label: `${p.saves}/${p.shots_against} vs ${p.opponent}` })) }], { xFormat: (i) => points[i]?.date.slice(5) || "", yFormat: (v) => pct(v, 0) }), (c) => dataTable(c, [
-          { key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true }, { key: "shots_against", label: "SA" }, { key: "saves", label: "Saves" }, { key: "save_pct", label: "Sv%", format: (v) => pct(v, 1) },
-        ], g.trend), { source: historyChip() }),
-        g.by_distance.some((b) => b.shots > 0) ? chartCard("Save % by shot distance", "Closer shots are harder to stop; compare each band with the goalie's overall save %.", (c) => hBarChart(c, g.by_distance.filter((b) => b.shots > 0).map((b) => ({ label: distanceLabel(b.band), value: (100 * b.saves) / b.shots, note: `${b.saves} saves on ${b.shots} shots` })), { min: 0, max: 100, reference: g.save_pct ? g.save_pct.value : undefined, referenceLabel: "overall", valueFormat: (v) => pct(v, 0), labelWidth: 130 }), (c) => dataTable(c, [
-          { key: "band", label: "Distance", left: true, format: distanceLabel }, { key: "shots", label: "Shots" }, { key: "saves", label: "Saves" }, { key: "pct", label: "Sv%", value: (b) => (b.shots ? (100 * b.saves) / b.shots : null), format: (v) => pct(v, 1) },
-        ], g.by_distance)) : null,
-        (() => {
-          const card = el("div", { class: "card" }, [el("h3", { text: "Every InStat goalie number (latest game)" }), el("div")]);
-          dataTable(card.lastChild, [{ key: "label", label: "Stat", left: true }, { key: "v", label: "Value", value: (r) => r.value.text }], g.focus_details);
-          return card;
-        })(),
-      ].filter(Boolean)),
-    ]);
-  }));
+  const [tabs, current] = pageTabs("goalieTab", GOALIE_TABS);
+  const r = (g) => g.rebounds;
+  const controlled = (g) => {
+    const x = r(g);
+    const saves = x ? x.uncontrolled + x.controlled + x.frozen_after_rebound + x.frozen_immediately : 0;
+    return saves ? (100 * (saves - x.uncontrolled)) / saves : null;
+  };
+  return page("Goalies", "Save percentage with 95% ranges; small numbers of shots give wide ranges.", tabs, ...a.goalies.map((g) => el("div", { class: "section" }, [
+    el("h2", { text: g.player.name }),
+    tiles([
+      { label: "Save %", value: g.save_pct ? pct(g.save_pct.value, 1) : "—", note: g.save_pct ? `95%: ${fmt(g.save_pct.low, 1)}–${fmt(g.save_pct.high, 1)}` : "" },
+      { label: "Even strength", value: g.even_strength_save_pct ? pct(g.even_strength_save_pct.value, 1) : "—" },
+      { label: "Short-handed", value: g.short_handed_save_pct ? pct(g.short_handed_save_pct.value, 1) : "—" },
+      { label: "Goals against avg", value: fmt(g.goals_against_average, 2), note: `${g.goals_against} GA in ${minutes(g.toi)} min` },
+      { label: "Shots faced", value: String(g.shots_against), note: `${g.games} GP` },
+      { label: "Rebounds controlled", value: pct(controlled(g), 0), note: "saves without a loose rebound" },
+    ]),
+    goalieTab(g, current),
+  ])));
 }
 
 // ---------- Team ----------
@@ -1405,10 +1525,6 @@ function viewTeam() {
     { label: "Shot share per game", value: t.shot_share_by_game ? pct(t.shot_share_by_game.value, 0) : "—", note: t.shot_share_by_game ? `95%: ${fmt(t.shot_share_by_game.low, 0)}–${fmt(t.shot_share_by_game.high, 0)} (bootstrap)` : "needs 3+ games" },
   ]);
   return page("Team", "How the team plays as a whole in the games in scope.", luck, grid, logCard);
-}
-
-function distanceLabel(band) {
-  return { "From the slot": "Slot", "From close range": "Close range", "From midrange": "Mid-range", "From long range distance": "Long range" }[band] || band;
 }
 
 function shotMapCard(title, description, zones) {
@@ -1692,6 +1808,7 @@ function viewHelp() {
     ["Shot map", "Where shots came from, using InStat's seven zones: slot, high slot, left and right sides, and three spots along the blue line. Each zone shows shots / on goal; darker = more shots."],
     ["Puck battles by area", "InStat splits every one-on-one puck battle by where it happened: in front of each net, behind each net, the corners, along each blue line, and the neutral zone. The map shows the share we won in each area; corners are one area drawn top and bottom."],
     ["Matchups", "InStat's challenge and hits distributions list every one-on-one puck battle and every hit between each of our skaters and each of theirs. Opponents are shown as InStat labels them (number and surname); bars show battles won minus lost, so one battle never looks like a 100% record."],
+    ["Goalie breakdowns", "From the goalie's Player-report page: save % by distance, zone, shot type, screened or clear view, where on the net the shot was headed (seen from the shooter), and where the puck met the goalie (the goalie's own left and right). Colours compare each part with the goalie's overall save %. Rebound control splits every save by what happened to the puck next."],
     ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],
     ["Practice focus", "Each area compares us with our opponents (50% = even; power play against 20%, penalty kill against 80%). An area is flagged only when it's 8+ points off and backed by at least 10 events; the drill ideas are starting points, not prescriptions."],
     ["Shift data", "Rebuilt from InStat's time-distribution chart. The reader checks itself: every player's +/- rebuilt from shifts must match InStat's own column, or the game shows a warning."],

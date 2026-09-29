@@ -59,6 +59,11 @@ impl Rect {
     }
 
     #[must_use]
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        (self.x0..=self.x1).contains(&x) && (self.top..=self.bottom).contains(&y)
+    }
+
+    #[must_use]
     pub const fn union(&self, other: &Self) -> Self {
         Self {
             x0: self.x0.min(other.x0),

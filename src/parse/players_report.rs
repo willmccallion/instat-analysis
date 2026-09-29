@@ -3,10 +3,11 @@
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::layout::{self, Line};
-use crate::model::{Date, Jersey, TeamPrefix};
+use crate::model::{Date, Jersey, NetArea, ShotZone, TeamPrefix};
 use crate::parse::common::LINE_TOLERANCE;
+use crate::parse::diagrams;
 use crate::parse::match_report::{Title, our_index, parse_cover};
-use crate::pdf::{Page, Word};
+use crate::pdf::{Page, Rect, Word};
 
 const SECTION: &str = "player report";
 
@@ -57,6 +58,10 @@ pub struct PlayerPage {
     /// (label, game value, season value) from the Statistics block.
     pub stats: Vec<(String, String, String)>,
     pub history: Vec<RawHistoryRow>,
+    /// Goalie pages: shots / saves in each part of the net, this game.
+    pub net: Vec<(NetArea, (u32, u32))>,
+    /// Goalie pages: shots / saves from each of InStat's seven zones, this game.
+    pub zones: Vec<(ShotZone, (u32, u32))>,
 }
 
 impl PlayerPage {
@@ -168,12 +173,49 @@ fn parse_player_page(page: &Page) -> Result<PlayerPage, Error> {
         PageKind::Skater
     };
     let history = history(&page.words, kind)?;
+    let (net, zones) = match (kind, goalie_diagrams(&page.words)) {
+        (PageKind::Goalie, Some(regions)) => (
+            diagrams::net_grid(&page.words, &regions.net).unwrap_or_default(),
+            diagrams::zone_grid(&page.words, &regions.rink).unwrap_or_default(),
+        ),
+        _ => (Vec::new(), Vec::new()),
+    };
     Ok(PlayerPage {
         kind,
         full_name,
         jersey,
         stats,
         history,
+        net,
+        zones,
+    })
+}
+
+/// Where this game's net and rink diagrams sit on a goalie page.
+struct GoalieDiagrams {
+    net: Rect,
+    rink: Rect,
+}
+
+/// The goalie page stacks three diagrams (body, net, rink) under "GAME", with the season's
+/// copies beside them under "SEASON".
+fn goalie_diagrams(words: &[Word]) -> Option<GoalieDiagrams> {
+    let mut game_labels: Vec<&Word> = words.iter().filter(|w| w.text == "GAME").collect();
+    game_labels.sort_by(|a, b| a.top.total_cmp(&b.top));
+    let [_, net_label, rink_label] = game_labels.as_slice() else {
+        return None;
+    };
+    let season_x = words.iter().find(|w| w.text == "SEASON")?.center_x();
+    let half_width = (season_x - net_label.center_x()).abs() / 2.0;
+    let column = |top: f64, bottom: f64| Rect {
+        x0: net_label.center_x() - half_width,
+        x1: net_label.center_x() + half_width,
+        top,
+        bottom,
+    };
+    Some(GoalieDiagrams {
+        net: column(net_label.bottom, rink_label.top),
+        rink: column(rink_label.bottom, f64::INFINITY),
     })
 }
 

@@ -465,12 +465,232 @@ pub fn add_area_battles(totals: &mut Vec<AreaBattles>, extra: &[AreaBattles]) {
     totals.sort_by_key(|a| a.area);
 }
 
-/// Shots faced by a goalie from one distance band, as on InStat's goalie page.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DistanceSaves {
-    pub band: String,
+/// Shots faced and saved in one category of a goalie split (a distance, a shot type, …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Saves<K> {
+    pub kind: K,
     pub shots: u32,
     pub saves: u32,
+}
+
+/// Adds `extra` into `totals` category by category, keeping categories in `K`'s order.
+pub fn add_saves<K: Copy + Ord>(totals: &mut Vec<Saves<K>>, extra: &[Saves<K>]) {
+    for e in extra {
+        match totals.iter_mut().find(|t| t.kind == e.kind) {
+            Some(t) => {
+                t.shots += e.shots;
+                t.saves += e.saves;
+            }
+            None => totals.push(*e),
+        }
+    }
+    totals.sort_by_key(|t| t.kind);
+}
+
+/// A split the goalie page prints as one labelled row per category.
+pub trait GoaliePageRow: Copy + 'static {
+    const ALL: &'static [Self];
+
+    /// The row's label in the goalie page's Statistics block.
+    fn goalie_label(self) -> &'static str;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ShotDistance {
+    Slot,
+    CloseRange,
+    MidRange,
+    LongRange,
+}
+
+impl GoaliePageRow for ShotDistance {
+    const ALL: &'static [Self] = &[Self::Slot, Self::CloseRange, Self::MidRange, Self::LongRange];
+
+    fn goalie_label(self) -> &'static str {
+        match self {
+            Self::Slot => "From the slot",
+            Self::CloseRange => "From close range",
+            Self::MidRange => "From midrange",
+            Self::LongRange => "From long range distance",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ShotType {
+    Wrist,
+    Snap,
+    Slap,
+    Deflection,
+}
+
+impl GoaliePageRow for ShotType {
+    const ALL: &'static [Self] = &[Self::Wrist, Self::Snap, Self::Slap, Self::Deflection];
+
+    fn goalie_label(self) -> &'static str {
+        match self {
+            Self::Wrist => "Wrist shots",
+            Self::Snap => "Snap shots",
+            Self::Slap => "Slap shots",
+            Self::Deflection => "Deflection off the stick",
+        }
+    }
+}
+
+/// What the goalie was up against: alone with the shooter, screened, or a clear look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ShotSituation {
+    OneOnOne,
+    Screened,
+    CleanView,
+}
+
+impl GoaliePageRow for ShotSituation {
+    const ALL: &'static [Self] = &[Self::OneOnOne, Self::Screened, Self::CleanView];
+
+    fn goalie_label(self) -> &'static str {
+        match self {
+            Self::OneOnOne => "In 1 on 1 situations",
+            Self::Screened => "Screen shot",
+            Self::CleanView => "Clean view shot",
+        }
+    }
+}
+
+/// The goalie's state when the shot came.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum GoalieState {
+    Splitting,
+    Beaten,
+    Moving,
+}
+
+impl GoaliePageRow for GoalieState {
+    const ALL: &'static [Self] = &[Self::Splitting, Self::Beaten, Self::Moving];
+
+    fn goalie_label(self) -> &'static str {
+        match self {
+            Self::Splitting => "Goalie splitting",
+            Self::Beaten => "Goalie beaten",
+            Self::Moving => "Goalie in movement",
+        }
+    }
+}
+
+/// Where the shot met (or passed) the goalie's body; left and right are the goalie's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BodyArea {
+    AboveRightShoulder,
+    AboveLeftShoulder,
+    AboveBlocker,
+    AboveGlove,
+    ChestHead,
+    RightArmpit,
+    LeftArmpit,
+    UnderBlocker,
+    UnderGlove,
+    RightPad,
+    LeftPad,
+    BetweenLegs,
+}
+
+impl GoaliePageRow for BodyArea {
+    const ALL: &'static [Self] = &[
+        Self::AboveRightShoulder,
+        Self::AboveLeftShoulder,
+        Self::AboveBlocker,
+        Self::AboveGlove,
+        Self::ChestHead,
+        Self::RightArmpit,
+        Self::LeftArmpit,
+        Self::UnderBlocker,
+        Self::UnderGlove,
+        Self::RightPad,
+        Self::LeftPad,
+        Self::BetweenLegs,
+    ];
+
+    fn goalie_label(self) -> &'static str {
+        match self {
+            Self::AboveRightShoulder => "Above the right shoulder",
+            Self::AboveLeftShoulder => "Above the left shoulder",
+            Self::AboveBlocker => "Above the blocker",
+            Self::AboveGlove => "Above the glove",
+            Self::ChestHead => "Chest, head",
+            Self::RightArmpit => "Right armpit",
+            Self::LeftArmpit => "Left armpit",
+            Self::UnderBlocker => "Under the blocker",
+            Self::UnderGlove => "Under the glove",
+            Self::RightPad => "Right pad",
+            Self::LeftPad => "Left pad",
+            Self::BetweenLegs => "Between the legs",
+        }
+    }
+}
+
+/// A ninth of the net as InStat's net diagrams divide it, seen from the shooter's side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum NetArea {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    MiddleLeft,
+    Middle,
+    MiddleRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+impl NetArea {
+    /// Rows top to bottom, each left to right.
+    pub const GRID: [[Self; 3]; 3] = [
+        [Self::TopLeft, Self::TopCenter, Self::TopRight],
+        [Self::MiddleLeft, Self::Middle, Self::MiddleRight],
+        [Self::BottomLeft, Self::BottomCenter, Self::BottomRight],
+    ];
+}
+
+/// Save splits from the goalie page; each list holds the categories InStat printed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveSplits {
+    pub distance: Vec<Saves<ShotDistance>>,
+    pub shot_type: Vec<Saves<ShotType>>,
+    pub situation: Vec<Saves<ShotSituation>>,
+    pub goalie_state: Vec<Saves<GoalieState>>,
+    pub body_area: Vec<Saves<BodyArea>>,
+    pub net_area: Vec<Saves<NetArea>>,
+    pub zone: Vec<Saves<ShotZone>>,
+}
+
+impl SaveSplits {
+    pub fn add(&mut self, other: &Self) {
+        add_saves(&mut self.distance, &other.distance);
+        add_saves(&mut self.shot_type, &other.shot_type);
+        add_saves(&mut self.situation, &other.situation);
+        add_saves(&mut self.goalie_state, &other.goalie_state);
+        add_saves(&mut self.body_area, &other.body_area);
+        add_saves(&mut self.net_area, &other.net_area);
+        add_saves(&mut self.zone, &other.zone);
+    }
+}
+
+/// What happened to the puck after each save.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReboundControl {
+    pub uncontrolled: u32,
+    pub controlled: u32,
+    pub frozen_after_rebound: u32,
+    pub frozen_immediately: u32,
+}
+
+impl ReboundControl {
+    pub const fn add(&mut self, other: &Self) {
+        self.uncontrolled += other.uncontrolled;
+        self.controlled += other.controlled;
+        self.frozen_after_rebound += other.frozen_after_rebound;
+        self.frozen_immediately += other.frozen_immediately;
+    }
 }
 
 /// The per-game skater numbers the analysis relies on.
@@ -519,7 +739,9 @@ pub struct GoalieStats {
     pub even_strength: Option<(u32, u32)>,
     pub short_handed: Option<(u32, u32)>,
     #[serde(default)]
-    pub by_distance: Vec<DistanceSaves>,
+    pub splits: SaveSplits,
+    #[serde(default)]
+    pub rebounds: Option<ReboundControl>,
 }
 
 /// One row of a player's "comparison with recent games" table.

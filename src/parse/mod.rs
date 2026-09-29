@@ -1,6 +1,7 @@
 //! Page parsers for InStat match and player reports.
 
 pub mod common;
+pub mod diagrams;
 pub mod lines;
 pub mod match_report;
 pub mod matrix;

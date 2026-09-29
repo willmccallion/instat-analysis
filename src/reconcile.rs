@@ -8,8 +8,9 @@ use std::collections::HashMap;
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::model::{
-    Advantage, AreaBattles, BattleArea, CellValue, DistanceSaves, Game, GameId, Goal, GoalieStats, HistoryKind, HistoryRow, Interval,
-    Jersey, Matchup, Opponent, Player, PlayerId, PlayerMatrix, Position, Seconds, ShotZone, SkaterStats, StatEntry,
+    Advantage, AreaBattles, BattleArea, BodyArea, CellValue, Game, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
+    Jersey, Matchup, Opponent, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
+    ShotSituation, ShotType, ShotZone, SkaterStats, StatEntry,
     Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
 };
 use crate::parse::common::{PlayerRow, RowLabel};
@@ -293,7 +294,45 @@ fn shot_zones(row: &PlayerRow) -> Vec<ZoneShots> {
         .collect()
 }
 
-const GOALIE_DISTANCE_BANDS: [&str; 4] = ["From the slot", "From close range", "From midrange", "From long range distance"];
+/// One `Saves` per category whose row the goalie page printed.
+fn page_saves<K: GoaliePageRow>(page: &PlayerPage) -> Vec<Saves<K>> {
+    K::ALL
+        .iter()
+        .filter_map(|&kind| {
+            let (shots, saves) = page.stat(kind.goalie_label())?.ratio()?;
+            Some(Saves { kind, shots, saves })
+        })
+        .collect()
+}
+
+fn diagram_saves<K: Copy>(counts: &[(K, (u32, u32))]) -> Vec<Saves<K>> {
+    counts
+        .iter()
+        .map(|&(kind, (shots, saves))| Saves { kind, shots, saves })
+        .collect()
+}
+
+fn save_splits(page: &PlayerPage) -> SaveSplits {
+    SaveSplits {
+        distance: page_saves::<ShotDistance>(page),
+        shot_type: page_saves::<ShotType>(page),
+        situation: page_saves::<ShotSituation>(page),
+        goalie_state: page_saves::<GoalieState>(page),
+        body_area: page_saves::<BodyArea>(page),
+        net_area: diagram_saves(&page.net),
+        zone: diagram_saves(&page.zones),
+    }
+}
+
+fn rebound_control(page: &PlayerPage) -> Option<ReboundControl> {
+    let count = |label: &str| page.stat(label).and_then(|c| c.count());
+    Some(ReboundControl {
+        uncontrolled: count("Uncontrolled rebound")?,
+        controlled: count("Controlled rebound")?,
+        frozen_after_rebound: count("Freezing the puck after rebound")?,
+        frozen_immediately: count("Freezing the puck straight away")?,
+    })
+}
 
 fn goalie_stats(page: &PlayerPage) -> GoalieStats {
     let ratio = |label: &str| page.stat(label).and_then(|c| c.ratio());
@@ -313,13 +352,8 @@ fn goalie_stats(page: &PlayerPage) -> GoalieStats {
             .unwrap_or_default(),
         even_strength: ratio("At even strength"),
         short_handed: ratio("Short-handed"),
-        by_distance: GOALIE_DISTANCE_BANDS
-            .iter()
-            .filter_map(|band| {
-                let (shots, saves) = ratio(band)?;
-                Some(DistanceSaves { band: (*band).to_owned(), shots, saves })
-            })
-            .collect(),
+        splits: save_splits(page),
+        rebounds: rebound_control(page),
     }
 }
 

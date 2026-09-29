@@ -736,17 +736,16 @@ const SHOT_ZONE_NAMES = {
 };
 
 /**
- * Half-rink shot map. zones: [{zone, shots, on_goal}]; shading = share of shots.
- * The number in each zone is shots / on goal.
+ * Half-rink diagram of InStat's seven shot zones. zones: [{zone, ...}];
+ * style(data) -> {fill, ink, lines: [text], tip: rows}, where data is undefined for a zone not
+ * listed. options.legend: nodes shown under the rink.
  */
-function shotMap(container, zones, options = {}) {
+function zoneMap(container, zones, style, options = {}) {
   const width = Math.min(measureWidth(container), options.maxWidth ?? 420);
   const scale = width / 200;
   const height = Math.round(170 * scale);
-  const total = zones.reduce((sum, z) => sum + z.shots, 0);
-  const most = Math.max(1, ...zones.map((z) => z.shots));
   const id = `rink${Math.random().toString(36).slice(2)}`;
-  const root = svg("svg", { class: "chart", viewBox: "0 0 200 170", width, height, role: "img", "aria-label": options.title || "shot map" });
+  const root = svg("svg", { class: "chart", viewBox: "0 0 200 170", width, height, role: "img", "aria-label": options.title || "zone map" });
   const outline = "M0,170V28Q0,0 28,0H172Q200,0 200,28V170Z";
   const clip = svg("clipPath", { id });
   clip.append(svg("path", { d: outline }));
@@ -755,21 +754,18 @@ function shotMap(container, zones, options = {}) {
   root.append(layer);
   const byZone = new Map(zones.map((z) => [z.zone, z]));
   for (const [zone, points] of Object.entries(SHOT_ZONE_SHAPES)) {
-    const data = byZone.get(zone) || { shots: 0, on_goal: 0 };
-    const fill = data.shots ? sequentialColor(0.15 + 0.85 * (data.shots / most)) : css("--surface-2");
-    const shape = svg("polygon", { points: points.map((p) => p.join(",")).join(" "), fill, stroke: css("--surface-1"), "stroke-width": 2 / scale, "stroke-linejoin": "round" });
+    const look = style(byZone.get(zone));
+    const shape = svg("polygon", { points: points.map((p) => p.join(",")).join(" "), fill: look.fill, stroke: css("--surface-1"), "stroke-width": 2 / scale, "stroke-linejoin": "round" });
     layer.append(shape);
-    attachTooltip(shape, SHOT_ZONE_NAMES[zone], () => [
-      { value: `${data.shots}`, name: "shots" },
-      { value: `${data.on_goal}`, name: "on goal" },
-      { value: total ? `${Math.round((100 * data.shots) / total)}%` : "—", name: "of all shots" },
-    ]);
-    const cx = points.reduce((s, p) => s + p[0], 0) / points.length;
-    const cy = points.reduce((s, p) => s + p[1], 0) / points.length;
-    const ink = data.shots ? inkOn(fill) : css("--text-muted");
-    const label = svg("text", { x: cx, y: cy + 4, "text-anchor": "middle", "pointer-events": "none", style: `fill:${ink};font-size:${13 / scale}px;font-weight:600` });
-    label.textContent = `${data.shots} / ${data.on_goal}`;
-    layer.append(label);
+    attachTooltip(shape, SHOT_ZONE_NAMES[zone], () => look.tip);
+    const cx = points.reduce((sum, p) => sum + p[0], 0) / points.length;
+    const cy = points.reduce((sum, p) => sum + p[1], 0) / points.length;
+    look.lines.forEach((line, i) => {
+      const first = i === 0;
+      const label = svg("text", { x: cx, y: cy + 4 + (i - (look.lines.length - 1) / 2) * 15, "text-anchor": "middle", "pointer-events": "none", style: `fill:${look.ink};font-size:${(first ? 13 : 10) / scale}px;font-weight:${first ? 600 : 400}` });
+      label.textContent = line;
+      layer.append(label);
+    });
   }
   const lineInk = css("--text-muted");
   root.append(
@@ -780,11 +776,78 @@ function shotMap(container, zones, options = {}) {
     svg("line", { x1: 0, x2: 200, y1: 169, y2: 169, stroke: css("--series-1"), "stroke-width": 2, "pointer-events": "none" }),
   );
   container.replaceChildren(root);
-  container.append(el("div", { class: "legend" }, [
-    el("span", {}, [el("span", { class: "key", style: `background:${sequentialColor(0.15)}` }), "few shots"]),
-    el("span", {}, [el("span", { class: "key", style: `background:${sequentialColor(1)}` }), "most shots"]),
-    el("span", { class: "muted", text: "numbers = shots / on goal · blue line at the bottom" }),
-  ]));
+  if (options.legend) container.append(el("div", { class: "legend" }, options.legend));
+}
+
+/**
+ * Half-rink shot map. zones: [{zone, shots, on_goal}]; shading = share of shots.
+ * The number in each zone is shots / on goal.
+ */
+function shotMap(container, zones, options = {}) {
+  const total = zones.reduce((sum, z) => sum + z.shots, 0);
+  const most = Math.max(1, ...zones.map((z) => z.shots));
+  zoneMap(container, zones, (z) => {
+    const data = z || { shots: 0, on_goal: 0 };
+    const fill = data.shots ? sequentialColor(0.15 + 0.85 * (data.shots / most)) : css("--surface-2");
+    return {
+      fill,
+      ink: data.shots ? inkOn(fill) : css("--text-muted"),
+      lines: [`${data.shots} / ${data.on_goal}`],
+      tip: [
+        { value: `${data.shots}`, name: "shots" },
+        { value: `${data.on_goal}`, name: "on goal" },
+        { value: total ? `${Math.round((100 * data.shots) / total)}%` : "—", name: "of all shots" },
+      ],
+    };
+  }, {
+    ...options,
+    legend: [
+      el("span", {}, [el("span", { class: "key", style: `background:${sequentialColor(0.15)}` }), "few shots"]),
+      el("span", {}, [el("span", { class: "key", style: `background:${sequentialColor(1)}` }), "most shots"]),
+      el("span", { class: "muted", text: "numbers = shots / on goal · blue line at the bottom" }),
+    ],
+  });
+}
+
+const NET_AREA_ROWS = [["TopLeft", "TopCenter", "TopRight"], ["MiddleLeft", "Middle", "MiddleRight"], ["BottomLeft", "BottomCenter", "BottomRight"]];
+const NET_AREA_NAMES = {
+  TopLeft: "Top left", TopCenter: "Top middle", TopRight: "Top right",
+  MiddleLeft: "Middle left", Middle: "Middle", MiddleRight: "Middle right",
+  BottomLeft: "Bottom left", BottomCenter: "Bottom middle", BottomRight: "Bottom right",
+};
+
+/**
+ * The net seen from the shooter's side, split 3×3 like InStat's net diagrams.
+ * cells: [{area, ...}]; style(data) -> {fill, ink, lines: [text], tip: rows}.
+ */
+function netMap(container, cells, style, options = {}) {
+  const width = Math.min(measureWidth(container), options.maxWidth ?? 360);
+  const scale = width / 240;
+  const height = Math.round(160 * scale);
+  const root = svg("svg", { class: "chart", viewBox: "0 0 240 160", width, height, role: "img", "aria-label": options.title || "net map" });
+  const byArea = new Map(cells.map((c) => [c.area, c]));
+  const [left, top, cellW, cellH] = [14, 14, 212 / 3, 144 / 3];
+  NET_AREA_ROWS.forEach((row, r) => row.forEach((area, c) => {
+    const look = style(byArea.get(area));
+    const x = left + c * cellW;
+    const y = top + r * cellH;
+    const shape = svg("rect", { x: x + 1, y: y + 1, width: cellW - 2, height: cellH - 2, rx: 3, fill: look.fill });
+    root.append(shape);
+    attachTooltip(shape, NET_AREA_NAMES[area], () => look.tip);
+    look.lines.forEach((line, i) => {
+      const first = i === 0;
+      const label = svg("text", { x: x + cellW / 2, y: y + cellH / 2 + 4 + (i - (look.lines.length - 1) / 2) * 15, "text-anchor": "middle", "pointer-events": "none", style: `fill:${look.ink};font-size:${(first ? 13 : 10) / scale}px;font-weight:${first ? 600 : 400}` });
+      label.textContent = line;
+      root.append(label);
+    });
+  }));
+  root.append(svg("path", { d: `M${left - 6},160V${top - 6}H${240 - left + 6}V160`, fill: "none", stroke: css("--critical"), "stroke-width": 6, "stroke-linejoin": "round", "pointer-events": "none" }));
+  container.replaceChildren(root);
+  if (options.legend) container.append(el("div", { class: "legend" }, options.legend));
+}
+
+function netAreaName(area) {
+  return NET_AREA_NAMES[area] || area;
 }
 
 // Full rink in a 300×130 box, our net on the left; corners are one area drawn top and bottom.
@@ -985,6 +1048,6 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
   hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
-  shotMap, shotZoneName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor,
+  zoneMap, shotMap, shotZoneName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
 };
 })();

@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::analysis::Context;
 use crate::analysis::common::{Estimate, PlayerRef};
-use crate::model::{Date, DistanceSaves, HistoryKind, PlayerId, Seconds, StatEntry};
+use crate::model::{Date, GoalieStats, HistoryKind, PlayerId, ReboundControl, SaveSplits, Seconds, StatEntry};
 use crate::stats::describe::{mean, wilson_interval};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -33,8 +33,10 @@ pub struct GoalieSeason {
     pub instat_mean: Option<f64>,
     pub trend: Vec<GoalieTrendPoint>,
     pub focus_details: Vec<StatEntry>,
-    /// Save % by shot distance, summed over games.
-    pub by_distance: Vec<DistanceSaves>,
+    /// Shots and saves by distance, shot type, net area …, summed over games.
+    pub splits: SaveSplits,
+    /// Summed over the games whose page reported it.
+    pub rebounds: Option<ReboundControl>,
 }
 
 fn save_interval(saves: u32, shots: u32) -> Option<Estimate> {
@@ -46,19 +48,20 @@ fn save_interval(saves: u32, shots: u32) -> Option<Estimate> {
     })
 }
 
-/// Totals per distance band, in the order bands first appear.
-fn sum_distance_bands<'a>(bands: impl Iterator<Item = &'a DistanceSaves>) -> Vec<DistanceSaves> {
-    let mut totals: Vec<DistanceSaves> = Vec::new();
-    for band in bands {
-        match totals.iter_mut().find(|t| t.band == band.band) {
-            Some(total) => {
-                total.shots += band.shots;
-                total.saves += band.saves;
-            }
-            None => totals.push(band.clone()),
-        }
+fn total_splits<'a>(stats: impl Iterator<Item = &'a GoalieStats>) -> SaveSplits {
+    let mut totals = SaveSplits::default();
+    for s in stats {
+        totals.add(&s.splits);
     }
     totals
+}
+
+fn total_rebounds<'a>(stats: impl Iterator<Item = &'a GoalieStats>) -> Option<ReboundControl> {
+    stats.filter_map(|s| s.rebounds.as_ref()).fold(None, |total, r| {
+        let mut sum = total.unwrap_or_default();
+        sum.add(r);
+        Some(sum)
+    })
 }
 
 #[must_use]
@@ -84,7 +87,7 @@ pub fn goalies(context: &Context<'_>) -> Vec<GoalieSeason> {
             let shots_against: u32 = appearances.iter().map(|(_, _, s)| s.shots_against).sum();
             let saves: u32 = appearances.iter().map(|(_, _, s)| s.saves).sum();
             let goals_against: u32 = appearances.iter().map(|(_, _, s)| s.goals_against).sum();
-            let split = |pick: fn(&crate::model::GoalieStats) -> Option<(u32, u32)>| {
+            let split = |pick: fn(&GoalieStats) -> Option<(u32, u32)>| {
                 let (faced, stopped) = appearances
                     .iter()
                     .filter_map(|(_, _, s)| pick(s))
@@ -144,7 +147,8 @@ pub fn goalies(context: &Context<'_>) -> Vec<GoalieSeason> {
                 instat_mean: mean(&instat),
                 trend,
                 focus_details,
-                by_distance: sum_distance_bands(appearances.iter().flat_map(|(_, _, s)| s.by_distance.iter())),
+                splits: total_splits(appearances.iter().map(|(_, _, s)| *s)),
+                rebounds: total_rebounds(appearances.iter().map(|(_, _, s)| *s)),
             })
         })
         .collect()
