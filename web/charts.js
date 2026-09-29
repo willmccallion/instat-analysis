@@ -856,7 +856,7 @@ function shotDistance(at) {
 }
 
 /**
- * Every shot where InStat's shooting chart drew it, on a half rink in feet (net at the top,
+ * Every shot attempt where InStat's shooting chart drew it, on a half rink in feet (net at the top,
  * blue line at the bottom). shots: [{at: {along, across}, goal, ...}];
  * options.tip(shot) -> {title, rows} describes a dot on hover; options.goalColor is a colour
  * token for goals (default --series-2).
@@ -903,7 +903,7 @@ function shotPlot(container, shots, options = {}) {
   container.replaceChildren(root);
   const goals = shots.filter((x) => x.goal).length;
   container.append(el("div", { class: "legend" }, [
-    el("span", {}, [el("span", { class: "key", style: `background:${css("--series-1")}` }), `shot (${shots.length - goals})`]),
+    el("span", {}, [el("span", { class: "key", style: `background:${css("--series-1")}` }), `attempt, no goal (${shots.length - goals})`]),
     el("span", {}, [el("span", { class: "key", style: `background:${css(options.goalColor ?? "--series-2")}` }), `goal (${goals})`]),
     el("span", { class: "muted", text: "net at the top · blue line at the bottom" }),
   ]));
