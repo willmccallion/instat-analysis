@@ -165,11 +165,19 @@ function positionShort(position) {
   return { Defence: "D", Forward: "F", Goalie: "G" }[position] || "?";
 }
 
+/** The app's server isn't answering: it was quit, closed with its page, or timed out. */
+class ServerGone extends Error {}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: { "X-Hockey-Token": state.token, ...(options.headers || {}) },
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers: { "X-Hockey-Token": state.token, ...(options.headers || {}) },
+    });
+  } catch {
+    throw new ServerGone("Hockey Stats is not running");
+  }
   const text = await response.text();
   let body = null;
   try {
@@ -194,6 +202,10 @@ async function refresh() {
     state.problems = status.problems;
     state.analysis = await api("/api/analyze", { method: "POST", body: JSON.stringify(state.request) });
   } catch (error) {
+    if (error instanceof ServerGone) {
+      showClosed();
+      return;
+    }
     state.error = error.message;
   } finally {
     main.classList.remove("busy");
@@ -470,6 +482,10 @@ async function exportReport() {
 async function quitApp() {
   if (!confirm("Close Hockey Stats? Your games stay saved.")) return;
   try { await api("/api/quit", { method: "POST" }); } catch { /* the server is gone either way */ }
+  showClosed();
+}
+
+function showClosed() {
   document.body.replaceChildren(el("div", { class: "empty", text: "Hockey Stats has closed. Double-click the app to open it again." }));
 }
 
@@ -1492,6 +1508,12 @@ if (SUBVIEWS[initialView] && SUBVIEWS[initialView].some(([id]) => id === initial
 if (initialView === "lines" && UNIT_TABS.some(([id]) => id === initialTab)) state.unitTab = initialTab;
 
 if (!snapshot) {
-  setInterval(() => { api("/api/heartbeat", { method: "POST" }).catch(() => {}); }, 60000);
+  // Frequent enough that another open tab keeps the server alive when one tab closes.
+  setInterval(() => { api("/api/heartbeat", { method: "POST" }).catch((e) => { if (e instanceof ServerGone) showClosed(); }); }, 5000);
+  // A reload also fires this; the server waits a few seconds and stays up if the page returns.
+  window.addEventListener("pagehide", () => {
+    fetch("/api/closing", { method: "POST", keepalive: true, headers: { "X-Hockey-Token": state.token } }).catch(() => {});
+  });
+  window.addEventListener("pageshow", (event) => { if (event.persisted) refresh(); });
 }
 refresh();

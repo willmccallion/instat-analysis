@@ -19,7 +19,9 @@ use crate::store::Store;
 use crate::web;
 
 const IDLE_SHUTDOWN: Duration = Duration::from_mins(15);
-const POLL: Duration = Duration::from_secs(5);
+/// How long a closed page has to come back (a reload does within a second) before quitting.
+const CLOSE_GRACE: Duration = Duration::from_secs(10);
+const POLL: Duration = Duration::from_secs(1);
 const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 const TOKEN_HEADER: &str = "X-Hockey-Token";
 
@@ -131,6 +133,8 @@ struct App {
     token: String,
     cache: HashMap<String, String>,
     last_activity: Instant,
+    /// When a page last reported it was closing, if nothing has been heard since.
+    closing_since: Option<Instant>,
     quit: bool,
 }
 
@@ -209,10 +213,19 @@ impl App {
         Ok(json)
     }
 
+    fn should_stop(&self) -> bool {
+        self.quit
+            || self.last_activity.elapsed() >= IDLE_SHUTDOWN
+            || self.closing_since.is_some_and(|t| t.elapsed() >= CLOSE_GRACE)
+    }
+
     fn handle(&mut self, mut request: HttpRequest) {
         self.last_activity = Instant::now();
         let url = request.url().to_owned();
         let path = url.split('?').next().unwrap_or_default().to_owned();
+        if path != "/api/closing" {
+            self.closing_since = None;
+        }
         let method = request.method().clone();
         match (&method, path.as_str()) {
             (Method::Get, "/") => respond(request, 200, "text/html; charset=utf-8", web::app_page().into_bytes()),
@@ -265,6 +278,10 @@ impl App {
                 }
             }
             (Method::Post, "/api/heartbeat") => respond_json(request, 200, &true),
+            (Method::Post, "/api/closing") => {
+                self.closing_since = Some(Instant::now());
+                respond_json(request, 200, &true);
+            }
             (Method::Post, "/api/quit") => {
                 self.quit = true;
                 respond_json(request, 200, &true);
@@ -274,7 +291,8 @@ impl App {
     }
 }
 
-/// Serves until the coach quits or the page has been gone for [`IDLE_SHUTDOWN`].
+/// Serves until the coach quits, the page closes (see [`CLOSE_GRACE`]) or nothing has been
+/// heard for [`IDLE_SHUTDOWN`].
 /// `on_ready` receives the URL (including the token) once the port is bound.
 pub fn serve(data_dir: &Path, store: Store, port: u16, build: String, on_ready: impl FnOnce(&str)) -> Result<(), Error> {
     let server = Server::http(("127.0.0.1", port)).map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
@@ -297,9 +315,10 @@ pub fn serve(data_dir: &Path, store: Store, port: u16, build: String, on_ready: 
         token,
         cache: HashMap::new(),
         last_activity: Instant::now(),
+        closing_since: None,
         quit: false,
     };
-    while !app.quit && app.last_activity.elapsed() < IDLE_SHUTDOWN {
+    while !app.should_stop() {
         match server.recv_timeout(POLL) {
             Ok(Some(request)) => app.handle(request),
             Ok(None) => {}
