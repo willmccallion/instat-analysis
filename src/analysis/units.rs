@@ -176,7 +176,8 @@ pub fn units(context: &Context<'_>) -> UnitsReport {
         .map(|kind| {
             let observations: Vec<(f64, f64)> = accumulated
                 .iter()
-                .filter(|((k, _), acc)| *k == kind && acc.toi >= context.min_unit_toi.0)
+                // Every unit informs the prior; method-of-moments already discounts small samples.
+                .filter(|((k, _), acc)| *k == kind && acc.corsi_for + acc.corsi_against > 0)
                 .map(|(_, acc)| (f64::from(acc.corsi_for), f64::from(acc.corsi_for + acc.corsi_against)))
                 .collect();
             (kind, fit_beta_prior(&observations))

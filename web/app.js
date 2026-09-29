@@ -773,23 +773,27 @@ function viewLines() {
   const tabs = el("div", { class: "segmented", style: "margin-bottom:14px" }, UNIT_TABS.map(([id, label]) => el("button", { class: state.unitTab === id ? "on" : "", text: `${label} (${a.units[id].length})`, onclick: () => { state.unitTab = id; render(); } })));
   const special = state.unitTab === "power_play" || state.unitTab === "penalty_kill";
   const prior = a.units.priors.find(([k]) => ({ defence_pairs: "DefencePair", forward_lines: "ForwardLine", full_units: "FullUnit" })[state.unitTab] === k);
-  const ranked = list.filter((u) => u.toi >= a.request.min_unit_minutes * 60);
+  // Five-man and special-teams units play far fewer minutes, so they get a lower bar.
+  const minMinutes = { defence_pairs: a.request.min_unit_minutes, forward_lines: a.request.min_unit_minutes, full_units: Math.min(1, a.request.min_unit_minutes), power_play: 0.5, penalty_kill: 0.5 }[state.unitTab];
+  const ranked = list.filter((u) => u.toi >= minMinutes * 60);
+  const hiddenNote = ranked.length < list.length ? ` ${list.length - ranked.length} unit(s) under ${minMinutes} min are only in the table below.` : "";
+  const labelWidth = list.some((u) => u.players.length >= 4) ? 340 : special ? 220 : 190;
   let chart;
   if (!special) {
     chart = chartCard("Shot-attempt share, adjusted for sample size",
-      "Dot = best estimate of each unit's true share of shot attempts; whiskers = 90% range. Short-time units are pulled toward the team average (the line) until they earn their number.",
+      `Dot = best estimate of each unit's true share of shot attempts; whiskers = 90% range. Short-time units are pulled toward the team average (the line) until they earn their number.${hiddenNote}`,
       (c) => hBarChart(c, [...ranked].sort((x, y) => (y.shrunk_corsi?.estimate.value ?? 0) - (x.shrunk_corsi?.estimate.value ?? 0)).map((u) => ({
         label: shortNames(u.players),
         value: u.shrunk_corsi?.estimate.value ?? null,
         low: u.shrunk_corsi?.estimate.low,
         high: u.shrunk_corsi?.estimate.high,
         note: `raw ${pct(u.corsi_pct, 0)} over ${minutes(u.toi)} min · ${probabilityWords(u.shrunk_corsi?.prob_above_average)}`,
-      })), { dots: true, reference: prior ? prior[1].mean * 100 : undefined, referenceLabel: "team avg", valueFormat: (v) => pct(v, 0), intervalName: "90% range", labelWidth: 190 }),
+      })), { dots: true, reference: prior ? prior[1].mean * 100 : undefined, referenceLabel: "team avg", valueFormat: (v) => pct(v, 0), intervalName: "90% range", labelWidth }),
       null);
   } else {
     chart = chartCard(state.unitTab === "power_play" ? "Power-play shots per 60 minutes" : "Shots against per 60 minutes on the penalty kill",
-      state.unitTab === "power_play" ? "Higher is better." : "Lower is better.",
-      (c) => hBarChart(c, ranked.map((u) => ({ label: shortNames(u.players), value: u.shots_60, note: `${minutes(u.toi)} min, ${u.goals_for + u.goals_against} goals` })), { valueFormat: (v) => fmt(v, 0), labelWidth: 220 }),
+      `${state.unitTab === "power_play" ? "Higher is better." : "Lower is better."}${hiddenNote}`,
+      (c) => hBarChart(c, ranked.map((u) => ({ label: shortNames(u.players), value: u.shots_60, note: `${minutes(u.toi)} min, ${u.goals_for + u.goals_against} goals` })), { valueFormat: (v) => fmt(v, 0), labelWidth }),
       null);
   }
   const evenColumns = [
@@ -816,7 +820,7 @@ function viewLines() {
   ];
   const body = el("div");
   const tableCard = more("All combinations as a table (sorted by ice time; grey = under the minimum)", body);
-  dataTable(body, special ? specialColumns : evenColumns, list, { sortKey: "toi", dim: (u) => u.toi < a.request.min_unit_minutes * 60 });
+  dataTable(body, special ? specialColumns : evenColumns, list, { sortKey: "toi", dim: (u) => u.toi < minMinutes * 60 });
   return page("Lines & pairs", "Every combination InStat tracked, pooled over the games in scope.", tabs, chart, tableCard);
 }
 
@@ -1327,10 +1331,11 @@ window.addEventListener("resize", () => {
 });
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
 
-const [initialView, initialPlayer] = decodeURIComponent(location.hash.slice(1)).split(":");
+const [initialView, initialPlayer, initialTab] = decodeURIComponent(location.hash.slice(1)).split(":");
 if (VIEWS.some((v) => v.id === initialView)) state.view = initialView;
 if (initialView === "players" && initialPlayer) state.player = initialPlayer;
 if (SUBVIEWS[initialView] && SUBVIEWS[initialView].some(([id]) => id === initialPlayer)) state.sub[initialView] = initialPlayer;
+if (initialView === "lines" && UNIT_TABS.some(([id]) => id === initialTab)) state.unitTab = initialTab;
 
 if (!snapshot) {
   setInterval(() => { api("/api/heartbeat", { method: "POST" }).catch(() => {}); }, 60000);
