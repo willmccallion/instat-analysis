@@ -15,6 +15,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("choose your team before adding games")]
     NoTeam,
+    #[error("update failed: {0}")]
+    Update(String),
     #[error("{matchup}: {}", wrong_team_reason(team, *both))]
     WrongTeam { team: String, matchup: String, both: bool },
 }

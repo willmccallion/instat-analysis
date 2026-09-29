@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,7 @@ use crate::analysis::{Request, analyse};
 use crate::error::Error;
 use crate::model::{GameId, TeamPrefix};
 use crate::store::Store;
+use crate::update::{self, UpdateStatus};
 use crate::web;
 
 const IDLE_SHUTDOWN: Duration = Duration::from_mins(15);
@@ -130,6 +132,7 @@ fn new_token() -> String {
 
 struct App {
     store: Store,
+    update: Arc<Mutex<UpdateStatus>>,
     token: String,
     cache: HashMap<String, String>,
     last_activity: Instant,
@@ -214,6 +217,10 @@ impl App {
         Ok(json)
     }
 
+    fn update_status(&self) -> UpdateStatus {
+        self.update.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
     fn should_stop(&self) -> bool {
         self.quit
             || self.last_activity.elapsed() >= IDLE_SHUTDOWN
@@ -292,6 +299,14 @@ impl App {
                     Err(e) => error_json(request, 400, e.to_string()),
                 }
             }
+            (Method::Get, "/api/update") => respond_json(request, 200, &self.update_status()),
+            (Method::Post, "/api/update") => match self.update_status() {
+                UpdateStatus::Available { release } => match update::install(&release) {
+                    Ok(()) => respond_json(request, 200, &release.version),
+                    Err(e) => error_json(request, 500, e.to_string()),
+                },
+                _ => error_json(request, 409, "no update is available"),
+            },
             (Method::Post, "/api/heartbeat") => respond_json(request, 200, &true),
             (Method::Post, "/api/closing") => {
                 self.closing_since = Some(Instant::now());
@@ -325,8 +340,15 @@ pub fn serve(data_dir: &Path, store: Store, port: u16, build: String, on_ready: 
     std::fs::write(lock_path(data_dir), serde_json::to_vec(&lock)?)?;
     let url = format!("http://127.0.0.1:{bound}/?t={token}");
     on_ready(&url);
+    let update = Arc::new(Mutex::new(UpdateStatus::Checking));
+    let checker = Arc::clone(&update);
+    std::thread::spawn(move || {
+        let status = update::check();
+        *checker.lock().unwrap_or_else(PoisonError::into_inner) = status;
+    });
     let mut app = App {
         store,
+        update,
         token,
         cache: HashMap::new(),
         last_activity: Instant::now(),

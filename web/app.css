@@ -336,3 +336,5 @@ button.link.quiet:hover, button.link.quiet:focus-visible { color: var(--series-1
 .notes { margin: 8px 0 0; padding-left: 18px; }
 .setup { max-width: 560px; }
 .setup .big-choice { font-size: 22px; padding: 14px 40px; margin-bottom: 8px; }
+.update-banner { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 12px 16px; margin-bottom: 16px; border-radius: var(--radius); background: var(--accent-wash); border: 1px solid color-mix(in srgb, var(--series-1) 40%, transparent); }
+.update-banner .small { margin-top: 4px; white-space: pre-line; }

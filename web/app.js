@@ -116,6 +116,9 @@ const state = {
   problems: [],
   team: null,
   changingTeam: false,
+  update: null,
+  updateInstalling: false,
+  updateError: null,
 };
 
 const VIEWS = [
@@ -243,7 +246,7 @@ function renderSidebar() {
   } else {
     footer.append(el("div", { class: "small muted", text: "Saved report — scope is fixed." }));
   }
-  document.getElementById("team-name").textContent = state.analysis?.team_name || "Hockey Stats";
+  document.getElementById("team-name").textContent = state.analysis?.team_name || "";
 }
 
 // Pages that pool several games show the scope picker; pages that rank players also show
@@ -526,6 +529,47 @@ async function quitApp() {
   if (!confirm("Close Hockey Stats? Your games stay saved.")) return;
   try { await api("/api/quit", { method: "POST" }); } catch { /* the server is gone either way */ }
   showClosed();
+}
+
+async function watchForUpdate() {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      state.update = await api("/api/update");
+    } catch {
+      return;
+    }
+    if (state.update.status !== "Checking") break;
+    await new Promise((resolve) => { setTimeout(resolve, 1000); });
+  }
+  if (state.update.status === "Available") render();
+}
+
+async function installUpdate() {
+  state.updateInstalling = true;
+  state.updateError = null;
+  render();
+  try {
+    await api("/api/update", { method: "POST" });
+    document.body.replaceChildren(el("div", { class: "empty", text: "Updated! Hockey Stats is reopening in a new tab. You can close this one." }));
+  } catch (error) {
+    state.updateInstalling = false;
+    state.updateError = error.message;
+    render();
+  }
+}
+
+function updateBanner() {
+  if (snapshot || state.update?.status !== "Available") return null;
+  const { version, notes } = state.update.release;
+  return el("div", { class: "update-banner" }, [
+    el("div", {}, [
+      el("strong", { text: `A new version of Hockey Stats (${version}) is available.` }),
+      notes ? el("div", { class: "small", text: notes }) : null,
+      state.updateInstalling ? el("div", { class: "small", text: "Downloading and checking the new version…" }) : null,
+      state.updateError ? el("div", { class: "small err", text: `The update didn't install: ${state.updateError}. Your current version still works.` }) : null,
+    ]),
+    el("button", { class: "primary", text: "Update now", disabled: state.updateInstalling, onclick: installUpdate }),
+  ]);
 }
 
 function showClosed() {
@@ -1536,7 +1580,7 @@ function render() {
   } else {
     content = (views[state.view] || viewSummary)();
   }
-  main.replaceChildren(...[].concat(content).filter(Boolean));
+  main.replaceChildren(...[updateBanner()].concat(content).filter(Boolean));
 }
 
 let resizeTimer = null;
@@ -1560,5 +1604,6 @@ if (!snapshot) {
     fetch("/api/closing", { method: "POST", keepalive: true, headers: { "X-Hockey-Token": state.token } }).catch(() => {});
   });
   window.addEventListener("pageshow", (event) => { if (event.persisted) refresh(); });
+  watchForUpdate();
 }
 refresh();
