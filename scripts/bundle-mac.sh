@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds "Hockey Stats.app" (universal arm64 + x86_64), ad-hoc signs it and zips it with
-# the coach README. Run inside `nix develop`.
+# Builds "Hockey Stats.app" (universal arm64 + x86_64), ad-hoc signs it, and packages it as
+# a drag-to-Applications disk image and a zip (the zip is what in-app updates download).
+# Run inside `nix develop`.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -33,5 +34,15 @@ if [ "$adhoc_slices" -ne 2 ]; then
 fi
 
 cp packaging/README-coach.txt "$dist/README-coach.txt"
-(cd "$dist" && zip -qry "Hockey-Stats-$version-mac.zip" "Hockey Stats.app" README-coach.txt)
-echo "Built $dist/Hockey-Stats-$version-mac.zip"
+(cd "$dist" && zip -qry Hockey-Stats-mac.zip "Hockey Stats.app" README-coach.txt)
+
+# The disk image shows the app next to an Applications shortcut to drag it onto. Rock Ridge
+# (-r) keeps the shortcut and the executable bit; `dmg` turns the ISO into a compressed .dmg.
+image="$dist/image"
+mkdir -p "$image"
+cp -R "$app" "$image/"
+ln -s /Applications "$image/Applications"
+xorrisofs -quiet -D -l -r -V "Hockey Stats" -no-pad -dir-mode 0755 -o "$dist/uncompressed.iso" "$image"
+dmg "$dist/uncompressed.iso" "$dist/Hockey-Stats-mac.dmg" >/dev/null
+rm -rf "$image" "$dist/uncompressed.iso"
+echo "Built $dist/Hockey-Stats-mac.dmg and $dist/Hockey-Stats-mac.zip (version $version)"

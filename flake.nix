@@ -20,6 +20,23 @@
         extensions = [ "clippy" "rustfmt" ];
         targets = [ "aarch64-apple-darwin" "x86_64-apple-darwin" ];
       };
+      # Converts an ISO image into a compressed macOS .dmg (the approach Bitcoin Core uses
+      # to build Mac disk images off macOS).
+      libdmg-hfsplus = pkgs.stdenv.mkDerivation {
+        pname = "libdmg-hfsplus";
+        version = "unstable-1cc791e";
+        src = pkgs.fetchFromGitHub {
+          owner = "fanquake";
+          repo = "libdmg-hfsplus";
+          rev = "1cc791e4173da9cb0b0cc16c5a1aaa25d5eb5efa";
+          hash = "sha256-FdpuRq6vmvM10RMILDVRYsDcu64ItKvjdfB4CmuU2UQ=";
+        };
+        nativeBuildInputs = [ pkgs.cmake ];
+        buildInputs = [ pkgs.zlib pkgs.bzip2 ];
+        installPhase = ''
+          install -Dm755 dmg/dmg $out/bin/dmg
+        '';
+      };
     in
     {
       devShells.${system}.default = pkgs.mkShell {
@@ -29,6 +46,10 @@
           pkgs.cargo-zigbuild
           pkgs.rcodesign
           pkgs.zip
+          pkgs.xorriso
+          pkgs.minisign
+          pkgs.gh
+          libdmg-hfsplus
         ];
       };
     };
