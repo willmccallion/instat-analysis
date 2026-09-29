@@ -503,6 +503,43 @@ pub fn add_zone_shots(totals: &mut Vec<ZoneShots>, extra: &[ZoneShots]) {
     totals.sort_by_key(|z| z.zone);
 }
 
+/// A faceoff dot, from our point of view: left and right as a player facing the
+/// opponent's net sees them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum FaceoffSpot {
+    OurZoneLeft,
+    OurZoneRight,
+    NeutralOurSideLeft,
+    NeutralOurSideRight,
+    CenterIce,
+    NeutralTheirSideLeft,
+    NeutralTheirSideRight,
+    TheirZoneLeft,
+    TheirZoneRight,
+}
+
+/// Our faceoffs at one dot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpotFaceoffs {
+    pub spot: FaceoffSpot,
+    pub won: u32,
+    pub lost: u32,
+}
+
+/// Adds `extra` into `totals` dot by dot, keeping dots in [`FaceoffSpot`] order.
+pub fn add_spot_faceoffs(totals: &mut Vec<SpotFaceoffs>, extra: &[SpotFaceoffs]) {
+    for e in extra {
+        match totals.iter_mut().find(|t| t.spot == e.spot) {
+            Some(t) => {
+                t.won += e.won;
+                t.lost += e.lost;
+            }
+            None => totals.push(*e),
+        }
+    }
+    totals.sort_by_key(|t| t.spot);
+}
+
 /// Where on the ice a puck battle happened, as InStat's challenges table splits it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum BattleArea {
@@ -1048,6 +1085,8 @@ pub struct Game {
     pub charted_shots: Vec<ChartedShot>,
     #[serde(default)]
     pub charted_shots_against: Vec<OpponentShot>,
+    #[serde(default)]
+    pub faceoff_spots: Vec<SpotFaceoffs>,
     /// Regulation plus any overtime.
     pub length: Seconds,
     pub warnings: Vec<String>,

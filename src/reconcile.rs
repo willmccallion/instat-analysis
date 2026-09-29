@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::model::{
-    Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, Game, OpponentShot, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
+    Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, FaceoffSpot, Game, OpponentShot, SpotFaceoffs,
+    TeamSummary, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
     Jersey, Matchup, Opponent, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
     ShotSituation, ShotSources, ShotType, ShotZone, SkaterStats, StatEntry, Tally, TypeShots, EntryTypes, NetArea, NetShots,
     Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
@@ -847,6 +848,7 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         shot_zones_against: shot_zones_against(&report.opponent_shots),
         matchups,
         charted_shots,
+        faceoff_spots: faceoff_spots(report.team_stats.faceoff_dots, &team_stats::summary(&report.team_stats.entries[ours]), &mut warnings),
         charted_shots_against: report
             .opponent_shot_chart
             .iter()
@@ -1001,6 +1003,72 @@ fn distribution_cells(
     result
 }
 
+/// The diagram's nine dots in drawing order, from the point of view of the team whose zone is
+/// drawn on the left (see [`crate::parse::diagrams::faceoff_dots`]).
+const LEFT_TEAM_SPOTS: [FaceoffSpot; 9] = [
+    FaceoffSpot::OurZoneLeft,
+    FaceoffSpot::OurZoneRight,
+    FaceoffSpot::NeutralOurSideLeft,
+    FaceoffSpot::NeutralOurSideRight,
+    FaceoffSpot::CenterIce,
+    FaceoffSpot::NeutralTheirSideLeft,
+    FaceoffSpot::NeutralTheirSideRight,
+    FaceoffSpot::TheirZoneLeft,
+    FaceoffSpot::TheirZoneRight,
+];
+
+/// The dots from our side: as drawn if our zone is on the left, else turned round (the other
+/// team's left is our right) with won and lost swapped.
+fn oriented(dots: [(u32, u32); 9], ours_on_left: bool) -> Vec<SpotFaceoffs> {
+    let spots: Vec<(FaceoffSpot, (u32, u32))> = if ours_on_left {
+        LEFT_TEAM_SPOTS.into_iter().zip(dots).collect()
+    } else {
+        LEFT_TEAM_SPOTS.into_iter().rev().zip(dots.map(|(a, b)| (b, a))).collect()
+    };
+    let mut result: Vec<SpotFaceoffs> = spots.into_iter().map(|(spot, (won, lost))| SpotFaceoffs { spot, won, lost }).collect();
+    result.sort_by_key(|s| s.spot);
+    result
+}
+
+fn wins_by_zone(spots: &[SpotFaceoffs]) -> [u32; 3] {
+    let won = |zone: &[FaceoffSpot]| spots.iter().filter(|s| zone.contains(&s.spot)).map(|s| s.won).sum();
+    [
+        won(&[FaceoffSpot::OurZoneLeft, FaceoffSpot::OurZoneRight]),
+        won(&[
+            FaceoffSpot::NeutralOurSideLeft,
+            FaceoffSpot::NeutralOurSideRight,
+            FaceoffSpot::CenterIce,
+            FaceoffSpot::NeutralTheirSideLeft,
+            FaceoffSpot::NeutralTheirSideRight,
+        ]),
+        won(&[FaceoffSpot::TheirZoneLeft, FaceoffSpot::TheirZoneRight]),
+    ]
+}
+
+/// Picks the orientation whose zone totals match our faceoff table.
+fn faceoff_spots(dots: Option<[(u32, u32); 9]>, ours: &TeamSummary, warnings: &mut Vec<String>) -> Vec<SpotFaceoffs> {
+    let Some(dots) = dots else {
+        return Vec::new();
+    };
+    let matching: Vec<Vec<SpotFaceoffs>> = [true, false]
+        .into_iter()
+        .map(|left| oriented(dots, left))
+        .filter(|spots| wins_by_zone(spots) == ours.faceoffs_won_by_zone)
+        .collect();
+    match matching.as_slice() {
+        [only] => only.clone(),
+        [first, second] if first == second => first.clone(),
+        [] => {
+            warnings.push("faceoffs by zones: the dots don't add up to the faceoff table, so they were skipped".into());
+            Vec::new()
+        }
+        _ => {
+            warnings.push("faceoffs by zones: couldn't tell which side of the rink is ours, so the dots were skipped".into());
+            Vec::new()
+        }
+    }
+}
+
 fn charted_shots(raw: &[RawShot], resolver: &Resolver<'_>) -> Vec<ChartedShot> {
     raw.iter()
         .map(|shot| ChartedShot {
@@ -1134,5 +1202,45 @@ fn check_plus_minus(players: &[Player], goals: &[Goal], warnings: &mut Vec<Strin
                 player.name, skater.plus_minus
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::faceoff_spots;
+    use crate::model::{FaceoffSpot, TeamSummary};
+
+    const DRAWN: [(u32, u32); 9] = [(9, 4), (7, 14), (1, 1), (2, 1), (4, 8), (0, 3), (2, 0), (7, 13), (1, 6)];
+
+    fn summary(wins_by_zone: [u32; 3]) -> TeamSummary {
+        TeamSummary {
+            faceoffs_won_by_zone: wins_by_zone,
+            ..TeamSummary::default()
+        }
+    }
+
+    #[test]
+    fn dots_are_taken_as_drawn_when_our_zone_is_on_the_left() {
+        let spots = faceoff_spots(Some(DRAWN), &summary([16, 9, 8]), &mut Vec::new());
+
+        assert_eq!((spots[0].spot, spots[0].won, spots[0].lost), (FaceoffSpot::OurZoneLeft, 9, 4));
+    }
+
+    #[test]
+    fn dots_are_turned_round_when_our_zone_is_on_the_right() {
+        let spots = faceoff_spots(Some(DRAWN), &summary([19, 13, 18]), &mut Vec::new());
+
+        let our_left = spots.iter().find(|s| s.spot == FaceoffSpot::OurZoneLeft).unwrap();
+        assert_eq!((our_left.won, our_left.lost), (6, 1), "the drawing's bottom-right dot, from our side");
+    }
+
+    #[test]
+    fn dots_that_match_neither_side_are_dropped_with_a_warning() {
+        let mut warnings = Vec::new();
+
+        let spots = faceoff_spots(Some(DRAWN), &summary([1, 2, 3]), &mut warnings);
+
+        assert!(spots.is_empty());
+        assert_eq!(warnings.len(), 1);
     }
 }

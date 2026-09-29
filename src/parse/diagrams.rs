@@ -10,7 +10,7 @@ use crate::pdf::{Rect, Word};
 /// Words closer than this (points) make up one printed count, e.g. `"14"`, `"/"`, `"14"`.
 const COUNT_GAP: f64 = 4.0;
 
-/// An `a / b` count (or "—") printed in a diagram, at its centre.
+/// A pair of counts (`a / b`, `a—b` or "—") printed in a diagram, at its centre.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Printed {
     x: f64,
@@ -18,8 +18,14 @@ struct Printed {
     counts: (u32, u32),
 }
 
-/// Every count in `region`; percentages and labels are skipped.
+/// Every `a / b` count in `region`; percentages and labels are skipped.
 fn printed_counts(words: &[Word], region: &Rect) -> Vec<Printed> {
+    printed(words, region, Cell::ratio)
+}
+
+/// Every pair `read` accepts in `region`, from words a point or two apart (InStat sometimes
+/// splits `"7—13"` into `"7"` and `"—13"`).
+fn printed(words: &[Word], region: &Rect, read: fn(&Cell) -> Option<(u32, u32)>) -> Vec<Printed> {
     let inside: Vec<Word> = words
         .iter()
         .filter(|w| region.contains(w.center_x(), w.center_y()))
@@ -39,7 +45,7 @@ fn printed_counts(words: &[Word], region: &Rect) -> Vec<Printed> {
             let (Some(first), Some(last)) = (group.first(), group.last()) else {
                 continue;
             };
-            if let Some(counts) = Cell::parse(&text.join(" ")).ratio() {
+            if let Some(counts) = read(&Cell::parse(&text.join(" "))) {
                 result.push(Printed {
                     x: f64::midpoint(first.x0, last.x1),
                     y: line.y,
@@ -108,9 +114,40 @@ pub fn zone_grid(words: &[Word], region: &Rect) -> Option<Vec<(ShotZone, (u32, u
     Some(result)
 }
 
+/// The nine `won—lost` pairs of the "faceoffs by zones" rink, in drawing order.
+///
+/// Left to right, top before bottom: the left zone's dots, the left neutral dots, centre ice,
+/// the right neutral dots and the right zone's dots. `None` unless all nine were printed in
+/// five columns.
+#[must_use]
+pub fn faceoff_dots(words: &[Word], region: &Rect) -> Option<[(u32, u32); 9]> {
+    let mut values = printed(words, region, Cell::pair);
+    if values.len() != 9 {
+        return None;
+    }
+    sort_by_x(&mut values);
+    let mut columns: Vec<Vec<Printed>> = Vec::new();
+    for value in values {
+        match columns.last_mut() {
+            Some(column) if column.last().is_some_and(|last| value.x - last.x < 15.0) => column.push(value),
+            _ => columns.push(vec![value]),
+        }
+    }
+    let sizes: Vec<usize> = columns.iter().map(Vec::len).collect();
+    if sizes != [2, 2, 1, 2, 2] {
+        return None;
+    }
+    let mut ordered = Vec::with_capacity(9);
+    for mut column in columns {
+        sort_by_y(&mut column);
+        ordered.extend(column.iter().map(|p| p.counts));
+    }
+    ordered.try_into().ok()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{net_grid, zone_grid};
+    use super::{faceoff_dots, net_grid, zone_grid};
     use crate::model::{NetArea, ShotZone};
     use crate::pdf::{Rect, Word};
 
@@ -173,6 +210,22 @@ mod tests {
         let words = count(3, 2, 50.0, 100.0);
 
         assert_eq!(net_grid(&words, &EVERYWHERE), None);
+    }
+
+    #[test]
+    fn faceoff_dots_are_read_left_to_right_top_to_bottom_and_split_pairs_rejoined() {
+        let mut words = Vec::new();
+        let pair = |a: u32, b: u32, x: f64, y: f64| vec![word(&a.to_string(), x, y), word(&format!("—{b}"), x + 2.5, y)];
+        for (i, (x, y)) in [(258.0, 246.0), (256.0, 287.0), (292.0, 246.0), (292.0, 287.0), (316.0, 266.0), (340.0, 246.0), (340.0, 287.0), (375.0, 246.0), (377.0, 287.0)].into_iter().enumerate() {
+            let n = u32::try_from(i).unwrap();
+            words.extend(pair(n, 10 + n, x, y));
+        }
+
+        let dots = faceoff_dots(&words, &EVERYWHERE).unwrap();
+
+        assert_eq!(dots[0], (0, 10));
+        assert_eq!(dots[4], (4, 14));
+        assert_eq!(dots[8], (8, 18));
     }
 
     #[test]

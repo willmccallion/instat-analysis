@@ -6,7 +6,8 @@ use crate::analysis::Context;
 use crate::analysis::common::{Estimate, share_pct};
 use crate::analysis::shots::{ShotAgainstDot, ShotDot, shot_dots, shots_against};
 use crate::model::{
-    AreaBattles, Date, Game, GameId, PERIOD_SECONDS, Seconds, Strength, Team, ZoneShots, add_area_battles, add_zone_shots,
+    AreaBattles, Date, Game, GameId, PERIOD_SECONDS, Seconds, SpotFaceoffs, Strength, Team, ZoneShots, add_area_battles,
+    add_spot_faceoffs, add_zone_shots,
 };
 use crate::stats::describe::{mean, quantile};
 use crate::stats::random;
@@ -144,6 +145,8 @@ pub struct TeamReport {
     /// Every shot the shooting charts drew.
     pub charted_shots: Vec<ShotDot>,
     pub charted_shots_against: Vec<ShotAgainstDot>,
+    /// Our faceoffs at each dot (from the team page's rink diagram).
+    pub faceoff_spots: Vec<SpotFaceoffs>,
 }
 
 fn game_log(game: &Game) -> GameLogRow {
@@ -441,6 +444,10 @@ pub fn team(context: &Context<'_>) -> TeamReport {
         battle_areas: battle_areas(games),
         charted_shots: shot_dots(games, &context.roster, |_| true),
         charted_shots_against: shots_against(games),
+        faceoff_spots: games.iter().fold(Vec::new(), |mut totals, g| {
+            add_spot_faceoffs(&mut totals, &g.faceoff_spots);
+            totals
+        }),
         goal_differential: bootstrap_mean(&differentials, 11),
         shot_share_by_game: bootstrap_mean(&shot_shares, 12),
     }

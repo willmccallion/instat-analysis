@@ -5,7 +5,8 @@ use crate::error::Error;
 use crate::layout::{self, Line};
 use crate::model::{CellValue, Seconds, StatEntry, TeamSummary};
 use crate::parse::common::{LINE_TOLERANCE, PAGE_RIGHT};
-use crate::pdf::Page;
+use crate::parse::diagrams;
+use crate::pdf::{Page, Rect};
 
 const SECTION: &str = "team stats";
 
@@ -14,6 +15,25 @@ const SECTION: &str = "team stats";
 pub struct TeamStatsPage {
     pub abbreviations: [String; 2],
     pub entries: [Vec<StatEntry>; 2],
+    /// The "faceoffs by zones" rink as drawn (see [`diagrams::faceoff_dots`]).
+    pub faceoff_dots: Option<[(u32, u32); 9]>,
+}
+
+/// The "faceoffs by zones" rink: between its title and the zone labels under it, and
+/// between the diagrams beside it.
+fn faceoff_rink(lines: &[Line<'_>]) -> Option<Rect> {
+    let (title_y, title_x) = lines.iter().find_map(|l| l.find_phrase("FACEOFFS BY ZONES").map(|x| (l.y, x)))?;
+    let center = title_x + 30.0;
+    let bottom = lines
+        .iter()
+        .filter(|l| l.y > title_y)
+        .find_map(|l| l.find_phrase("NEUTRAL").filter(|x| (x - center).abs() < 60.0).map(|_| l.y))?;
+    Some(Rect {
+        x0: center - 100.0,
+        x1: center + 100.0,
+        top: title_y + 4.0,
+        bottom: bottom - 4.0,
+    })
 }
 
 struct Block {
@@ -110,6 +130,7 @@ pub fn parse(page: &Page) -> Result<TeamStatsPage, Error> {
     if result.abbreviations[0].is_empty() {
         return Err(Error::parse(SECTION, "no team abbreviation header"));
     }
+    result.faceoff_dots = faceoff_rink(&lines).and_then(|region| diagrams::faceoff_dots(&page.words, &region));
     Ok(result)
 }
 

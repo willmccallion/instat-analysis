@@ -915,12 +915,8 @@ function rinkZone(at) {
   return at.along > 25 ? "theirs" : "neutral";
 }
 
-/**
- * Events on a full rink in feet, our net on the left. events: [{kind, at: {along, across}}];
- * styles: {kind: {label, color, mark: "dot" | "ring" | "cross"}} (kinds without a style are
- * skipped). The legend counts each kind by zone.
- */
-function rinkPlot(container, events, styles, options = {}) {
+/** An empty full rink in feet (x −100…100 along, y −42.5…42.5 across), our net on the left. */
+function fullRink(container, options = {}) {
   const width = Math.min(measureWidth(container), options.maxWidth ?? 640);
   const height = Math.round((width * 89) / 204);
   const root = svg("svg", { class: "chart", viewBox: "-102 -44.5 204 89", width, height, role: "img", "aria-label": options.title || "rink map" });
@@ -941,6 +937,65 @@ function rinkPlot(container, events, styles, options = {}) {
     ...[-1, 1].map((side) => svg("rect", { x: side < 0 ? -92.3 : 89, y: -3, width: 3.3, height: 6, fill: "none", stroke: css("--text-muted"), "stroke-width": 0.5 })),
   );
   root.append(lines, svg("path", { d: outline, fill: "none", stroke: css("--axis"), "stroke-width": 0.6, "pointer-events": "none" }));
+  return { root, width };
+}
+
+/** Where each faceoff dot sits in rink feet; "Left" is the top of the drawing (our left
+ * when facing their net). */
+const FACEOFF_SPOTS = {
+  OurZoneLeft: [-69, -22, "Our zone, left dot"], OurZoneRight: [-69, 22, "Our zone, right dot"],
+  NeutralOurSideLeft: [-20, -22, "Neutral zone, our side, left"], NeutralOurSideRight: [-20, 22, "Neutral zone, our side, right"],
+  CenterIce: [0, 0, "Centre ice"],
+  NeutralTheirSideLeft: [20, -22, "Neutral zone, their side, left"], NeutralTheirSideRight: [20, 22, "Neutral zone, their side, right"],
+  TheirZoneLeft: [69, -22, "Their zone, left dot"], TheirZoneRight: [69, 22, "Their zone, right dot"],
+};
+
+function faceoffSpotName(spot) {
+  return FACEOFF_SPOTS[spot]?.[2] ?? spot;
+}
+
+/**
+ * Our faceoff win % at every dot, on a full rink with our net on the left.
+ * spots: [{spot, won, lost}]; blue = we win most there, red = we lose most.
+ */
+function faceoffMap(container, spots, options = {}) {
+  const { root } = fullRink(container, options);
+  for (const { spot, won, lost } of spots) {
+    const [x, y] = FACEOFF_SPOTS[spot] || [];
+    if (x === undefined) continue;
+    const total = won + lost;
+    const rate = total ? (100 * won) / total : null;
+    const fill = rate === null ? css("--surface-1") : divergingColor(Math.max(-1, Math.min(1, (rate - 50) / 30)));
+    const ink = rate === null ? css("--text-muted") : inkOn(fill);
+    const g = svg("g", { class: "mark" }, [
+      svg("circle", { cx: x, cy: y, r: 11, fill, stroke: css("--surface-1"), "stroke-width": 0.8 }),
+      svg("text", { x, y: y - 0.5, "text-anchor": "middle", style: `fill:${ink};font-size:5.8px;font-weight:650`, text: rate === null ? "—" : `${Math.round(rate)}%` }),
+      svg("text", { x, y: y + 6, "text-anchor": "middle", style: `fill:${ink};font-size:4.6px`, text: `${won}–${lost}` }),
+    ]);
+    attachTooltip(g, faceoffSpotName(spot), () => [
+      { value: String(won), name: "won" }, { value: String(lost), name: "lost" }, { value: rate === null ? "—" : `${Math.round(rate)}%`, name: "win rate" },
+    ]);
+    root.append(g);
+  }
+  container.replaceChildren(root);
+  const zone = (names) => {
+    const [won, lost] = spots.filter((s) => names.includes(s.spot)).reduce(([w, l], s) => [w + s.won, l + s.lost], [0, 0]);
+    return won + lost ? `${Math.round((100 * won) / (won + lost))}% (${won}–${lost})` : "—";
+  };
+  container.append(el("div", { class: "legend" }, [
+    el("span", {}, [el("span", { class: "key", style: `background:${divergingColor(1)}` }), "we win most"]),
+    el("span", {}, [el("span", { class: "key", style: `background:${divergingColor(-1)}` }), "we lose most"]),
+    el("span", { class: "muted", text: `our zone ${zone(["OurZoneLeft", "OurZoneRight"])} · neutral ${zone(["NeutralOurSideLeft", "NeutralOurSideRight", "CenterIce", "NeutralTheirSideLeft", "NeutralTheirSideRight"])} · their zone ${zone(["TheirZoneLeft", "TheirZoneRight"])} · our net on the left` }),
+  ]));
+}
+
+/**
+ * Events on a full rink in feet, our net on the left. events: [{kind, at: {along, across}}];
+ * styles: {kind: {label, color, mark: "dot" | "ring" | "cross"}} (kinds without a style are
+ * skipped). The legend counts each kind by zone.
+ */
+function rinkPlot(container, events, styles, options = {}) {
+  const { root } = fullRink(container, options);
   for (const event of events) {
     const style = styles[event.kind];
     if (!style) continue;
@@ -1171,6 +1226,6 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
   hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
-  zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, rinkPlot, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
+  zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
 };
 })();
