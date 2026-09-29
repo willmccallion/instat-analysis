@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::analysis::Context;
 use crate::analysis::common::{Estimate, PlayerRef};
-use crate::model::{Date, HistoryKind, PlayerId, Seconds, StatEntry};
+use crate::model::{Date, DistanceSaves, HistoryKind, PlayerId, Seconds, StatEntry};
 use crate::stats::describe::{mean, wilson_interval};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -33,6 +33,8 @@ pub struct GoalieSeason {
     pub instat_mean: Option<f64>,
     pub trend: Vec<GoalieTrendPoint>,
     pub focus_details: Vec<StatEntry>,
+    /// Save % by shot distance, summed over games.
+    pub by_distance: Vec<DistanceSaves>,
 }
 
 fn save_interval(saves: u32, shots: u32) -> Option<Estimate> {
@@ -42,6 +44,21 @@ fn save_interval(saves: u32, shots: u32) -> Option<Estimate> {
         low: 100.0 * low,
         high: 100.0 * high,
     })
+}
+
+/// Totals per distance band, in the order bands first appear.
+fn sum_distance_bands<'a>(bands: impl Iterator<Item = &'a DistanceSaves>) -> Vec<DistanceSaves> {
+    let mut totals: Vec<DistanceSaves> = Vec::new();
+    for band in bands {
+        match totals.iter_mut().find(|t| t.band == band.band) {
+            Some(total) => {
+                total.shots += band.shots;
+                total.saves += band.saves;
+            }
+            None => totals.push(band.clone()),
+        }
+    }
+    totals
 }
 
 #[must_use]
@@ -127,6 +144,7 @@ pub fn goalies(context: &Context<'_>) -> Vec<GoalieSeason> {
                 instat_mean: mean(&instat),
                 trend,
                 focus_details,
+                by_distance: sum_distance_bands(appearances.iter().flat_map(|(_, _, s)| s.by_distance.iter())),
             })
         })
         .collect()

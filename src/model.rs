@@ -333,6 +333,59 @@ impl CellValue {
     }
 }
 
+/// Where a shot was taken from, as InStat divides the offensive zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ShotZone {
+    Slot,
+    Center,
+    RightFlank,
+    LeftFlank,
+    BlueLineRight,
+    BlueLineCenter,
+    BlueLineLeft,
+}
+
+impl ShotZone {
+    pub const ALL: [Self; 7] = [
+        Self::Slot,
+        Self::Center,
+        Self::RightFlank,
+        Self::LeftFlank,
+        Self::BlueLineRight,
+        Self::BlueLineCenter,
+        Self::BlueLineLeft,
+    ];
+
+    /// Column header in InStat's shots table.
+    #[must_use]
+    pub const fn instat_label(self) -> &'static str {
+        match self {
+            Self::Slot => "Slot",
+            Self::Center => "Center",
+            Self::RightFlank => "Right flank",
+            Self::LeftFlank => "Left flank",
+            Self::BlueLineRight => "Blue line right",
+            Self::BlueLineCenter => "Blue line center",
+            Self::BlueLineLeft => "Blue line left",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoneShots {
+    pub zone: ShotZone,
+    pub shots: u32,
+    pub on_goal: u32,
+}
+
+/// Shots faced by a goalie from one distance band, as on InStat's goalie page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DistanceSaves {
+    pub band: String,
+    pub shots: u32,
+    pub saves: u32,
+}
+
 /// The per-game skater numbers the analysis relies on.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SkaterStats {
@@ -363,6 +416,8 @@ pub struct SkaterStats {
     pub xg: Option<f64>,
     pub on_ice_xg_for: Option<f64>,
     pub on_ice_xg_against: Option<f64>,
+    #[serde(default)]
+    pub shot_zones: Vec<ZoneShots>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -374,6 +429,8 @@ pub struct GoalieStats {
     pub goals_against: u32,
     pub even_strength: Option<(u32, u32)>,
     pub short_handed: Option<(u32, u32)>,
+    #[serde(default)]
+    pub by_distance: Vec<DistanceSaves>,
 }
 
 /// One row of a player's "comparison with recent games" table.

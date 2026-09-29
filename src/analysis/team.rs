@@ -4,7 +4,8 @@ use serde::Serialize;
 
 use crate::analysis::Context;
 use crate::analysis::common::{Estimate, share_pct};
-use crate::model::{Date, Game, GameId, PERIOD_SECONDS, Seconds, Strength, Team};
+use crate::analysis::players::add_zones;
+use crate::model::{Date, Game, GameId, PERIOD_SECONDS, Seconds, Strength, Team, ZoneShots};
 use crate::stats::describe::{mean, quantile};
 use crate::stats::random;
 
@@ -126,6 +127,8 @@ pub struct TeamReport {
     pub goal_differential: Option<Estimate>,
     /// Mean per-game shot share with a bootstrap 95% interval (≥ 3 games).
     pub shot_share_by_game: Option<Estimate>,
+    /// Our shots by zone (sum over skaters).
+    pub shot_zones: Vec<ZoneShots>,
 }
 
 fn game_log(game: &Game) -> GameLogRow {
@@ -332,6 +335,14 @@ fn cumulative(log: &[GameLogRow]) -> Vec<Cumulative> {
         .collect()
 }
 
+fn shot_zones(games: &[&Game]) -> Vec<ZoneShots> {
+    let mut zones = Vec::new();
+    for skater in games.iter().flat_map(|g| g.players.iter()).filter_map(|p| p.skater.as_ref()) {
+        add_zones(&mut zones, &skater.shot_zones);
+    }
+    zones
+}
+
 #[must_use]
 pub fn team(context: &Context<'_>) -> TeamReport {
     let games = &context.scope;
@@ -389,6 +400,7 @@ pub fn team(context: &Context<'_>) -> TeamReport {
         score_states: score_states(games),
         cumulative: cumulative(&log),
         game_log: log,
+        shot_zones: shot_zones(games),
         goal_differential: bootstrap_mean(&differentials, 11),
         shot_share_by_game: bootstrap_mean(&shot_shares, 12),
     }

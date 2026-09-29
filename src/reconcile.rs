@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::model::{
-    Advantage, CellValue, Game, GameId, Goal, GoalieStats, HistoryKind, HistoryRow, Interval,
-    Jersey, Player, PlayerId, PlayerMatrix, Position, Seconds, SkaterStats, StatEntry, Strength,
-    Team, TeamName, TeamStatRow, Unit, UnitKind,
+    Advantage, CellValue, DistanceSaves, Game, GameId, Goal, GoalieStats, HistoryKind, HistoryRow, Interval,
+    Jersey, Player, PlayerId, PlayerMatrix, Position, Seconds, ShotZone, SkaterStats, StatEntry,
+    Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots,
 };
 use crate::parse::common::{PlayerRow, RowLabel};
 use crate::parse::match_report::MatchReport;
@@ -222,8 +222,24 @@ fn skater_stats(
         xg: page_decimal("xG"),
         on_ice_xg_for: page_decimal("Team xG when on ice"),
         on_ice_xg_against: page_decimal("Opponent's xG when on ice"),
+        shot_zones: extra.get(SHOTS_TABLE).copied().flatten().map(shot_zones).unwrap_or_default(),
     }
 }
+
+/// Index of the shots table among the extra tables passed to [`skater_stats`].
+const SHOTS_TABLE: usize = 3;
+
+fn shot_zones(row: &PlayerRow) -> Vec<ZoneShots> {
+    ShotZone::ALL
+        .iter()
+        .filter_map(|&zone| {
+            let (shots, on_goal) = row.get_exact(zone.instat_label()).map(Cell::parse)?.ratio()?;
+            Some(ZoneShots { zone, shots, on_goal })
+        })
+        .collect()
+}
+
+const GOALIE_DISTANCE_BANDS: [&str; 4] = ["From the slot", "From close range", "From midrange", "From long range distance"];
 
 fn goalie_stats(page: &PlayerPage) -> GoalieStats {
     let ratio = |label: &str| page.stat(label).and_then(|c| c.ratio());
@@ -243,6 +259,13 @@ fn goalie_stats(page: &PlayerPage) -> GoalieStats {
             .unwrap_or_default(),
         even_strength: ratio("At even strength"),
         short_handed: ratio("Short-handed"),
+        by_distance: GOALIE_DISTANCE_BANDS
+            .iter()
+            .filter_map(|band| {
+                let (shots, saves) = ratio(band)?;
+                Some(DistanceSaves { band: (*band).to_owned(), shots, saves })
+            })
+            .collect(),
     }
 }
 

@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::analysis::Context;
 use crate::analysis::common::{BetaPrior, Estimate, PlayerRef, Shrunk, per_60, share_pct, shrink};
 use crate::analysis::stints::Stint;
-use crate::model::{Date, Game, GameId, HistoryKind, Player, PlayerId, Seconds, SkaterStats, StatEntry, Strength};
+use crate::model::{Date, Game, GameId, HistoryKind, Player, PlayerId, Seconds, SkaterStats, StatEntry, Strength, ZoneShots};
 use crate::stats::describe::{mean, percentile_rank, sample_sd, wilson_interval};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -43,6 +43,7 @@ pub struct SkaterTotals {
     /// Even-strength goals for/against while on the ice (from shifts).
     pub on_ice_goals_for: u32,
     pub on_ice_goals_against: u32,
+    pub shot_zones: Vec<ZoneShots>,
 }
 
 impl SkaterTotals {
@@ -75,7 +76,22 @@ impl SkaterTotals {
         self.xg += s.xg.unwrap_or_default();
         self.on_ice_xg_for += s.on_ice_xg_for.unwrap_or_default();
         self.on_ice_xg_against += s.on_ice_xg_against.unwrap_or_default();
+        add_zones(&mut self.shot_zones, &s.shot_zones);
     }
+}
+
+/// Adds `extra` into `totals`, zone by zone, keeping zones in [`crate::model::ShotZone::ALL`] order.
+pub fn add_zones(totals: &mut Vec<ZoneShots>, extra: &[ZoneShots]) {
+    for z in extra {
+        match totals.iter_mut().find(|t| t.zone == z.zone) {
+            Some(t) => {
+                t.shots += z.shots;
+                t.on_goal += z.on_goal;
+            }
+            None => totals.push(*z),
+        }
+    }
+    totals.sort_by_key(|z| z.zone);
 }
 
 /// Rates per 60 minutes (all situations unless noted).
