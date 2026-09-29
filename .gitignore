@@ -1,2 +1,6 @@
 /target
 /dist
+# Real InStat reports name players; they and the tests built on them stay local.
+/tests/fixtures/
+/tests/game1.rs
+*.pdf
