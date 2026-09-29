@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::model::{
-    Advantage, CellValue, DistanceSaves, Game, GameId, Goal, GoalieStats, HistoryKind, HistoryRow, Interval,
+    Advantage, AreaBattles, BattleArea, CellValue, DistanceSaves, Game, GameId, Goal, GoalieStats, HistoryKind, HistoryRow, Interval,
     Jersey, Player, PlayerId, PlayerMatrix, Position, Seconds, ShotZone, SkaterStats, StatEntry,
-    Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots,
+    Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
 };
 use crate::parse::common::{PlayerRow, RowLabel};
 use crate::parse::match_report::MatchReport;
@@ -223,11 +223,64 @@ fn skater_stats(
         on_ice_xg_for: page_decimal("Team xG when on ice"),
         on_ice_xg_against: page_decimal("Opponent's xG when on ice"),
         shot_zones: extra.get(SHOTS_TABLE).copied().flatten().map(shot_zones).unwrap_or_default(),
+        battle_areas: extra.get(BATTLES_TABLE).copied().flatten().map(battle_areas).unwrap_or_default(),
     }
 }
 
-/// Index of the shots table among the extra tables passed to [`skater_stats`].
+/// Indexes of tables among the extra tables passed to [`skater_stats`].
 const SHOTS_TABLE: usize = 3;
+const BATTLES_TABLE: usize = 4;
+
+#[derive(Clone, Copy)]
+enum Half {
+    Ours,
+    Theirs,
+}
+
+/// Columns follow a zone header, so "In corners" belongs to whichever zone came last.
+fn battle_area(label: &str, half: Option<Half>) -> Option<BattleArea> {
+    Some(match (label, half) {
+        ("Own slot", _) => BattleArea::OwnSlot,
+        ("Behind own goal", _) => BattleArea::BehindOwnGoal,
+        ("In corners", Some(Half::Ours)) => BattleArea::OwnCorners,
+        ("In corners", Some(Half::Theirs)) => BattleArea::OppCorners,
+        ("Own blue line", _) => BattleArea::OwnBlueLine,
+        ("Neutral zone", _) => BattleArea::NeutralZone,
+        ("Opp blue line" | "Opp. blue line", _) => BattleArea::OppBlueLine,
+        ("Behind opp. goal" | "Behind opp goal", _) => BattleArea::BehindOppGoal,
+        ("Opp. slot" | "Opp slot", _) => BattleArea::OppSlot,
+        _ => return None,
+    })
+}
+
+fn battle_areas(row: &PlayerRow) -> Vec<AreaBattles> {
+    let mut half = None;
+    let mut areas = Vec::new();
+    for (label, value) in &row.cells {
+        match label.as_str() {
+            "Defensive zone" => half = Some(Half::Ours),
+            "Offensive zone" => half = Some(Half::Theirs),
+            _ => {}
+        }
+        let Some(area) = battle_area(label, half) else {
+            continue;
+        };
+        if let Some((battles, won)) = Cell::parse(value).ratio() {
+            areas.push(AreaBattles { area, battles, won });
+        }
+    }
+    areas.sort_by_key(|a| a.area);
+    areas
+}
+
+/// Sums shots by zone over the opponent's shots table.
+fn shot_zones_against(rows: &[PlayerRow]) -> Vec<ZoneShots> {
+    let mut totals = Vec::new();
+    for row in rows {
+        add_zone_shots(&mut totals, &shot_zones(row));
+    }
+    totals
+}
 
 fn shot_zones(row: &PlayerRow) -> Vec<ZoneShots> {
     ShotZone::ALL
@@ -683,6 +736,7 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         summary: team_stats::summary(&report.team_stats.entries[ours]),
         opponent_summary: team_stats::summary(&report.team_stats.entries[1 - ours]),
         team_stats: team_stat_rows(report),
+        shot_zones_against: shot_zones_against(&report.opponent_shots),
         length,
         warnings,
     })

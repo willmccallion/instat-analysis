@@ -4,8 +4,9 @@ use serde::Serialize;
 
 use crate::analysis::Context;
 use crate::analysis::common::{Estimate, share_pct};
-use crate::analysis::players::add_zones;
-use crate::model::{Date, Game, GameId, PERIOD_SECONDS, Seconds, Strength, Team, ZoneShots};
+use crate::model::{
+    AreaBattles, Date, Game, GameId, PERIOD_SECONDS, Seconds, Strength, Team, ZoneShots, add_area_battles, add_zone_shots,
+};
 use crate::stats::describe::{mean, quantile};
 use crate::stats::random;
 
@@ -129,6 +130,10 @@ pub struct TeamReport {
     pub shot_share_by_game: Option<Estimate>,
     /// Our shots by zone (sum over skaters).
     pub shot_zones: Vec<ZoneShots>,
+    /// The opponents' shots by zone, i.e. where they shot on our net.
+    pub shot_zones_against: Vec<ZoneShots>,
+    /// Our puck battles by area of the ice (sum over skaters).
+    pub battle_areas: Vec<AreaBattles>,
 }
 
 fn game_log(game: &Game) -> GameLogRow {
@@ -338,9 +343,25 @@ fn cumulative(log: &[GameLogRow]) -> Vec<Cumulative> {
 fn shot_zones(games: &[&Game]) -> Vec<ZoneShots> {
     let mut zones = Vec::new();
     for skater in games.iter().flat_map(|g| g.players.iter()).filter_map(|p| p.skater.as_ref()) {
-        add_zones(&mut zones, &skater.shot_zones);
+        add_zone_shots(&mut zones, &skater.shot_zones);
     }
     zones
+}
+
+fn shot_zones_against(games: &[&Game]) -> Vec<ZoneShots> {
+    let mut zones = Vec::new();
+    for game in games {
+        add_zone_shots(&mut zones, &game.shot_zones_against);
+    }
+    zones
+}
+
+fn battle_areas(games: &[&Game]) -> Vec<AreaBattles> {
+    let mut areas = Vec::new();
+    for skater in games.iter().flat_map(|g| g.players.iter()).filter_map(|p| p.skater.as_ref()) {
+        add_area_battles(&mut areas, &skater.battle_areas);
+    }
+    areas
 }
 
 #[must_use]
@@ -401,6 +422,8 @@ pub fn team(context: &Context<'_>) -> TeamReport {
         cumulative: cumulative(&log),
         game_log: log,
         shot_zones: shot_zones(games),
+        shot_zones_against: shot_zones_against(games),
+        battle_areas: battle_areas(games),
         goal_differential: bootstrap_mean(&differentials, 11),
         shot_share_by_game: bootstrap_mean(&shot_shares, 12),
     }

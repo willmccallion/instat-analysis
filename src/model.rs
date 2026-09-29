@@ -378,6 +378,55 @@ pub struct ZoneShots {
     pub on_goal: u32,
 }
 
+/// Adds `extra` into `totals` zone by zone, keeping zones in [`ShotZone`] order.
+pub fn add_zone_shots(totals: &mut Vec<ZoneShots>, extra: &[ZoneShots]) {
+    for z in extra {
+        match totals.iter_mut().find(|t| t.zone == z.zone) {
+            Some(t) => {
+                t.shots += z.shots;
+                t.on_goal += z.on_goal;
+            }
+            None => totals.push(*z),
+        }
+    }
+    totals.sort_by_key(|z| z.zone);
+}
+
+/// Where on the ice a puck battle happened, as InStat's challenges table splits it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BattleArea {
+    OwnSlot,
+    BehindOwnGoal,
+    OwnCorners,
+    OwnBlueLine,
+    NeutralZone,
+    OppBlueLine,
+    OppCorners,
+    BehindOppGoal,
+    OppSlot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AreaBattles {
+    pub area: BattleArea,
+    pub battles: u32,
+    pub won: u32,
+}
+
+/// Adds `extra` into `totals` area by area, keeping areas in [`BattleArea`] order.
+pub fn add_area_battles(totals: &mut Vec<AreaBattles>, extra: &[AreaBattles]) {
+    for a in extra {
+        match totals.iter_mut().find(|t| t.area == a.area) {
+            Some(t) => {
+                t.battles += a.battles;
+                t.won += a.won;
+            }
+            None => totals.push(*a),
+        }
+    }
+    totals.sort_by_key(|a| a.area);
+}
+
 /// Shots faced by a goalie from one distance band, as on InStat's goalie page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DistanceSaves {
@@ -418,6 +467,8 @@ pub struct SkaterStats {
     pub on_ice_xg_against: Option<f64>,
     #[serde(default)]
     pub shot_zones: Vec<ZoneShots>,
+    #[serde(default)]
+    pub battle_areas: Vec<AreaBattles>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -528,6 +579,9 @@ pub struct Game {
     pub opponent_summary: TeamSummary,
     /// Every team-level stat for (us, them), for display.
     pub team_stats: Vec<TeamStatRow>,
+    /// The opponent's shots by zone, i.e. where they shot on our net.
+    #[serde(default)]
+    pub shot_zones_against: Vec<ZoneShots>,
     /// Regulation plus any overtime.
     pub length: Seconds,
     pub warnings: Vec<String>,

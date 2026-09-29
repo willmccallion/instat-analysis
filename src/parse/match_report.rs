@@ -40,7 +40,7 @@ pub struct TeamPages {
     pub passes: Option<RawMatrix>,
 }
 
-/// Only our team's pages are parsed; the opponent appears via team-level stats only.
+/// Our team's pages in full; of the opponent's, only team-level stats and their shots table.
 #[derive(Debug, Clone)]
 pub struct MatchReport {
     pub title: Title,
@@ -48,6 +48,7 @@ pub struct MatchReport {
     pub our_index: usize,
     pub team_stats: TeamStatsPage,
     pub ours: TeamPages,
+    pub opponent_shots: Vec<PlayerRow>,
 }
 
 /// The team this tool analyses.
@@ -115,6 +116,7 @@ pub fn parse(pages: &[Page]) -> Result<MatchReport, Error> {
     let our_name = &title.teams[our_index];
     let mut team_stats = None;
     let mut ours = TeamPages::default();
+    let mut opponent_shots = Vec::new();
     for page in &pages[1..] {
         let Some(heading) = page_heading(page) else {
             continue;
@@ -125,6 +127,8 @@ pub fn parse(pages: &[Page]) -> Result<MatchReport, Error> {
         }
         if heading.team.as_ref() == Some(our_name) {
             parse_team_page(page, &heading.title, &mut ours)?;
+        } else if heading.title == "SHOTS" {
+            opponent_shots = shots_table(page)?;
         }
     }
     let team_stats = team_stats.ok_or_else(|| Error::parse(SECTION, "no TEAMS STATS page"))?;
@@ -133,6 +137,7 @@ pub fn parse(pages: &[Page]) -> Result<MatchReport, Error> {
         our_index,
         team_stats,
         ours,
+        opponent_shots,
     })
 }
 
@@ -141,11 +146,7 @@ fn parse_team_page(page: &Page, title: &str, team: &mut TeamPages) -> Result<(),
         "PLAYERS' STATS" => parse_players_stats(page, &mut team.tables)?,
         "LINES STATS" => team.units = lines::parse(page)?,
         "GAME TIME DISTRIBUTION" => team.timeline = Some(timeline::parse(page)?),
-        "SHOTS" => {
-            let lines = layout::lines(&page.words, LINE_TOLERANCE);
-            let (y, x) = require_phrase(&lines, "Shots stats", "shots")?;
-            team.tables.shots = player_table(&page.words, x, PAGE_RIGHT, y, "shots")?;
-        }
+        "SHOTS" => team.tables.shots = shots_table(page)?,
         "CHALLENGES" => {
             let lines = layout::lines(&page.words, LINE_TOLERANCE);
             let (y, x) = require_phrase(&lines, "Challenges", "challenges")?;
@@ -156,6 +157,12 @@ fn parse_team_page(page: &Page, title: &str, team: &mut TeamPages) -> Result<(),
         _ => {}
     }
     Ok(())
+}
+
+fn shots_table(page: &Page) -> Result<Vec<PlayerRow>, Error> {
+    let lines = layout::lines(&page.words, LINE_TOLERANCE);
+    let (y, x) = require_phrase(&lines, "Shots stats", "shots")?;
+    player_table(&page.words, x, PAGE_RIGHT, y, "shots")
 }
 
 fn parse_players_stats(page: &Page, tables: &mut PlayerTables) -> Result<(), Error> {
