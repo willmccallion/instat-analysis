@@ -1,4 +1,5 @@
-//! Head-to-head puck battles between our skaters and the opponent's, per game and per player.
+//! Head-to-head puck battles and hits between our skaters and the opponent's, per game and
+//! per player.
 
 use std::collections::HashMap;
 
@@ -14,68 +15,93 @@ pub struct Battles {
     pub lost: u32,
 }
 
-impl Battles {
+/// Hits from our side.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Hits {
+    pub given: u32,
+    pub taken: u32,
+}
+
+/// Battles and hits between skaters, from our side.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Encounters {
+    pub battles: Battles,
+    pub hits: Hits,
+}
+
+impl Encounters {
     const fn of(matchup: &Matchup) -> Self {
         Self {
-            won: matchup.battles_won,
-            lost: matchup.battles_lost,
+            battles: Battles {
+                won: matchup.battles_won,
+                lost: matchup.battles_lost,
+            },
+            hits: Hits {
+                given: matchup.hits,
+                taken: matchup.hits_against,
+            },
         }
     }
 
     const fn add(&mut self, other: Self) {
-        self.won += other.won;
-        self.lost += other.lost;
+        self.battles.won += other.battles.won;
+        self.battles.lost += other.battles.lost;
+        self.hits.given += other.hits.given;
+        self.hits.taken += other.hits.taken;
     }
 
     const fn total(self) -> u32 {
-        self.won + self.lost
+        self.battles.won + self.battles.lost + self.hits.given + self.hits.taken
     }
 }
 
-/// One opponent skater's battles against us in a game.
+/// One opponent skater's battles and hits against us in a game.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct OpponentBattles {
+pub struct OpponentTotals {
     pub opponent: Opponent,
-    pub battles: Battles,
+    #[serde(flatten)]
+    pub encounters: Encounters,
 }
 
-/// Battles between `players[player]` and `opponents[opponent]` of a [`GameMatchups`].
+/// What happened between `players[player]` and `opponents[opponent]` of a [`GameMatchups`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MatchupCell {
     pub player: usize,
     pub opponent: usize,
-    pub battles: Battles,
+    #[serde(flatten)]
+    pub encounters: Encounters,
 }
 
-/// Who battled whom in one game; players and opponents are listed busiest first.
+/// Who met whom in one game; players and opponents are listed busiest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct GameMatchups {
     pub players: Vec<PlayerRef>,
-    pub opponents: Vec<OpponentBattles>,
+    pub opponents: Vec<OpponentTotals>,
     pub cells: Vec<MatchupCell>,
 }
 
-/// One opponent skater a player battled in one game.
+/// One opponent skater a player met in one game.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PlayerMatchup {
     pub game: GameId,
     pub date: Date,
     pub opponent_team: String,
     pub opponent: Opponent,
-    pub battles: Battles,
+    #[serde(flatten)]
+    pub encounters: Encounters,
 }
 
-/// Keys ordered by their summed battles, most first; ties keep first appearance.
-fn busiest_first<K: Clone + PartialEq>(matchups: &[Matchup], key: impl Fn(&Matchup) -> K) -> Vec<(K, Battles)> {
-    let mut totals: Vec<(K, Battles)> = Vec::new();
+/// Keys ordered by their summed battles and hits, most first; ties keep first appearance.
+fn busiest_first<K: Clone + PartialEq>(matchups: &[Matchup], key: impl Fn(&Matchup) -> K) -> Vec<(K, Encounters)> {
+    let mut totals: Vec<(K, Encounters)> = Vec::new();
     for matchup in matchups {
         let k = key(matchup);
         match totals.iter_mut().find(|(existing, _)| *existing == k) {
-            Some((_, battles)) => battles.add(Battles::of(matchup)),
-            None => totals.push((k, Battles::of(matchup))),
+            Some((_, encounters)) => encounters.add(Encounters::of(matchup)),
+            None => totals.push((k, Encounters::of(matchup))),
         }
     }
-    totals.sort_by_key(|(_, battles)| std::cmp::Reverse(battles.total()));
+    totals.sort_by_key(|(_, encounters)| std::cmp::Reverse(encounters.total()));
     totals
 }
 
@@ -89,9 +115,9 @@ fn arrange(matchups: &[Matchup], player_ref: impl Fn(&PlayerId) -> Option<Player
         .into_iter()
         .filter_map(|(id, _)| player_ref(&id))
         .collect();
-    let opponents: Vec<OpponentBattles> = busiest_first(matchups, |m| m.opponent.clone())
+    let opponents: Vec<OpponentTotals> = busiest_first(matchups, |m| m.opponent.clone())
         .into_iter()
-        .map(|(opponent, battles)| OpponentBattles { opponent, battles })
+        .map(|(opponent, encounters)| OpponentTotals { opponent, encounters })
         .collect();
     let cells = matchups
         .iter()
@@ -99,7 +125,7 @@ fn arrange(matchups: &[Matchup], player_ref: impl Fn(&PlayerId) -> Option<Player
             Some(MatchupCell {
                 player: players.iter().position(|p| p.id == m.player)?,
                 opponent: opponents.iter().position(|o| o.opponent == m.opponent)?,
-                battles: Battles::of(m),
+                encounters: Encounters::of(m),
             })
         })
         .collect();
@@ -110,7 +136,7 @@ fn arrange(matchups: &[Matchup], player_ref: impl Fn(&PlayerId) -> Option<Player
     }
 }
 
-/// Every opponent `id` battled in `games`, latest game first, then most battles first.
+/// Every opponent `id` met in `games`, latest game first, then busiest first.
 #[must_use]
 pub(crate) fn player_matchups(games: &[&Game], id: &PlayerId) -> Vec<PlayerMatchup> {
     let mut rows: Vec<PlayerMatchup> = games
@@ -124,17 +150,17 @@ pub(crate) fn player_matchups(games: &[&Game], id: &PlayerId) -> Vec<PlayerMatch
                     date: game.date,
                     opponent_team: game.opponent.0.clone(),
                     opponent: m.opponent.clone(),
-                    battles: Battles::of(m),
+                    encounters: Encounters::of(m),
                 })
         })
         .collect();
-    rows.sort_by(|a, b| b.date.cmp(&a.date).then(b.battles.total().cmp(&a.battles.total())));
+    rows.sort_by(|a, b| b.date.cmp(&a.date).then(b.encounters.total().cmp(&a.encounters.total())));
     rows
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Battles, arrange};
+    use super::{Battles, Hits, arrange};
     use crate::analysis::common::PlayerRef;
     use crate::model::{Jersey, Matchup, Opponent, PlayerId, Position};
 
@@ -151,6 +177,8 @@ mod tests {
             opponent: opponent(against),
             battles_won: won,
             battles_lost: lost,
+            hits: 0,
+            hits_against: 0,
         }
     }
 
@@ -176,10 +204,25 @@ mod tests {
         let players: Vec<&str> = arranged.players.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(players, ["B", "A"]);
         let opponents: Vec<(&str, Battles)> =
-            arranged.opponents.iter().map(|o| (o.opponent.surname.as_str(), o.battles)).collect();
+            arranged.opponents.iter().map(|o| (o.opponent.surname.as_str(), o.encounters.battles)).collect();
         assert_eq!(opponents, [("Stone", Battles { won: 3, lost: 1 }), ("Reed", Battles { won: 0, lost: 4 })]);
         let cell = arranged.cells.iter().find(|c| c.player == 0 && c.opponent == 1).unwrap();
-        assert_eq!(cell.battles, Battles { won: 0, lost: 4 });
+        assert_eq!(cell.encounters.battles, Battles { won: 0, lost: 4 });
+    }
+
+    #[test]
+    fn hits_count_towards_how_busy_a_matchup_was() {
+        let hit = Matchup {
+            hits: 2,
+            hits_against: 1,
+            ..matchup("A", "Reed", 0, 0)
+        };
+        let matchups = [matchup("B", "Stone", 1, 0), hit];
+
+        let arranged = arrange(&matchups, |id| Some(player_ref(id)));
+
+        assert_eq!(arranged.players[0].name, "A");
+        assert_eq!(arranged.opponents[0].encounters.hits, Hits { given: 2, taken: 1 });
     }
 
     #[test]

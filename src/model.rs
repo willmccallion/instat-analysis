@@ -572,13 +572,20 @@ pub struct Opponent {
     pub surname: String,
 }
 
-/// One of our skaters against one opponent skater, from the challenge distribution page.
+/// One of our skaters against one opponent skater, from the challenge and hits
+/// distribution pages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Matchup {
     pub player: PlayerId,
     pub opponent: Opponent,
     pub battles_won: u32,
     pub battles_lost: u32,
+    /// Hits our player gave this opponent.
+    #[serde(default)]
+    pub hits: u32,
+    /// Hits our player took from this opponent.
+    #[serde(default)]
+    pub hits_against: u32,
 }
 
 /// Passes from row player to column player.

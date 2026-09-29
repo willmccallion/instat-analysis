@@ -688,12 +688,7 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         .passes
         .as_ref()
         .and_then(|m| pass_matrix(m, &resolver, &mut warnings));
-    let matchups = report
-        .ours
-        .battles
-        .as_ref()
-        .map(|m| battle_matchups(m, &resolver, &mut warnings))
-        .unwrap_or_default();
+    let matchups = matchups(report, &resolver, &mut warnings);
 
     let context = PlayerContext {
         sources: skater_sources(tables, &mut warnings),
@@ -853,8 +848,14 @@ fn pass_matrix(
     })
 }
 
-/// Rows are our skaters (labelled like the main table), columns the opponent's skaters.
-fn battle_matchups(raw: &RawMatrix, resolver: &Resolver<'_>, warnings: &mut Vec<String>) -> Vec<Matchup> {
+/// Non-zero `a—b` cells of a distribution page whose rows are our skaters (labelled like the
+/// main table) and whose columns are the opponent's skaters.
+fn distribution_cells(
+    raw: &RawMatrix,
+    page: &str,
+    resolver: &Resolver<'_>,
+    warnings: &mut Vec<String>,
+) -> Vec<(PlayerId, Opponent, (u32, u32))> {
     let opponents: Vec<Opponent> = raw
         .columns
         .iter()
@@ -863,29 +864,57 @@ fn battle_matchups(raw: &RawMatrix, resolver: &Resolver<'_>, warnings: &mut Vec<
             surname: label.surname.clone(),
         })
         .collect();
-    let mut matchups = Vec::new();
+    let mut result = Vec::new();
     for (label, cells) in &raw.rows {
         let Some(player) = resolver.by_table_label(label, None) else {
-            warnings.push(format!("challenge distribution row {} not matched to a player", label.surname));
+            warnings.push(format!("{page} row {} not matched to a player", label.surname));
             continue;
         };
         for (opponent, cell) in opponents.iter().zip(cells) {
             match cell.pair() {
                 Some((0, 0)) => {}
-                Some((battles_won, battles_lost)) => matchups.push(Matchup {
-                    player: player.clone(),
-                    opponent: opponent.clone(),
-                    battles_won,
-                    battles_lost,
-                }),
+                Some(pair) => result.push((player.clone(), opponent.clone(), pair)),
                 None => warnings.push(format!(
-                    "challenge distribution: unreadable cell {cell:?} for {} vs {}",
+                    "{page}: unreadable cell {cell:?} for {} vs {}",
                     label.surname, opponent.surname
                 )),
             }
         }
     }
+    result
+}
+
+/// Battles and hits per (our skater, their skater) pair that met at least once.
+fn matchups(report: &MatchReport, resolver: &Resolver<'_>, warnings: &mut Vec<String>) -> Vec<Matchup> {
+    let pages = &report.ours;
+    let battles = pages.battles.as_ref().map(|m| distribution_cells(m, "challenge distribution", resolver, warnings));
+    let hits = pages.hits.as_ref().map(|m| distribution_cells(m, "hits distribution", resolver, warnings));
+    let mut matchups = Vec::new();
+    for (player, opponent, (won, lost)) in battles.into_iter().flatten() {
+        let m = matchup_entry(&mut matchups, player, opponent);
+        (m.battles_won, m.battles_lost) = (won, lost);
+    }
+    for (player, opponent, (given, taken)) in hits.into_iter().flatten() {
+        let m = matchup_entry(&mut matchups, player, opponent);
+        (m.hits, m.hits_against) = (given, taken);
+    }
     matchups
+}
+
+fn matchup_entry(matchups: &mut Vec<Matchup>, player: PlayerId, opponent: Opponent) -> &mut Matchup {
+    let existing = matchups.iter().position(|m| m.player == player && m.opponent == opponent);
+    let index = existing.unwrap_or_else(|| {
+        matchups.push(Matchup {
+            player,
+            opponent,
+            battles_won: 0,
+            battles_lost: 0,
+            hits: 0,
+            hits_against: 0,
+        });
+        matchups.len() - 1
+    });
+    &mut matchups[index]
 }
 
 /// Latest shift end just before the marker, else the marker minus its usual lag.

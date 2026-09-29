@@ -900,10 +900,14 @@ function battleBalanceChart(container, rows) {
   })), { min: -most, max: most, valueFormat: (v, row) => `${row.battles.won}–${row.battles.lost}`, labelWidth: 150, valueName: "won–lost", tickFormat: (t) => signed(t, 0) });
 }
 
+const hadBattles = (x) => x.battles.won + x.battles.lost > 0;
+const hadHits = (x) => x.hits.given + x.hits.taken > 0;
+
 function gameMatchups(a, timeline) {
   const m = timeline.matchups;
-  if (!m.opponents.length) return emptyNote("This game's match report has no challenge distribution page.");
-  const opponentsCard = chartCard("Their skaters in puck battles", "Each opponent skater's one-on-one battles against us, most battles first. Bars show battles we won minus battles they won (right = we came out ahead); labels are won–lost from our side.", (c) => battleBalanceChart(c, m.opponents.map((o) => ({
+  if (!m.opponents.length) return emptyNote("This game's match report has no challenge or hits distribution page.");
+  const battlers = m.opponents.filter(hadBattles);
+  const opponentsCard = battlers.length ? chartCard("Their skaters in puck battles", "Each opponent skater's one-on-one battles against us, most battles first. Bars show battles we won minus battles they won (right = we came out ahead); labels are won–lost from our side.", (c) => battleBalanceChart(c, battlers.map((o) => ({
     label: opponentName(o.opponent),
     battles: o.battles,
     note: `we won ${o.battles.won}, they won ${o.battles.lost}`,
@@ -913,20 +917,39 @@ function gameMatchups(a, timeline) {
     { key: "won", label: "We won", value: (o) => o.battles.won },
     { key: "lost", label: "They won", value: (o) => o.battles.lost },
     { key: "pct", label: "Our win %", value: (o) => battleWinPct(o.battles), format: (v) => pct(v, 0), tone: "higher" },
-  ], m.opponents, { sortKey: "total" }));
+    { key: "given", label: "Hits by us", value: (o) => o.hits.given },
+    { key: "taken", label: "Hits by them", value: (o) => o.hits.taken },
+  ], m.opponents, { sortKey: "total" })) : null;
   const cellAt = new Map(m.cells.map((cell) => [`${cell.player}:${cell.opponent}`, cell]));
-  const gridCard = chartCard("Who battled whom", "Our skaters down the side, theirs across the top; each square is won–lost from our side. Click a square to open our player's card.", (c) => heatmap(c, { rows: m.players.map((p) => p.name), columns: m.opponents.map((o) => opponentName(o.opponent)) }, (i, j) => {
+  const gridCard = battlers.length ? chartCard("Who battled whom", "Our skaters down the side, theirs across the top; each square is won–lost from our side. Click a square to open our player's card.", (c) => heatmap(c, { rows: m.players.map((p) => p.name), columns: m.opponents.map((o) => opponentName(o.opponent)) }, (i, j) => {
     const cell = cellAt.get(`${i}:${j}`);
-    if (!cell) return null;
+    if (!cell || !hadBattles(cell)) return null;
     return {
       value: battleWinPct(cell.battles),
       text: `${cell.battles.won}–${cell.battles.lost}`,
       title: `${m.players[i].name} vs ${opponentName(m.opponents[j].opponent)}`,
-      tip: [{ value: String(cell.battles.won), name: "we won" }, { value: String(cell.battles.lost), name: "they won" }],
+      tip: [
+        { value: String(cell.battles.won), name: "we won" },
+        { value: String(cell.battles.lost), name: "they won" },
+        ...(hadHits(cell) ? [{ value: `${cell.hits.given}–${cell.hits.taken}`, name: "hits given–taken" }] : []),
+      ],
       onClick: () => goToPlayer(m.players[i].id),
     };
-  }, { kind: "diverging", min: 0, max: 100, center: 50 }, { valueName: "our win %", labelWidth: 150 }), null);
-  return [opponentsCard, el("div", { style: "margin-top:16px" }, [gridCard])];
+  }, { kind: "diverging", min: 0, max: 100, center: 50 }, { valueName: "our win %", labelWidth: 150 }), null) : null;
+  const hits = m.cells.filter(hadHits).map((cell) => ({ player: m.players[cell.player], opponent: m.opponents[cell.opponent].opponent, hits: cell.hits }));
+  const hitsCard = el("div", { class: "card" }, [cardTitle("Hits between skaters"), hits.length ? el("div") : emptyNote("No hits recorded in this game.")]);
+  if (hits.length) {
+    dataTable(hitsCard.lastChild, [
+      { key: "ours", label: "Our skater", left: true, value: (h) => h.player.name },
+      { key: "theirs", label: "Their skater", left: true, value: (h) => opponentName(h.opponent) },
+      { key: "given", label: "Hits given", value: (h) => h.hits.given },
+      { key: "taken", label: "Hits taken", value: (h) => h.hits.taken },
+    ], hits, { sortKey: "given", onRow: (h) => goToPlayer(h.player.id) });
+  }
+  return [
+    ...[opponentsCard, gridCard].filter(Boolean).map((card) => el("div", { style: "margin-bottom:16px" }, [card])),
+    hitsCard,
+  ];
 }
 
 function gameTeamStats(a, timeline) {
@@ -1263,15 +1286,11 @@ function playerPuckPlay(a, s) {
 }
 
 function playerMatchups(a, s) {
-  if (!s.matchups.length) return emptyNote("No head-to-head battles recorded in the games in scope.");
+  if (!s.matchups.length) return emptyNote("No head-to-head battles or hits recorded in the games in scope.");
   const severalGames = new Set(s.matchups.map((m) => m.game)).size > 1;
   const label = (m) => (severalGames ? `${opponentName(m.opponent)} (${m.date.slice(5)})` : opponentName(m.opponent));
-  const rows = [...s.matchups].sort((x, y) => (y.battles.won + y.battles.lost) - (x.battles.won + x.battles.lost));
-  return chartCard("Opponents they battled", "One-on-one puck battles against each opponent skater, most battles first. Bars show battles won minus battles lost (right = came out ahead); labels are won–lost.", (c) => battleBalanceChart(c, rows.map((m) => ({
-    label: label(m),
-    battles: m.battles,
-    note: `won ${m.battles.won}, lost ${m.battles.lost}${severalGames ? ` · vs ${m.opponent_team}` : ""}`,
-  }))), (c) => dataTable(c, [
+  const battled = s.matchups.filter(hadBattles).sort((x, y) => (y.battles.won + y.battles.lost) - (x.battles.won + x.battles.lost));
+  const table = (c) => dataTable(c, [
     { key: "date", label: "Date", left: true },
     { key: "opponent_team", label: "Team", left: true },
     { key: "name", label: "Opponent", left: true, value: (m) => opponentName(m.opponent) },
@@ -1279,7 +1298,19 @@ function playerMatchups(a, s) {
     { key: "won", label: "Won", value: (m) => m.battles.won },
     { key: "lost", label: "Lost", value: (m) => m.battles.lost },
     { key: "pct", label: "Win %", value: (m) => battleWinPct(m.battles), format: (v) => pct(v, 0), tone: "higher" },
-  ], s.matchups, { sortKey: "date" }), { source: scopeChip() });
+    { key: "given", label: "Hits given", value: (m) => m.hits.given },
+    { key: "taken", label: "Hits taken", value: (m) => m.hits.taken },
+  ], s.matchups, { sortKey: "date" });
+  if (!battled.length) {
+    const card = el("div", { class: "card" }, [cardTitle("Opponents they met", scopeChip()), el("div")]);
+    table(card.lastChild);
+    return card;
+  }
+  return chartCard("Opponents they met", "One-on-one puck battles against each opponent skater, most battles first. Bars show battles won minus battles lost (right = came out ahead); labels are won–lost. The table adds hits given and taken.", (c) => battleBalanceChart(c, battled.map((m) => ({
+    label: label(m),
+    battles: m.battles,
+    note: `won ${m.battles.won}, lost ${m.battles.lost}${hadHits(m) ? ` · hits ${m.hits.given}–${m.hits.taken}` : ""}${severalGames ? ` · vs ${m.opponent_team}` : ""}`,
+  }))), table, { source: scopeChip() });
 }
 
 function playerNumbers(a, s) {
@@ -1660,11 +1691,11 @@ function viewHelp() {
     ["Passing lift", "Passes between two players divided by what their overall passing and receiving volumes predict (quasi-independence). Above 1 = a real connection."],
     ["Shot map", "Where shots came from, using InStat's seven zones: slot, high slot, left and right sides, and three spots along the blue line. Each zone shows shots / on goal; darker = more shots."],
     ["Puck battles by area", "InStat splits every one-on-one puck battle by where it happened: in front of each net, behind each net, the corners, along each blue line, and the neutral zone. The map shows the share we won in each area; corners are one area drawn top and bottom."],
-    ["Matchups", "InStat's challenge distribution lists every one-on-one puck battle between each of our skaters and each of theirs. Opponents are shown as InStat labels them (number and surname); bars show battles won minus lost, so one battle never looks like a 100% record."],
+    ["Matchups", "InStat's challenge and hits distributions list every one-on-one puck battle and every hit between each of our skaters and each of theirs. Opponents are shown as InStat labels them (number and surname); bars show battles won minus lost, so one battle never looks like a 100% record."],
     ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],
     ["Practice focus", "Each area compares us with our opponents (50% = even; power play against 20%, penalty kill against 80%). An area is flagged only when it's 8+ points off and backed by at least 10 events; the drill ideas are starting points, not prescriptions."],
     ["Shift data", "Rebuilt from InStat's time-distribution chart. The reader checks itself: every player's +/- rebuilt from shifts must match InStat's own column, or the game shows a warning."],
-    ["Where the numbers come from", "InStat's Match report (team, player, line, shot, challenge and pass tables, the challenge distribution and the shift chart) and Player report (full names, jersey numbers, xG, goalie details and each player's recent-games history). InStat prints wrong jersey numbers in some Match-report tables; the reader uses names and ice time instead."],
+    ["Where the numbers come from", "InStat's Match report (team, player, line, shot, challenge and pass tables, the challenge and hits distributions and the shift chart) and Player report (full names, jersey numbers, xG, goalie details and each player's recent-games history). InStat prints wrong jersey numbers in some Match-report tables; the reader uses names and ice time instead."],
   ];
   return page("How to read this", "Short explanations of every number in the report. Anywhere in the app, a stat name with a dotted underline explains itself: hover over it, tap it, or tab to it.", el("dl", { class: "explain" }, terms.flatMap(([t, d]) => [el("dt", { text: t }), el("dd", { text: d })])));
 }
