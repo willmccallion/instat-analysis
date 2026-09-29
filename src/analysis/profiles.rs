@@ -10,6 +10,7 @@ use crate::stats::describe::{correlation_p, spearman};
 use crate::stats::random;
 
 const MIN_PLAYERS: usize = 6;
+const MAX_CLUSTERS: usize = 3;
 
 type Feature = (&'static str, &'static str, fn(&PlayerSeason) -> Option<f64>);
 
@@ -191,7 +192,8 @@ pub fn profiles(players: &[PlayerSeason], tests: &mut Vec<TestRow>) -> ProfilesR
         return base;
     };
     let mut rng = random::seeded(99);
-    let max_k = 4.min(qualified.len() - 2);
+    // Scatter colours are only validated as distinguishable for three groups.
+    let max_k = MAX_CLUSTERS.min(qualified.len() - 2);
     let best = (2..=max_k)
         .filter_map(|k| kmeans(&z, k, &mut rng))
         .max_by(|a, b| a.silhouette.total_cmp(&b.silhouette));

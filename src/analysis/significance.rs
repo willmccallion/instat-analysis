@@ -168,7 +168,11 @@ fn units_differ(context: &Context<'_>, kind: UnitKind) -> TestRow {
             Some(p) if p < 0.05 => format!("Yes: the gaps between our {} are bigger than chance.", kind_label(kind)),
             _ => format!("Not clearly: the gaps between our {} could still be chance.", kind_label(kind)),
         },
-        assumptions: "Poisson counts given time on ice; small units contribute little information.".to_owned(),
+        assumptions: if observations.len() <= units.len() {
+            "Each unit appears in only one game, so this compares every unit against one common rate (a homogeneity test); with small counts the chi-square approximation is rough.".to_owned()
+        } else {
+            "Poisson counts given time on ice; small units contribute little information.".to_owned()
+        },
     }
 }
 

@@ -92,7 +92,8 @@ impl TeamName {
 #[serde(transparent)]
 pub struct GameId(pub String);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// Serialized as `YYYY-MM-DD`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Date {
     pub year: u16,
     pub month: u8,
@@ -120,6 +121,32 @@ impl Date {
             (i64::from(self.year), i64::from(self.month) - 3)
         };
         365 * y + y / 4 - y / 100 + y / 400 + (153 * m + 2) / 5 + i64::from(self.day) - 1
+    }
+}
+
+impl Date {
+    /// Parses `YYYY-MM-DD`.
+    #[must_use]
+    pub fn parse_iso(text: &str) -> Option<Self> {
+        let mut parts = text.split('-');
+        let year = parts.next()?.parse().ok()?;
+        let month: u8 = parts.next()?.parse().ok()?;
+        let day: u8 = parts.next()?.parse().ok()?;
+        let valid = (1..=31).contains(&day) && (1..=12).contains(&month);
+        (valid && parts.next().is_none()).then_some(Self { year, month, day })
+    }
+}
+
+impl Serialize for Date {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Date {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::parse_iso(&text).ok_or_else(|| serde::de::Error::custom(format!("invalid date {text:?}")))
     }
 }
 

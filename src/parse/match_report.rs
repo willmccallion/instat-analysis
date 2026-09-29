@@ -14,7 +14,7 @@ use crate::pdf::Page;
 
 const SECTION: &str = "match report";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Title {
     pub teams: [TeamName; 2],
     pub score: (u32, u32),

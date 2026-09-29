@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Date, Game, GameId, PlayerId, Seconds, Strength, Team, UnitKind, UnitStats};
+use crate::model::{Date, Game, GameId, PlayerId, Seconds, Strength, Team, TeamStatRow, UnitKind, UnitStats};
 use common::{PlayerRef, TestRow, adjust_families};
 use impact::Ratings;
 use pairs::PairRow;
@@ -94,6 +94,9 @@ pub struct GameTimeline {
     pub goals: Vec<TimelineGoal>,
     /// (start, end, team with the advantage).
     pub advantages: Vec<(f64, f64, Team)>,
+    pub goals_for: u32,
+    pub goals_against: u32,
+    pub team_stats: Vec<TeamStatRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -150,6 +153,9 @@ fn timeline(game: &Game, roster: &HashMap<PlayerId, PlayerRef>) -> GameTimeline 
             .iter()
             .map(|a| (a.interval.start.0, a.interval.end.0, a.team))
             .collect(),
+        goals_for: game.goals_for,
+        goals_against: game.goals_against,
+        team_stats: game.team_stats.clone(),
     }
 }
 
