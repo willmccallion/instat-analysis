@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hockey Stats</title>
+<meta name="description" content="Turn InStat game reports into line, pairing and player analysis. Free Mac app.">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #ffffff;
+    --surface-2: #f3f2ee;
+    --text: #0b0b0b;
+    --text-2: #52514e;
+    --muted: #6f6d68;
+    --border: rgba(11, 11, 11, 0.1);
+    --accent: #2a78d6;
+    --accent-ink: #ffffff;
+    --accent-wash: rgba(42, 120, 214, 0.1);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --surface-2: #232321;
+      --text: #ffffff;
+      --text-2: #c3c2b7;
+      --muted: #9a998f;
+      --border: rgba(255, 255, 255, 0.12);
+      --accent: #3987e5;
+      --accent-wash: rgba(57, 135, 229, 0.16);
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text); font: 17px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 56px 16px 72px; }
+  h1 { font-size: 40px; line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; }
+  h2 { font-size: 22px; margin: 48px 0 16px; }
+  .lede { font-size: 19px; color: var(--text-2); margin: 0 0 28px; }
+  .download { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 28px; box-shadow: var(--shadow); }
+  .button { display: inline-flex; align-items: center; gap: 10px; background: var(--accent); color: var(--accent-ink); text-decoration: none; font-weight: 650; font-size: 19px; padding: 14px 28px; border-radius: 12px; }
+  .button:hover, .button:focus-visible { filter: brightness(1.08); }
+  .button:focus-visible { outline: 3px solid var(--accent-wash); outline-offset: 2px; }
+  .meta { color: var(--muted); font-size: 15px; margin-top: 12px; }
+  .not-mac { display: none; }
+  .is-other .not-mac { display: block; }
+  .is-other .mac-only { display: none; }
+  ol.steps { list-style: none; padding: 0; margin: 0; counter-reset: step; display: grid; gap: 14px; }
+  ol.steps > li { counter-increment: step; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px 18px 64px; position: relative; }
+  ol.steps > li::before { content: counter(step); position: absolute; left: 18px; top: 16px; width: 32px; height: 32px; border-radius: 50%; background: var(--accent-wash); color: var(--accent); font-weight: 700; display: grid; place-items: center; }
+  ol.steps h3 { margin: 0 0 4px; font-size: 18px; }
+  ol.steps p { margin: 4px 0 0; color: var(--text-2); }
+  .once { display: inline-block; font-size: 13px; font-weight: 650; color: var(--accent); background: var(--accent-wash); border-radius: 999px; padding: 1px 10px; margin-left: 6px; vertical-align: 2px; }
+  ul.sub { margin: 8px 0 0; padding-left: 20px; color: var(--text-2); }
+  ul.sub li { margin: 3px 0; }
+  kbd, .ui { font: inherit; font-weight: 650; color: var(--text); }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .fact { background: var(--surface-2); border-radius: 12px; padding: 16px 18px; }
+  .fact strong { display: block; margin-bottom: 2px; }
+  .fact span { color: var(--text-2); font-size: 15px; }
+  a { color: var(--accent); }
+  footer { margin-top: 56px; color: var(--muted); font-size: 14px; }
+  footer a { color: inherit; }
+  @media (max-width: 520px) {
+    h1 { font-size: 32px; }
+    .download { padding: 20px; }
+    .button { width: 100%; justify-content: center; }
+    ol.steps > li { padding-left: 58px; }
+  }
+</style>
+</head>
+<body>
+<main id="page">
+  <h1>Hockey Stats</h1>
+  <p class="lede">Drop in your InStat game reports and see which lines and defence pairs work, who's playing well, and what to work on in practice.</p>
+
+  <section class="download" aria-label="Download">
+    <div class="mac-only">
+      <a class="button" id="download" href="https://github.com/willmccallion/instat-analysis/releases/latest/download/Hockey-Stats-mac.dmg">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/></svg>
+        Download for Mac
+      </a>
+      <div class="meta" id="version">Free · needs macOS 11 (Big Sur) or newer</div>
+    </div>
+    <div class="not-mac">
+      <p style="margin:0 0 8px"><strong>Hockey Stats is a Mac app.</strong> Open this page on your Mac to download it.</p>
+      <p class="meta" style="margin:0">Already on a Mac? <a href="https://github.com/willmccallion/instat-analysis/releases/latest/download/Hockey-Stats-mac.dmg">Download it here</a>.</p>
+    </div>
+  </section>
+
+  <h2>Set it up (about 2 minutes)</h2>
+  <ol class="steps">
+    <li>
+      <h3>Open the download</h3>
+      <p>Click <span class="ui">Hockey-Stats-mac.dmg</span> in your browser's downloads (or in your <span class="ui">Downloads</span> folder). A window opens showing Hockey Stats and your Applications folder.</p>
+    </li>
+    <li>
+      <h3>Drag Hockey Stats onto Applications</h3>
+      <p>That installs it. You can then close the window and eject "Hockey Stats" from the sidebar of any Finder window.</p>
+    </li>
+    <li>
+      <h3>Open it <span class="once">first time only</span></h3>
+      <p>Open your <span class="ui">Applications</span> folder and double-click <span class="ui">Hockey Stats</span>. Your Mac will say it can't check the app, because it isn't from the App Store. That's expected:</p>
+      <ul class="sub">
+        <li>Click <span class="ui">Done</span>.</li>
+        <li>Open the <span class="ui">Apple menu </span> › <span class="ui">System Settings</span> › <span class="ui">Privacy &amp; Security</span>.</li>
+        <li>Scroll down and click <span class="ui">Open Anyway</span> next to "Hockey Stats was blocked", then enter your Mac password.</li>
+        <li>On older Macs: right-click Hockey Stats, choose <span class="ui">Open</span>, then <span class="ui">Open</span> again.</li>
+      </ul>
+    </li>
+    <li>
+      <h3>Pick your team and add a game</h3>
+      <p>Your web browser opens Hockey Stats. Click your team, then drag in the two InStat PDFs for a game (the <em>Match report</em> and the <em>Players' report</em>). Games are remembered, so next time you only add the new one.</p>
+    </li>
+  </ol>
+
+  <h2>Good to know</h2>
+  <div class="facts">
+    <div class="fact"><strong>Nothing else to install</strong><span>Everything the app needs is included. It opens in the browser you already use.</span></div>
+    <div class="fact"><strong>Updates itself</strong><span>When there's a new version, the app shows an <em>Update now</em> button. One click and you're done.</span></div>
+    <div class="fact"><strong>Your data stays on your Mac</strong><span>Reports are read on your computer and never uploaded anywhere.</span></div>
+    <div class="fact"><strong>Closing it</strong><span>Close the browser tab and the app closes too. Double-click it to come back.</span></div>
+  </div>
+
+  <footer>
+    <a href="https://github.com/willmccallion/instat-analysis">Source code</a> · <a href="https://github.com/willmccallion/instat-analysis/releases">All versions</a>
+  </footer>
+</main>
+<script>
+  (function () {
+    var ua = navigator.userAgent || "";
+    var isIpad = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1;
+    var isMac = /Macintosh|Mac OS X/.test(ua) && !isIpad;
+    if (!isMac) document.getElementById("page").classList.add("is-other");
+    fetch("https://api.github.com/repos/willmccallion/instat-analysis/releases/latest")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (release) {
+        if (!release || !release.tag_name) return;
+        var date = new Date(release.published_at).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+        document.getElementById("version").textContent = "Version " + release.tag_name.replace(/^v/, "") + " · " + date + " · free · needs macOS 11 or newer";
+      })
+      .catch(function () {});
+  })();
+</script>
+</body>
+</html>
