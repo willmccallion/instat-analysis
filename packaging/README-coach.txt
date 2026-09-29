@@ -25,11 +25,15 @@ Every time
      or Dock icon; the app lives in the browser tab).
   2. Drag the two PDFs for a game onto the page (or click "Choose files...").
      Games are remembered, so next week you only add the new game.
-  3. Use the menu on the left: Overview, Lines & pairs, Pair chemistry,
-     Players, and so on. "How to read this" explains every number.
+  3. Use the menu on the left: Summary, Rankings, Lines & pairs, Players,
+     Team & goalies, and so on. "How to read this" explains every number.
   4. "Save report (HTML)" makes one file you can email; it opens in any browser.
-  5. "Quit app" closes it (it also closes by itself 15 minutes after you close
-     the browser tab).
+  5. Closing the browser tab closes the app (or use "Quit app").
+
+Updating
+--------
+Unzip the new version over the old one and double-click it. If the old
+version is still open, the new one replaces it automatically.
 
 Where your games are kept
 -------------------------
