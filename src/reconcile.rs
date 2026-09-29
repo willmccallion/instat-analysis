@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::model::{
-    Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, Game, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
+    Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, Game, OpponentShot, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
     Jersey, Matchup, Opponent, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
     ShotSituation, ShotSources, ShotType, ShotZone, SkaterStats, StatEntry, Tally, TypeShots, EntryTypes, NetArea, NetShots,
     Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
@@ -847,6 +847,16 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         shot_zones_against: shot_zones_against(&report.opponent_shots),
         matchups,
         charted_shots,
+        charted_shots_against: report
+            .opponent_shot_chart
+            .iter()
+            .map(|shot| OpponentShot {
+                period: shot.period,
+                jersey: shot.jersey,
+                at: shot.at,
+                goal: shot.goal,
+            })
+            .collect(),
         length,
         warnings,
     })

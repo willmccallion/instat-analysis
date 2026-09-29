@@ -478,6 +478,17 @@ pub struct ChartedShot {
     pub goal: bool,
 }
 
+/// One of the opponent's shots on our net where their shooting chart drew it; `at` is
+/// measured toward our goal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpponentShot {
+    pub period: u32,
+    /// The number printed in the marker.
+    pub jersey: Option<Jersey>,
+    pub at: RinkPoint,
+    pub goal: bool,
+}
+
 /// Adds `extra` into `totals` zone by zone, keeping zones in [`ShotZone`] order.
 pub fn add_zone_shots(totals: &mut Vec<ZoneShots>, extra: &[ZoneShots]) {
     for z in extra {
@@ -1035,6 +1046,8 @@ pub struct Game {
     pub matchups: Vec<Matchup>,
     #[serde(default)]
     pub charted_shots: Vec<ChartedShot>,
+    #[serde(default)]
+    pub charted_shots_against: Vec<OpponentShot>,
     /// Regulation plus any overtime.
     pub length: Seconds,
     pub warnings: Vec<String>,

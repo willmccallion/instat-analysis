@@ -47,7 +47,7 @@ pub struct TeamPages {
     pub shot_chart: Vec<RawShot>,
 }
 
-/// Our team's pages in full; of the opponent's, only team-level stats and their shots table.
+/// Our team's pages in full; of the opponent's, only team-level stats and their shots page.
 #[derive(Debug, Clone)]
 pub struct MatchReport {
     pub title: Title,
@@ -56,6 +56,8 @@ pub struct MatchReport {
     pub team_stats: TeamStatsPage,
     pub ours: TeamPages,
     pub opponent_shots: Vec<PlayerRow>,
+    /// Their shots on our net as their shooting chart draws them.
+    pub opponent_shot_chart: Vec<RawShot>,
 }
 
 /// Index of our team in the title (0 = listed first).
@@ -116,6 +118,7 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
     let mut team_stats = None;
     let mut ours = TeamPages::default();
     let mut opponent_shots = Vec::new();
+    let mut opponent_shot_chart = Vec::new();
     for page in &pages[1..] {
         let Some(heading) = page_heading(page) else {
             continue;
@@ -128,6 +131,7 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
             parse_team_page(page, &heading.title, &mut ours)?;
         } else if heading.title == "SHOTS" {
             opponent_shots = shots_table(page)?;
+            opponent_shot_chart = rink::shooting_chart(page);
         }
     }
     let team_stats = team_stats.ok_or_else(|| Error::parse(SECTION, "no TEAMS STATS page"))?;
@@ -137,6 +141,7 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
         team_stats,
         ours,
         opponent_shots,
+        opponent_shot_chart,
     })
 }
 

@@ -103,6 +103,7 @@ pub struct GameTimeline {
     pub team_stats: Vec<TeamStatRow>,
     pub matchups: matchups::GameMatchups,
     pub shots: Vec<shots::ShotDot>,
+    pub shots_against: Vec<shots::ShotAgainstDot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -166,6 +167,7 @@ fn timeline(game: &Game, roster: &HashMap<PlayerId, PlayerRef>) -> GameTimeline 
         team_stats: game.team_stats.clone(),
         matchups: matchups::game_matchups(game, roster),
         shots: shots::shot_dots(&[game], roster, |_| true),
+        shots_against: shots::shots_against(&[game]),
     }
 }
 
