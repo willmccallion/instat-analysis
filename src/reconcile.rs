@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::model::{
     Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, Game, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
     Jersey, Matchup, Opponent, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
-    ShotSituation, ShotType, ShotZone, SkaterStats, StatEntry,
+    ShotSituation, ShotSources, ShotType, ShotZone, SkaterStats, StatEntry, Tally, TypeShots, EntryTypes,
     Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
 };
 use crate::parse::common::{PlayerRow, RowLabel};
@@ -201,6 +201,14 @@ fn skater_stats(
     let (faceoffs, faceoffs_won) = cell(main, "Faceoffs / won").ratio().unwrap_or_default();
     let (puck_battles, puck_battles_won) = find("Puck battles / won").ratio().unwrap_or_default();
     let page_decimal = |label: &str| page.and_then(|p| p.stat(label)).and_then(|c| c.decimal());
+    let table = |index: usize| extra.get(index).copied().flatten();
+    // Turnover columns reuse the challenges table's "In … zone" headers, so read them here.
+    let in_turnovers = |name: &str| {
+        table(TURNOVERS_TABLE)
+            .and_then(|row| row.get_exact(name))
+            .and_then(|text| Cell::parse(text).count())
+            .unwrap_or_default()
+    };
     SkaterStats {
         instat_index: cell(main, "InStat Index").decimal(),
         goals: cell(main, "Goals").count().unwrap_or_default(),
@@ -234,14 +242,58 @@ fn skater_stats(
         xg: page_decimal("xG"),
         on_ice_xg_for: page_decimal("Team xG when on ice"),
         on_ice_xg_against: page_decimal("Opponent's xG when on ice"),
-        shot_zones: extra.get(SHOTS_TABLE).copied().flatten().map(shot_zones).unwrap_or_default(),
-        battle_areas: extra.get(BATTLES_TABLE).copied().flatten().map(battle_areas).unwrap_or_default(),
+        shot_zones: table(SHOTS_TABLE).map(shot_zones).unwrap_or_default(),
+        battle_areas: table(BATTLES_TABLE).map(battle_areas).unwrap_or_default(),
+        shot_sources: table(SHOTS_TABLE).map(shot_sources).unwrap_or_default(),
+        shot_types: table(SHOTS_TABLE).map(shot_types).unwrap_or_default(),
+        faceoffs_defensive_zone: tally(&exact_cell(main, "Faceoffs in DZ")),
+        faceoffs_offensive_zone: tally(&exact_cell(main, "Faceoffs in OZ")),
+        puck_losses_defensive_zone: in_turnovers("In defensive zone"),
+        puck_recoveries_offensive_zone: in_turnovers("In attacking zone"),
+        entry_types: table(ENTRIES_TABLE).map(entry_types).unwrap_or_default(),
     }
 }
 
 /// Indexes of tables among the extra tables passed to [`skater_stats`].
+const TURNOVERS_TABLE: usize = 1;
+const ENTRIES_TABLE: usize = 2;
 const SHOTS_TABLE: usize = 3;
 const BATTLES_TABLE: usize = 4;
+
+fn tally(c: &Cell) -> Tally {
+    let (total, succeeded) = c.ratio().unwrap_or_default();
+    Tally { total, succeeded }
+}
+
+fn shot_sources(row: &PlayerRow) -> ShotSources {
+    let column = |name: &str| tally(&exact_cell(row, name));
+    ShotSources {
+        power_play: column("Power play"),
+        short_handed: column("Short-handed"),
+        positional_attack: column("In positional attacks"),
+        counter_attack: column("In counter-attacks"),
+    }
+}
+
+fn shot_types(row: &PlayerRow) -> Vec<TypeShots> {
+    ShotType::ALL
+        .iter()
+        .filter_map(|&kind| {
+            let label = kind.shots_table_label()?;
+            let shots = tally(&Cell::parse(row.get_exact(label)?));
+            Some(TypeShots { kind, shots })
+        })
+        .collect()
+}
+
+fn entry_types(row: &PlayerRow) -> EntryTypes {
+    let count = |name: &str| exact_cell(row, name).count().unwrap_or_default();
+    EntryTypes {
+        pass: count("Entries via pass"),
+        carry: count("Entries via stickhandling"),
+        dump_in: count("Entries via dump in"),
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Half {

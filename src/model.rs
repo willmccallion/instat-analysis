@@ -547,6 +547,18 @@ pub enum ShotType {
     Deflection,
 }
 
+impl ShotType {
+    /// Column header in the match report's shots table, for the types it has a column for.
+    #[must_use]
+    pub const fn shots_table_label(self) -> Option<&'static str> {
+        match self {
+            Self::Wrist => Some("Wrist shot"),
+            Self::Slap => Some("Slapshot"),
+            Self::Snap | Self::Deflection => None,
+        }
+    }
+}
+
 impl GoaliePageRow for ShotType {
     const ALL: &'static [Self] = &[Self::Wrist, Self::Snap, Self::Slap, Self::Deflection];
 
@@ -716,6 +728,75 @@ impl ReboundControl {
     }
 }
 
+/// A count and how many of them succeeded, from cells like `"9 / 4"`: shots and shots on
+/// goal, faceoffs taken and won.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tally {
+    pub total: u32,
+    pub succeeded: u32,
+}
+
+impl Tally {
+    pub const fn add(&mut self, other: Self) {
+        self.total += other.total;
+        self.succeeded += other.succeeded;
+    }
+}
+
+/// A skater's shots of one type and how many were on goal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeShots {
+    pub kind: ShotType,
+    pub shots: Tally,
+}
+
+/// Adds `extra` into `totals` type by type, keeping types in [`ShotType`] order.
+pub fn add_type_shots(totals: &mut Vec<TypeShots>, extra: &[TypeShots]) {
+    for e in extra {
+        match totals.iter_mut().find(|t| t.kind == e.kind) {
+            Some(t) => t.shots.add(e.shots),
+            None => totals.push(*e),
+        }
+    }
+    totals.sort_by_key(|t| t.kind);
+}
+
+/// How a skater carried the puck into the offensive zone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryTypes {
+    pub pass: u32,
+    pub carry: u32,
+    pub dump_in: u32,
+}
+
+impl EntryTypes {
+    pub const fn add(&mut self, other: Self) {
+        self.pass += other.pass;
+        self.carry += other.carry;
+        self.dump_in += other.dump_in;
+    }
+}
+
+/// A skater's shots (attempts / on goal) by how the chance came about.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShotSources {
+    pub power_play: Tally,
+    pub short_handed: Tally,
+    /// Set up in the offensive zone.
+    pub positional_attack: Tally,
+    /// Off a quick transition.
+    pub counter_attack: Tally,
+}
+
+impl ShotSources {
+    pub const fn add(&mut self, other: Self) {
+        self.power_play.add(other.power_play);
+        self.short_handed.add(other.short_handed);
+        self.positional_attack.add(other.positional_attack);
+        self.counter_attack.add(other.counter_attack);
+    }
+}
+
 /// The per-game skater numbers the analysis relies on.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SkaterStats {
@@ -750,6 +831,22 @@ pub struct SkaterStats {
     pub shot_zones: Vec<ZoneShots>,
     #[serde(default)]
     pub battle_areas: Vec<AreaBattles>,
+    #[serde(default)]
+    pub shot_sources: ShotSources,
+    /// Only the types the match report's shots table has columns for.
+    #[serde(default)]
+    pub shot_types: Vec<TypeShots>,
+    /// Taken / won.
+    #[serde(default)]
+    pub faceoffs_defensive_zone: Tally,
+    #[serde(default)]
+    pub faceoffs_offensive_zone: Tally,
+    #[serde(default)]
+    pub puck_losses_defensive_zone: u32,
+    #[serde(default)]
+    pub puck_recoveries_offensive_zone: u32,
+    #[serde(default)]
+    pub entry_types: EntryTypes,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

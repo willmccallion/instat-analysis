@@ -10,8 +10,8 @@ use crate::analysis::matchups::{PlayerMatchup, player_matchups};
 use crate::analysis::shots::{ShotDot, shot_dots};
 use crate::analysis::stints::Stint;
 use crate::model::{
-    AreaBattles, Date, Game, GameId, HistoryKind, Player, PlayerId, Seconds, SkaterStats, StatEntry, Strength, ZoneShots,
-    add_area_battles, add_zone_shots,
+    AreaBattles, Date, EntryTypes, Game, GameId, HistoryKind, Player, PlayerId, Seconds, ShotSources, SkaterStats, StatEntry,
+    Strength, Tally, TypeShots, ZoneShots, add_area_battles, add_type_shots, add_zone_shots,
 };
 use crate::stats::describe::{mean, percentile_rank, sample_sd, wilson_interval};
 
@@ -50,6 +50,13 @@ pub struct SkaterTotals {
     pub on_ice_goals_against: u32,
     pub shot_zones: Vec<ZoneShots>,
     pub battle_areas: Vec<AreaBattles>,
+    pub shot_sources: ShotSources,
+    pub shot_types: Vec<TypeShots>,
+    pub faceoffs_defensive_zone: Tally,
+    pub faceoffs_offensive_zone: Tally,
+    pub puck_losses_defensive_zone: u32,
+    pub puck_recoveries_offensive_zone: u32,
+    pub entry_types: EntryTypes,
 }
 
 impl SkaterTotals {
@@ -84,6 +91,13 @@ impl SkaterTotals {
         self.on_ice_xg_against += s.on_ice_xg_against.unwrap_or_default();
         add_zone_shots(&mut self.shot_zones, &s.shot_zones);
         add_area_battles(&mut self.battle_areas, &s.battle_areas);
+        self.shot_sources.add(s.shot_sources);
+        add_type_shots(&mut self.shot_types, &s.shot_types);
+        self.faceoffs_defensive_zone.add(s.faceoffs_defensive_zone);
+        self.faceoffs_offensive_zone.add(s.faceoffs_offensive_zone);
+        self.puck_losses_defensive_zone += s.puck_losses_defensive_zone;
+        self.puck_recoveries_offensive_zone += s.puck_recoveries_offensive_zone;
+        self.entry_types.add(s.entry_types);
     }
 }
 

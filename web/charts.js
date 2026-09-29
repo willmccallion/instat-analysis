@@ -215,7 +215,7 @@ function hBarChart(container, rows, options = {}) {
   if (options.min === undefined && options.showValues !== false && !options.dots && min < (options.baseline ?? 0)) {
     min -= (max - min) * 0.18;
   }
-  const ticks = niceTicks(min, max, Math.max(3, Math.floor((width - labelWidth) / 90)));
+  const ticks = niceTicks(min, max, Math.max(3, Math.floor((width - labelWidth) / 90))).filter((t) => !options.integer || Number.isInteger(t));
   min = Math.min(min, ticks[0]);
   max = Math.max(max, ticks[ticks.length - 1]);
   const x = (v) => margin.left + ((v - min) / (max - min)) * (width - margin.left - margin.right);

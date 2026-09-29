@@ -18,6 +18,8 @@ window.Charts.setGlossary({
   "Entries/60": `Times the player carried or passed the puck into the offensive zone with control, ${PER_60}.`,
   "Recoveries/60": `Loose pucks won back (takeaways, rebounds, battles) ${PER_60}.`,
   "Puck losses/60": `Times the player lost possession (giveaways, turnovers) ${PER_60}. Lower is better.`,
+  "Own-zone losses": "Puck losses in our own zone: the costliest giveaways, because the other team gets the puck close to our net. Lower is better.",
+  "Carry-in %": "Share of a player's zone entries carried in on the stick, rather than passed in or dumped in. Carrying keeps possession.",
   "Passes/60": `Completed passes to teammates ${PER_60}.`,
   "Blocks/60": `Opponent shots blocked ${PER_60}.`,
   "Hits/60": `Body checks delivered ${PER_60}.`,
@@ -1252,6 +1254,8 @@ function viewPlayers() {
     { key: "adj", label: "Adj. CF%", value: (p) => p.shrunk_corsi?.estimate.value, format: (v) => pct(v, 0), tone: "higher" },
     { key: "gfp", label: "EV goal share", value: (p) => p.shares.goals_pct, format: (v) => pct(v, 0), tone: "higher" },
     { key: "bat", label: "Battles won", value: (p) => p.shares.battles_pct?.value, format: (v) => pct(v, 0), tone: "higher" },
+    { key: "ozl", label: "Own-zone losses", value: (p) => p.totals.puck_losses_defensive_zone, title: "Puck losses in our own zone, the costliest kind", tone: "lower" },
+    { key: "carry", label: "Carry-in %", value: (p) => sharePct(p.totals.entry_types.carry, p.totals.entries), format: (v) => pct(v, 0), title: "Zone entries carried in rather than passed or dumped", tone: "higher" },
   ];
   const columns = state.playerColumns === "all" ? allColumns : keyColumns;
   const toggle = el("button", { class: "small", text: state.playerColumns === "all" ? "Key columns only" : "All columns", onclick: () => { state.playerColumns = state.playerColumns === "all" ? "key" : "all"; render(); } });
@@ -1331,16 +1335,69 @@ function playerShooting(a, s) {
   const cards = [
     s.charted_shots.length ? chartCard("Every shot they took", `Where InStat's shooting chart drew each shot${several ? " over the games in scope" : ""}. Hover a dot for the period and distance.`, (c) => shotPlot(c, s.charted_shots, { tip: (x) => shotTip(x, { shooter: false, game: several }) }), null) : null,
     t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Where they shoot from", "Shots by zone over the games in scope.", t.shot_zones) : null,
+    shotMixCard("How their shots came", "Set-up attacks vs counter-attacks, and power-play or short-handed shots (a shot can be in both groups). Hover for how many were on goal.", [
+      ["Set-up attack", t.shot_sources.positional_attack],
+      ["Counter-attack", t.shot_sources.counter_attack],
+      ["Power play", t.shot_sources.power_play],
+      ["Short-handed", t.shot_sources.short_handed],
+    ]),
+    shotMixCard("Shot types", "Only the types InStat's shots table breaks out; other shots aren't typed.", t.shot_types.map((x) => [SPLIT_NAMES.shot_type[x.kind] || x.kind, x.shots])),
   ].filter(Boolean);
   return cards.length ? el("div", { class: "grid two" }, cards) : emptyNote("No shots in the games in scope.");
+}
+
+/** Bars of shots per category. rows: [[label, {total, succeeded}]]; null when all are empty. */
+function shotMixCard(title, description, rows) {
+  const shown = rows.filter(([, x]) => x.total > 0);
+  if (!shown.length) return null;
+  return chartCard(title, description, (c) => hBarChart(c, shown.map(([label, x]) => ({ label, value: x.total, note: `${x.succeeded} on goal` })), { valueFormat: (v) => fmt(v, 0), labelWidth: 120, valueName: "shots", integer: true }), (c) => dataTable(c, [
+    { key: "label", label: "", left: true, value: (r) => r[0] }, { key: "shots", label: "Shots", value: (r) => r[1].total }, { key: "on", label: "On goal", value: (r) => r[1].succeeded },
+  ], shown));
+}
+
+const sharePct = (part, whole) => (whole ? (100 * part) / whole : null);
+
+function puckTiles(t) {
+  const e = t.entry_types;
+  const items = [
+    { label: "Puck losses", value: String(t.puck_losses), note: `${t.puck_losses_defensive_zone} in our zone${t.puck_losses ? ` (${pct(sharePct(t.puck_losses_defensive_zone, t.puck_losses), 0)})` : ""}` },
+    { label: "Puck recoveries", value: String(t.puck_recoveries), note: `${t.puck_recoveries_offensive_zone} in their zone` },
+    { label: "Zone entries", value: String(t.entries), note: `${e.carry} carried · ${e.pass} passed · ${e.dump_in} dumped` },
+  ];
+  if (t.faceoffs) {
+    const dz = t.faceoffs_defensive_zone;
+    const oz = t.faceoffs_offensive_zone;
+    items.push({ label: "Faceoffs", value: pct(sharePct(t.faceoffs_won, t.faceoffs), 0), note: `${t.faceoffs_won}/${t.faceoffs} · our zone ${dz.succeeded}/${dz.total} · theirs ${oz.succeeded}/${oz.total}` });
+  }
+  return tiles(items);
+}
+
+function faceoffZonesCard(t) {
+  if (!t.faceoffs) return null;
+  const dz = t.faceoffs_defensive_zone;
+  const oz = t.faceoffs_offensive_zone;
+  const neutral = { total: t.faceoffs - dz.total - oz.total, succeeded: t.faceoffs_won - dz.succeeded - oz.succeeded };
+  const rows = [["Our zone", dz], ["Neutral zone", neutral], ["Their zone", oz]].filter(([, x]) => x.total > 0);
+  return chartCard("Faceoffs by zone", "Win % in each zone; neutral-zone draws are what's left of their total.", (c) => hBarChart(c, rows.map(([label, x]) => ({ label, value: sharePct(x.succeeded, x.total), note: `won ${x.succeeded} of ${x.total}` })), { min: 0, max: 100, reference: 50, valueFormat: (v) => pct(v, 0), labelWidth: 110, valueName: "won" }), (c) => dataTable(c, [
+    { key: "zone", label: "", left: true, value: (r) => r[0] }, { key: "taken", label: "Taken", value: (r) => r[1].total }, { key: "won", label: "Won", value: (r) => r[1].succeeded }, { key: "pct", label: "Win %", value: (r) => sharePct(r[1].succeeded, r[1].total), format: (v) => pct(v, 0) },
+  ], rows));
+}
+
+function entryTypesCard(t) {
+  if (!t.entries) return null;
+  const e = t.entry_types;
+  const rows = [["Carried in", e.carry], ["Passed in", e.pass], ["Dumped in", e.dump_in]];
+  return chartCard("How they enter the zone", "Zone entries by type. Carrying or passing keeps the puck; a dump-in gives it up to be won back.", (c) => hBarChart(c, rows.map(([label, value]) => ({ label, value, note: `${pct(sharePct(value, t.entries), 0)} of entries` })), { valueFormat: (v) => fmt(v, 0), labelWidth: 100, valueName: "entries", integer: true }), null);
 }
 
 function playerPuckPlay(a, s) {
   const t = s.totals;
   const cards = [
     t.battle_areas.some((x) => x.battles > 0) ? battleMapCard("Puck battles by area", "Where they win and lose battles (our net on the left).", t.battle_areas) : null,
+    entryTypesCard(t),
+    faceoffZonesCard(t),
   ].filter(Boolean);
-  return cards.length ? el("div", { class: "grid two" }, cards) : emptyNote("No puck battles in the games in scope.");
+  return [puckTiles(t), cards.length ? el("div", { class: "grid two" }, cards) : null];
 }
 
 function playerMatchups(a, s) {
@@ -1656,6 +1713,24 @@ function battlesByPlayer(a) {
   return more("Puck battles by player and area (won / total)", body);
 }
 
+function entriesByPlayer(a) {
+  const body = el("div");
+  const skaters = a.players.filter((p) => p.totals.entries + p.totals.puck_losses + p.totals.puck_recoveries > 0);
+  dataTable(body, [
+    { key: "name", label: "Player", left: true, value: (p) => p.player.name },
+    { key: "entries", label: "Entries", value: (p) => p.totals.entries },
+    { key: "carry", label: "Carried", value: (p) => p.totals.entry_types.carry },
+    { key: "pass", label: "Passed", value: (p) => p.totals.entry_types.pass },
+    { key: "dump", label: "Dumped", value: (p) => p.totals.entry_types.dump_in },
+    { key: "carry_pct", label: "Carry-in %", value: (p) => sharePct(p.totals.entry_types.carry, p.totals.entries), format: (v) => pct(v, 0), tone: "higher" },
+    { key: "losses", label: "Puck losses", value: (p) => p.totals.puck_losses },
+    { key: "own", label: "In our zone", value: (p) => p.totals.puck_losses_defensive_zone, tone: "lower" },
+    { key: "recoveries", label: "Recoveries", value: (p) => p.totals.puck_recoveries },
+    { key: "theirs", label: "In their zone", value: (p) => p.totals.puck_recoveries_offensive_zone, tone: "higher" },
+  ], skaters, { sortKey: "entries", onRow: (p) => goToPlayer(p.player.id) });
+  return more("Zone entries and turnovers by player", body);
+}
+
 function viewPlay() {
   const a = state.analysis;
   const t = a.team;
@@ -1668,6 +1743,7 @@ function viewPlay() {
     ].filter(Boolean)),
     t.battle_areas.some((x) => x.battles > 0) ? el("div", { style: "margin-top:16px" }, [battleMapCard("Puck battles by area", "Where on the ice we win and lose one-on-one puck battles. Blue = winning most, red = losing most; hover an area for the counts.", t.battle_areas)]) : null,
     t.battle_areas.some((x) => x.battles > 0) ? battlesByPlayer(a) : null,
+    entriesByPlayer(a),
     el("div", { class: "grid two", style: "margin-top:16px" }, a.style.groups.filter((g) => g.items.length).map(comparisonCard)),
     note);
 }
