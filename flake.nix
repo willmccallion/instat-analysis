@@ -49,6 +49,8 @@
           pkgs.xorriso
           pkgs.minisign
           pkgs.gh
+          pkgs.librsvg
+          pkgs.python3
           libdmg-hfsplus
         ];
       };

@@ -8,6 +8,8 @@
   <string>Hockey Stats</string>
   <key>CFBundleIdentifier</key>
   <string>local.hockeystats.app</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleExecutable</key>
   <string>hockey-stats</string>
   <key>CFBundlePackageType</key>

@@ -23,6 +23,14 @@ cp target/universal2-apple-darwin/release/hockey-stats "$app/Contents/MacOS/hock
 sed "s/@VERSION@/$version/g" packaging/Info.plist > "$app/Contents/Info.plist"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 
+renders="$dist/icon-renders"
+mkdir -p "$renders"
+for pixels in 16 32 64 128 256 512 1024; do
+  rsvg-convert -w "$pixels" -h "$pixels" packaging/icon.svg -o "$renders/icon_$pixels.png"
+done
+python3 scripts/pack-icns.py "$renders" "$app/Contents/Resources/AppIcon.icns"
+rm -rf "$renders"
+
 # Apple Silicon refuses to run unsigned code; an ad-hoc signature is enough to launch
 # (Gatekeeper still asks once, see README-coach.txt).
 rcodesign sign "$app"
