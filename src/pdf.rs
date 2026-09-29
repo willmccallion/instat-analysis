@@ -59,6 +59,11 @@ impl Rect {
     }
 
     #[must_use]
+    pub const fn center_y(&self) -> f64 {
+        f64::midpoint(self.top, self.bottom)
+    }
+
+    #[must_use]
     pub fn contains(&self, x: f64, y: f64) -> bool {
         (self.x0..=self.x1).contains(&x) && (self.top..=self.bottom).contains(&y)
     }
@@ -207,6 +212,12 @@ pub struct Rgb {
 
 impl Rgb {
     const BLACK: Self = Self { r: 0.0, g: 0.0, b: 0.0 };
+
+    /// Every channel within `0.05` of `other`'s.
+    #[must_use]
+    pub fn near(&self, other: &Self) -> bool {
+        (self.r - other.r).abs() < 0.05 && (self.g - other.g).abs() < 0.05 && (self.b - other.b).abs() < 0.05
+    }
 
     const fn gray(level: f64) -> Self {
         Self { r: level, g: level, b: level }

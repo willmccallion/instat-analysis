@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use crate::analysis::Context;
 use crate::analysis::common::{Estimate, share_pct};
+use crate::analysis::shots::{ShotDot, shot_dots};
 use crate::model::{
     AreaBattles, Date, Game, GameId, PERIOD_SECONDS, Seconds, Strength, Team, ZoneShots, add_area_battles, add_zone_shots,
 };
@@ -140,6 +141,8 @@ pub struct TeamReport {
     pub shot_zones_against: Vec<ZoneShots>,
     /// Our puck battles by area of the ice (sum over skaters).
     pub battle_areas: Vec<AreaBattles>,
+    /// Every shot the shooting charts drew.
+    pub charted_shots: Vec<ShotDot>,
 }
 
 fn game_log(game: &Game) -> GameLogRow {
@@ -435,6 +438,7 @@ pub fn team(context: &Context<'_>) -> TeamReport {
         shot_zones: shot_zones(games),
         shot_zones_against: shot_zones_against(games),
         battle_areas: battle_areas(games),
+        charted_shots: shot_dots(games, &context.roster, |_| true),
         goal_differential: bootstrap_mean(&differentials, 11),
         shot_share_by_game: bootstrap_mean(&shot_shares, 12),
     }

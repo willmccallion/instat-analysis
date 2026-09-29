@@ -7,6 +7,7 @@ use serde::Serialize;
 use crate::analysis::Context;
 use crate::analysis::common::{BetaPrior, Estimate, PlayerRef, Shrunk, per_60, share_pct, shrink};
 use crate::analysis::matchups::{PlayerMatchup, player_matchups};
+use crate::analysis::shots::{ShotDot, shot_dots};
 use crate::analysis::stints::Stint;
 use crate::model::{
     AreaBattles, Date, Game, GameId, HistoryKind, Player, PlayerId, Seconds, SkaterStats, StatEntry, Strength, ZoneShots,
@@ -178,6 +179,8 @@ pub struct PlayerSeason {
     pub qualified: bool,
     /// Opponent skaters they battled, latest game first.
     pub matchups: Vec<PlayerMatchup>,
+    /// Their shots where the shooting chart drew them.
+    pub charted_shots: Vec<ShotDot>,
 }
 
 fn game_row(game: &Game, stats: &SkaterStats) -> PlayerGameRow {
@@ -398,6 +401,7 @@ pub fn player_seasons(context: &Context<'_>, corsi_prior: Option<BetaPrior>) -> 
         .filter_map(|(id, mut appearances)| {
             appearances.sort_by_key(|(g, _)| g.date);
             let player_ref = context.roster.get(&id)?.clone();
+            let games_played: Vec<&Game> = appearances.iter().map(|(g, _)| *g).collect();
             let mut totals = SkaterTotals::default();
             for (_, player) in &appearances {
                 if let Some(stats) = &player.skater {
@@ -443,7 +447,8 @@ pub fn player_seasons(context: &Context<'_>, corsi_prior: Option<BetaPrior>) -> 
                 focus,
                 focus_details,
                 qualified: totals.toi.0 >= context.min_toi.0,
-                matchups: player_matchups(&appearances.iter().map(|(g, _)| *g).collect::<Vec<_>>(), &id),
+                matchups: player_matchups(&games_played, &id),
+                charted_shots: shot_dots(&games_played, &context.roster, |s| s.shooter.as_ref() == Some(&id)),
                 totals,
             })
         })

@@ -850,6 +850,64 @@ function netAreaName(area) {
   return NET_AREA_NAMES[area] || area;
 }
 
+/** Feet from the middle of the opponent's goal line (89 ft from centre ice) to a rink point. */
+function shotDistance(at) {
+  return Math.hypot(at.across, 89 - at.along);
+}
+
+/**
+ * Every shot where InStat's shooting chart drew it, on a half rink in feet (net at the top,
+ * blue line at the bottom). shots: [{at: {along, across}, goal, ...}];
+ * options.tip(shot) -> {title, rows} describes a dot on hover.
+ */
+function shotPlot(container, shots, options = {}) {
+  const width = Math.min(measureWidth(container), options.maxWidth ?? 420);
+  const [x0, y0, w, h] = [-44, -13, 88, 79];
+  const height = Math.round((width * h) / w);
+  const root = svg("svg", { class: "chart", viewBox: `${x0} ${y0} ${w} ${h}`, width, height, role: "img", "aria-label": options.title || "shot locations" });
+  const id = `rink${Math.random().toString(36).slice(2)}`;
+  const outline = "M-42.5,64V17A28,28 0 0 1 -14.5,-11H14.5A28,28 0 0 1 42.5,17V64Z";
+  const clip = svg("clipPath", { id });
+  clip.append(svg("path", { d: outline }));
+  root.append(clip, svg("path", { d: outline, fill: css("--surface-2"), stroke: "none" }));
+  const lines = svg("g", { "clip-path": `url(#${id})`, "pointer-events": "none" });
+  const redLine = css("--div-neg");
+  const muted = css("--text-muted");
+  lines.append(
+    svg("line", { x1: -42.5, x2: 42.5, y1: 0, y2: 0, stroke: redLine, "stroke-width": 0.3, opacity: 0.7 }),
+    svg("path", { d: "M-6,0A6,6 0 0 0 6,0Z", fill: css("--accent-wash"), stroke: redLine, "stroke-width": 0.25 }),
+    svg("rect", { x: -3, y: -3.3, width: 6, height: 3.3, fill: "none", stroke: muted, "stroke-width": 0.4 }),
+    ...[-22, 22].flatMap((cx) => [
+      svg("circle", { cx, cy: 20, r: 15, fill: "none", stroke: redLine, "stroke-width": 0.3, opacity: 0.6 }),
+      svg("circle", { cx, cy: 20, r: 1, fill: redLine, opacity: 0.6 }),
+    ]),
+    svg("line", { x1: -42.5, x2: 42.5, y1: 63, y2: 63, stroke: css("--series-1"), "stroke-width": 2, opacity: 0.6 }),
+  );
+  root.append(lines, svg("path", { d: outline, fill: "none", stroke: css("--axis"), "stroke-width": 0.5, "pointer-events": "none" }));
+  const ordered = [...shots].sort((a, b) => Number(a.goal) - Number(b.goal));
+  for (const shot of ordered) {
+    const dot = svg("circle", {
+      cx: shot.at.across,
+      cy: 89 - shot.at.along,
+      r: shot.goal ? 2.3 : 1.6,
+      fill: css(shot.goal ? "--series-2" : "--series-1"),
+      "fill-opacity": shot.goal ? 1 : 0.7,
+      stroke: css("--surface-1"),
+      "stroke-width": 0.4,
+    });
+    const tip = options.tip ? options.tip(shot) : { title: shot.goal ? "Goal" : "Shot", rows: [] };
+    attachTooltip(dot, tip.title, () => tip.rows);
+    root.append(dot);
+  }
+  container.replaceChildren(root);
+  const goals = shots.filter((x) => x.goal).length;
+  container.append(el("div", { class: "legend" }, [
+    el("span", {}, [el("span", { class: "key", style: `background:${css("--series-1")}` }), `shot (${shots.length - goals})`]),
+    el("span", {}, [el("span", { class: "key", style: `background:${css("--series-2")}` }), `goal (${goals})`]),
+    el("span", { class: "muted", text: "net at the top · blue line at the bottom" }),
+  ]));
+}
+
 // Full rink in a 300×130 box, our net on the left; corners are one area drawn top and bottom.
 const BATTLE_AREA_SHAPES = {
   BehindOwnGoal: [[[0, 0], [22, 0], [22, 130], [0, 130]]],
@@ -1048,6 +1106,6 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
   hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
-  zoneMap, shotMap, shotZoneName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
+  zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
 };
 })();

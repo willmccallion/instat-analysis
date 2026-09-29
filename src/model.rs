@@ -44,6 +44,19 @@ impl std::iter::Sum for Seconds {
     }
 }
 
+/// A distance on the ice, in feet.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Feet(pub f64);
+
+/// A spot on a standard 200 × 85 ft rink, measured from centre ice: `along` toward the
+/// opponent's goal line (89 ft away), `across` toward the right of a player facing it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RinkPoint {
+    pub along: Feet,
+    pub across: Feet,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Jersey(pub u16);
@@ -414,6 +427,16 @@ pub struct ZoneShots {
     pub zone: ShotZone,
     pub shots: u32,
     pub on_goal: u32,
+}
+
+/// One of our shots where the match report's shooting chart drew it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChartedShot {
+    pub period: u32,
+    /// Unknown when the marker's number is unreadable or matches no one on the roster.
+    pub shooter: Option<PlayerId>,
+    pub at: RinkPoint,
+    pub goal: bool,
 }
 
 /// Adds `extra` into `totals` zone by zone, keeping zones in [`ShotZone`] order.
@@ -868,6 +891,8 @@ pub struct Game {
     /// Our skaters against each opponent skater they met; pairs that never met are left out.
     #[serde(default)]
     pub matchups: Vec<Matchup>,
+    #[serde(default)]
+    pub charted_shots: Vec<ChartedShot>,
     /// Regulation plus any overtime.
     pub length: Seconds,
     pub warnings: Vec<String>,

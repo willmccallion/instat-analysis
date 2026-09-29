@@ -8,6 +8,7 @@ use crate::parse::common::{
 };
 use crate::parse::lines::{self, RawUnit};
 use crate::parse::matrix::{self, RawMatrix};
+use crate::parse::rink::{self, RawShot};
 use crate::parse::team_stats::{self, TeamStatsPage};
 use crate::parse::timeline::{self, Timeline};
 use crate::pdf::Page;
@@ -42,6 +43,8 @@ pub struct TeamPages {
     pub battles: Option<RawMatrix>,
     /// Hits given—taken against each opponent skater.
     pub hits: Option<RawMatrix>,
+    /// Our shots as the shooting chart draws them.
+    pub shot_chart: Vec<RawShot>,
 }
 
 /// Our team's pages in full; of the opponent's, only team-level stats and their shots table.
@@ -142,7 +145,10 @@ fn parse_team_page(page: &Page, title: &str, team: &mut TeamPages) -> Result<(),
         "PLAYERS' STATS" => parse_players_stats(page, &mut team.tables)?,
         "LINES STATS" => team.units = lines::parse(page)?,
         "GAME TIME DISTRIBUTION" => team.timeline = Some(timeline::parse(page)?),
-        "SHOTS" => team.tables.shots = shots_table(page)?,
+        "SHOTS" => {
+            team.tables.shots = shots_table(page)?;
+            team.shot_chart = rink::shooting_chart(page);
+        }
         "CHALLENGES" => {
             let lines = layout::lines(&page.words, LINE_TOLERANCE);
             let (y, x) = require_phrase(&lines, "Challenges", "challenges")?;

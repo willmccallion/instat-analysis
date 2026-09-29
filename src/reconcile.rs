@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::model::{
-    Advantage, AreaBattles, BattleArea, BodyArea, CellValue, Game, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
+    Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, Game, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
     Jersey, Matchup, Opponent, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
     ShotSituation, ShotType, ShotZone, SkaterStats, StatEntry,
     Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
@@ -16,6 +16,7 @@ use crate::model::{
 use crate::parse::common::{PlayerRow, RowLabel};
 use crate::parse::match_report::MatchReport;
 use crate::parse::matrix::RawMatrix;
+use crate::parse::rink::RawShot;
 use crate::parse::players_report::{
     HistoryColumn, PageKind, PlayerPage, PlayersReport, infer_year,
 };
@@ -96,6 +97,15 @@ impl Resolver<'_> {
             return Some((*only).clone());
         }
         self.by_surname_and_toi(&label.surname, toi)
+    }
+
+    /// The one roster player wearing `jersey`, if exactly one does.
+    fn by_jersey_alone(&self, jersey: Jersey) -> Option<PlayerId> {
+        let wearing: Vec<&RosterEntry> = self.roster.iter().filter(|r| r.jersey == Some(jersey)).collect();
+        match wearing.as_slice() {
+            [only] => Some(only.id.clone()),
+            _ => None,
+        }
     }
 
     /// Lines-page labels carry real jersey numbers.
@@ -723,6 +733,7 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         .as_ref()
         .and_then(|m| pass_matrix(m, &resolver, &mut warnings));
     let matchups = matchups(report, &resolver, &mut warnings);
+    let charted_shots = charted_shots(&report.ours.shot_chart, &resolver);
 
     let context = PlayerContext {
         sources: skater_sources(tables, &mut warnings),
@@ -774,6 +785,7 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         team_stats: team_stat_rows(report),
         shot_zones_against: shot_zones_against(&report.opponent_shots),
         matchups,
+        charted_shots,
         length,
         warnings,
     })
@@ -916,6 +928,17 @@ fn distribution_cells(
         }
     }
     result
+}
+
+fn charted_shots(raw: &[RawShot], resolver: &Resolver<'_>) -> Vec<ChartedShot> {
+    raw.iter()
+        .map(|shot| ChartedShot {
+            period: shot.period,
+            shooter: shot.jersey.and_then(|j| resolver.by_jersey_alone(j)),
+            at: shot.at,
+            goal: shot.goal,
+        })
+        .collect()
 }
 
 /// Battles and hits per (our skater, their skater) pair that met at least once.
