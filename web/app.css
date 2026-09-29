@@ -331,3 +331,6 @@ button.link.quiet:hover, button.link.quiet:focus-visible { color: var(--series-1
 .source.history { color: var(--text-secondary); border-color: var(--axis); border-style: dashed; }
 .title-row { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
 .rating-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
+.takeaways.focus li > div { display: grid; gap: 3px; }
+.takeaways.focus .who { font-weight: 650; }
+.notes { margin: 8px 0 0; padding-left: 18px; }

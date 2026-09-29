@@ -710,6 +710,83 @@ function percentileBars(container, rows) {
   });
 }
 
+// Offensive half-rink in a 200×170 box, net at the top, blue line at the bottom, laid out
+// like InStat's "shots by zones" diagram (its left is our left on the page).
+const SHOT_ZONE_SHAPES = {
+  Slot: [[82, 26], [118, 26], [110, 62], [90, 62]],
+  Center: [[90, 62], [110, 62], [134, 112], [66, 112]],
+  LeftFlank: [[0, 26], [82, 26], [90, 62], [66, 112], [0, 112]],
+  RightFlank: [[118, 26], [200, 26], [200, 112], [134, 112], [110, 62]],
+  BlueLineLeft: [[0, 112], [66, 112], [66, 170], [0, 170]],
+  BlueLineCenter: [[66, 112], [134, 112], [134, 170], [66, 170]],
+  BlueLineRight: [[134, 112], [200, 112], [200, 170], [134, 170]],
+};
+const SHOT_ZONE_NAMES = {
+  Slot: "Slot (in front of the net)",
+  Center: "High slot",
+  LeftFlank: "Left side",
+  RightFlank: "Right side",
+  BlueLineLeft: "Left point",
+  BlueLineCenter: "Centre point",
+  BlueLineRight: "Right point",
+};
+
+/**
+ * Half-rink shot map. zones: [{zone, shots, on_goal}]; shading = share of shots.
+ * The number in each zone is shots / on goal.
+ */
+function shotMap(container, zones, options = {}) {
+  const width = Math.min(measureWidth(container), options.maxWidth ?? 420);
+  const scale = width / 200;
+  const height = Math.round(170 * scale);
+  const total = zones.reduce((sum, z) => sum + z.shots, 0);
+  const most = Math.max(1, ...zones.map((z) => z.shots));
+  const id = `rink${Math.random().toString(36).slice(2)}`;
+  const root = svg("svg", { class: "chart", viewBox: "0 0 200 170", width, height, role: "img", "aria-label": options.title || "shot map" });
+  const outline = "M0,170V28Q0,0 28,0H172Q200,0 200,28V170Z";
+  const clip = svg("clipPath", { id });
+  clip.append(svg("path", { d: outline }));
+  root.append(clip);
+  const layer = svg("g", { "clip-path": `url(#${id})` });
+  root.append(layer);
+  const byZone = new Map(zones.map((z) => [z.zone, z]));
+  for (const [zone, points] of Object.entries(SHOT_ZONE_SHAPES)) {
+    const data = byZone.get(zone) || { shots: 0, on_goal: 0 };
+    const fill = data.shots ? sequentialColor(0.15 + 0.85 * (data.shots / most)) : css("--surface-2");
+    const shape = svg("polygon", { points: points.map((p) => p.join(",")).join(" "), fill, stroke: css("--surface-1"), "stroke-width": 2 / scale, "stroke-linejoin": "round" });
+    layer.append(shape);
+    attachTooltip(shape, SHOT_ZONE_NAMES[zone], () => [
+      { value: `${data.shots}`, name: "shots" },
+      { value: `${data.on_goal}`, name: "on goal" },
+      { value: total ? `${Math.round((100 * data.shots) / total)}%` : "—", name: "of all shots" },
+    ]);
+    const cx = points.reduce((s, p) => s + p[0], 0) / points.length;
+    const cy = points.reduce((s, p) => s + p[1], 0) / points.length;
+    const ink = data.shots ? inkOn(fill) : css("--text-muted");
+    const label = svg("text", { x: cx, y: cy + 4, "text-anchor": "middle", "pointer-events": "none", style: `fill:${ink};font-size:${13 / scale}px;font-weight:600` });
+    label.textContent = `${data.shots} / ${data.on_goal}`;
+    layer.append(label);
+  }
+  const lineInk = css("--text-muted");
+  root.append(
+    svg("line", { x1: 0, x2: 200, y1: 26, y2: 26, stroke: css("--div-neg"), "stroke-width": 0.8, opacity: 0.7, "pointer-events": "none" }),
+    svg("path", { d: "M90,26A10,10 0 0 0 110,26", fill: "none", stroke: lineInk, "stroke-width": 0.8, "pointer-events": "none" }),
+    svg("rect", { x: 94, y: 19, width: 12, height: 7, fill: "none", stroke: lineInk, "stroke-width": 1.2, rx: 1.5, "pointer-events": "none" }),
+    svg("path", { d: outline, fill: "none", stroke: css("--axis"), "stroke-width": 1.2, "pointer-events": "none" }),
+    svg("line", { x1: 0, x2: 200, y1: 169, y2: 169, stroke: css("--series-1"), "stroke-width": 2, "pointer-events": "none" }),
+  );
+  container.replaceChildren(root);
+  container.append(el("div", { class: "legend" }, [
+    el("span", {}, [el("span", { class: "key", style: `background:${sequentialColor(0.15)}` }), "few shots"]),
+    el("span", {}, [el("span", { class: "key", style: `background:${sequentialColor(1)}` }), "most shots"]),
+    el("span", { class: "muted", text: "numbers = shots / on goal · blue line at the bottom" }),
+  ]));
+}
+
+function shotZoneName(zone) {
+  return SHOT_ZONE_NAMES[zone] || zone;
+}
+
 /**
  * Sortable data table. columns: [{key, label, format?, value?(row), left?, title?}]
  * Values shown with textContent; returns the table element.
@@ -813,6 +890,6 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
   hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
-  dataTable, chartCard, sequentialColor, divergingColor,
+  shotMap, shotZoneName, dataTable, chartCard, sequentialColor, divergingColor,
 };
 })();

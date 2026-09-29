@@ -1,6 +1,6 @@
 "use strict";
 
-const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, dataTable, chartCard } = window.Charts;
+const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, shotMap, shotZoneName, dataTable, chartCard } = window.Charts;
 
 // Plain-English definitions; any label matching a key explains itself on hover or tap.
 const PER_60 = "per 60 minutes of ice time, so players with different ice time compare fairly";
@@ -127,7 +127,7 @@ const VIEWS = [
 
 const SUBVIEWS = {
   lines: [["units", "Lines"], ["chemistry", "Pair chemistry"], ["passing", "Passing"]],
-  team: [["team", "Team"], ["goalies", "Goalies"]],
+  team: [["team", "Team"], ["play", "Possession & shots"], ["focus", "Practice focus"], ["goalies", "Goalies"]],
   deep: [["impact", "Individual impact"], ["profiles", "Player styles"], ["advanced", "Statistical tests"]],
 };
 
@@ -600,6 +600,7 @@ function viewSummary() {
     kpis,
     el("div", { class: "card" }, [cardTitle("Key takeaways"), takeawayList(takeaways(a))]),
     el("div", { class: "grid two", style: "margin-top:16px" }, [good, bad]),
+    practiceSummary(a),
     el("div", { style: "margin-top:16px" }, [chart]),
     more("More team numbers", extra));
 }
@@ -1047,6 +1048,7 @@ function playerDetail(a, s) {
   ], units, { sortKey: "toi" });
   const partners = a.pairs.filter((p) => p.a.id === s.player.id || p.b.id === s.player.id).map((p) => ({ partner: p.a.id === s.player.id ? p.b : p.a, pair: p }));
   const partnerCard = chartCard("Most frequent linemates", "Even-strength minutes together (from shifts).", (c) => hBarChart(c, partners.sort((x, y) => y.pair.together.toi - x.pair.together.toi).slice(0, 10).map(({ partner, pair }) => ({ label: partner.name, value: pair.together.toi / 60, note: `goals ${pair.together.goals_for}–${pair.together.goals_against}${pair.corsi ? ` · CF% ${pct(pair.corsi.corsi_pct, 0)}` : ""}` })), { valueFormat: (v) => `${fmt(v, 0)} min`, labelWidth: 150 }), null);
+  const shotCard = t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Where they shoot from", "Shots by zone over the games in scope.", t.shot_zones) : null;
   const detailBody = el("div");
   const detailCard = more("Every InStat number (latest game in scope)", detailBody);
   dataTable(detailBody, [
@@ -1054,7 +1056,7 @@ function playerDetail(a, s) {
     { key: "label", label: "Stat", left: true },
     { key: "value", label: "Value", value: (r) => r.value.text },
   ], s.focus_details);
-  return [back, head, kpis, el("div", { class: "grid two" }, [ratingCard, trendCard, partnerCard, unitsCard].filter(Boolean)), more("More: percentiles, ice time, selected game", el("div", { class: "grid two" }, [percentileCard, toiCard, focus].filter(Boolean))), el("div", { style: "height:16px" }), detailCard];
+  return [back, head, kpis, el("div", { class: "grid two" }, [ratingCard, trendCard, partnerCard, unitsCard, shotCard].filter(Boolean)), more("More: percentiles, ice time, selected game", el("div", { class: "grid two" }, [percentileCard, toiCard, focus].filter(Boolean))), el("div", { style: "height:16px" }), detailCard];
 }
 
 // ---------- Goalies ----------
@@ -1077,12 +1079,15 @@ function viewGoalies() {
         chartCard("Save % by game", "Hollow dots come from InStat's recent-games table.", (c) => lineChart(c, [{ name: "Save %", color: css("--series-1"), points: points.map((p) => ({ x: p.i, y: p.save_pct, hollow: !p.loaded, label: `${p.saves}/${p.shots_against} vs ${p.opponent}` })) }], { xFormat: (i) => points[i]?.date.slice(5) || "", yFormat: (v) => pct(v, 0) }), (c) => dataTable(c, [
           { key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true }, { key: "shots_against", label: "SA" }, { key: "saves", label: "Saves" }, { key: "save_pct", label: "Sv%", format: (v) => pct(v, 1) },
         ], g.trend), { source: historyChip() }),
+        g.by_distance.some((b) => b.shots > 0) ? chartCard("Save % by shot distance", "Closer shots are harder to stop; compare each band with the goalie's overall save %.", (c) => hBarChart(c, g.by_distance.filter((b) => b.shots > 0).map((b) => ({ label: distanceLabel(b.band), value: (100 * b.saves) / b.shots, note: `${b.saves} saves on ${b.shots} shots` })), { min: 0, max: 100, reference: g.save_pct ? g.save_pct.value : undefined, referenceLabel: "overall", valueFormat: (v) => pct(v, 0), labelWidth: 130 }), (c) => dataTable(c, [
+          { key: "band", label: "Distance", left: true, format: distanceLabel }, { key: "shots", label: "Shots" }, { key: "saves", label: "Saves" }, { key: "pct", label: "Sv%", value: (b) => (b.shots ? (100 * b.saves) / b.shots : null), format: (v) => pct(v, 1) },
+        ], g.by_distance)) : null,
         (() => {
           const card = el("div", { class: "card" }, [el("h3", { text: "Every InStat goalie number (latest game)" }), el("div")]);
           dataTable(card.lastChild, [{ key: "label", label: "Stat", left: true }, { key: "v", label: "Value", value: (r) => r.value.text }], g.focus_details);
           return card;
         })(),
-      ]),
+      ].filter(Boolean)),
     ]);
   }));
 }
@@ -1125,6 +1130,99 @@ function viewTeam() {
     { label: "Shot share per game", value: t.shot_share_by_game ? pct(t.shot_share_by_game.value, 0) : "—", note: t.shot_share_by_game ? `95%: ${fmt(t.shot_share_by_game.low, 0)}–${fmt(t.shot_share_by_game.high, 0)} (bootstrap)` : "needs 3+ games" },
   ]);
   return page("Team", "How the team plays as a whole in the games in scope.", luck, grid, logCard);
+}
+
+function distanceLabel(band) {
+  return { "From the slot": "Slot", "From close range": "Close range", "From midrange": "Mid-range", "From long range distance": "Long range" }[band] || band;
+}
+
+function shotMapCard(title, description, zones) {
+  return chartCard(title, description, (c) => shotMap(c, zones), (c) => dataTable(c, [
+    { key: "zone", label: "Zone", left: true, format: shotZoneName },
+    { key: "shots", label: "Shots" },
+    { key: "on_goal", label: "On goal" },
+    { key: "pct", label: "On goal %", value: (z) => (z.shots ? (100 * z.on_goal) / z.shots : null), format: (v) => pct(v, 0) },
+  ], zones));
+}
+
+/** Green when the comparison favours us, red when it favours them, grey near even. */
+function comparisonColor(item) {
+  if (item.share === null) return css("--deemphasis");
+  const edge = item.better === "Higher" ? item.share - 50 : 50 - item.share;
+  if (Math.abs(edge) < 3) return css("--deemphasis");
+  return edge > 0 ? css("--good") : css("--critical");
+}
+
+function comparisonCard(group) {
+  const value = (item, v) => (item.measure === "Seconds" ? clock(v) : fmt(v, 0));
+  const notes = group.items.filter((item) => item.note).map((item) => `${item.label.replace(/ \(.*\)$/, "")}: ${item.note}`);
+  const draw = (c) => {
+    hBarChart(c, group.items.map((item) => ({
+      label: item.label,
+      value: item.share,
+      color: comparisonColor(item),
+      note: `us ${value(item, item.ours)}, them ${value(item, item.theirs)}${item.note ? ` · ${item.note}` : ""}`,
+    })), { min: 0, max: 100, reference: 50, referenceLabel: "even", valueFormat: (v) => pct(v, 0), labelWidth: 230, valueName: "our share" });
+    if (notes.length) c.append(el("ul", { class: "small muted notes" }, notes.map((n) => el("li", { text: n }))));
+  };
+  return chartCard(group.title, "Our share of the total, us vs them. Green = in our favour, red = in theirs (for icings, offsides and giveaways, fewer is better).", draw, (c) => dataTable(c, [
+    { key: "label", label: "", left: true },
+    { key: "ours", label: "Us", value: (item) => value(item, item.ours) },
+    { key: "theirs", label: "Them", value: (item) => value(item, item.theirs) },
+    { key: "share", label: "Our share", format: (v) => pct(v, 0) },
+    { key: "note", label: "", left: true, format: (v) => v || "" },
+  ], group.items));
+}
+
+function viewPlay() {
+  const a = state.analysis;
+  const t = a.team;
+  const note = el("p", { class: "small muted", text: "InStat's PDFs give totals per game, not the play-by-play feed, so sequences between whistles (e.g. every neutral-zone regroup) can't be rebuilt. Positional attacks vs counter-attacks and entry types are the closest categories InStat provides." });
+  return page("Possession & shots", "How we attack, enter the zone and manage the puck, compared with our opponents.",
+    el("div", { class: "grid two" }, [
+      t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Our shot map", "Where our shots came from (all skaters, all strengths). Hover a zone for details.", t.shot_zones) : null,
+      ...a.style.groups.filter((g) => g.items.length).map(comparisonCard),
+    ].filter(Boolean)),
+    note);
+}
+
+const FOCUS_TEXT = { WorkOn: ["bad", "▼", "Work on"], Watch: ["info", "●", "Keep an eye on"], Strength: ["good", "▲", "Strengths"] };
+
+function focusList(items) {
+  return el("ul", { class: "takeaways focus" }, items.map((item) => {
+    const [tone, icon] = FOCUS_TEXT[item.verdict];
+    return el("li", { class: `tone-${tone}` }, [
+      el("span", { class: "icon", text: icon, "aria-hidden": "true" }),
+      el("div", {}, [
+        el("div", { class: "who", text: item.area }),
+        el("div", { text: item.evidence }),
+        el("div", { class: "small muted", text: `Practice idea: ${item.suggestion}` }),
+      ]),
+    ]);
+  }));
+}
+
+function viewFocus() {
+  const a = state.analysis;
+  const focus = a.style.focus;
+  if (!focus.length) return page("Practice focus", "Not enough data in scope yet.");
+  const groups = ["WorkOn", "Watch", "Strength"].map((verdict) => [verdict, focus.filter((f) => f.verdict === verdict)]).filter(([, items]) => items.length);
+  const inScope = a.games.filter((g) => g.in_scope).length;
+  return page("Practice focus", "What the numbers say to work on, ranked from the biggest gap. Each area compares us with our opponents (50% = even; power play vs 20%, penalty kill vs 80%).",
+    ...groups.map(([verdict, items]) => el("div", { class: "card", style: "margin-bottom:16px" }, [cardTitle(FOCUS_TEXT[verdict][2]), focusList(items)])),
+    el("p", { class: "small muted", text: `Based on ${inScope} game${inScope === 1 ? "" : "s"}. An area needs at least 10 events before it's called a problem or a strength, and 8 points away from its benchmark; with few games, treat these as things to check on video, not conclusions.` }));
+}
+
+function practiceSummary(a) {
+  const top = a.style.focus.filter((f) => f.verdict === "WorkOn").slice(0, 3);
+  if (!top.length) return null;
+  return el("div", { class: "card", style: "margin-top:16px" }, [
+    el("div", { class: "card-head" }, [
+      cardTitle("Practice focus"),
+      el("button", { class: "link small", text: "all areas", onclick: () => { state.sub.team = "focus"; setView("team"); } }),
+    ]),
+    focusList(top),
+  ]);
 }
 
 // ---------- Impact ----------
@@ -1279,6 +1377,9 @@ function viewHelp() {
     ["Verdicts", "Likely real: adjusted p < 0.05. Maybe: < 0.20. Could be noise: otherwise. Not enough data: the test needs more games. p-values are adjusted for the number of pairs/lines tested (Benjamini–Hochberg)."],
     ["Power analysis", "How many more games at the current usage would give an 80% chance of confirming a difference of the size currently estimated."],
     ["Passing lift", "Passes between two players divided by what their overall passing and receiving volumes predict (quasi-independence). Above 1 = a real connection."],
+    ["Shot map", "Where shots came from, using InStat's seven zones: slot, high slot, left and right sides, and three spots along the blue line. Each zone shows shots / on goal; darker = more shots."],
+    ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],
+    ["Practice focus", "Each area compares us with our opponents (50% = even; power play against 20%, penalty kill against 80%). An area is flagged only when it's 8+ points off and backed by at least 10 events; the drill ideas are starting points, not prescriptions."],
     ["Shift data", "Rebuilt from InStat's time-distribution chart. The reader checks itself: every player's +/- rebuilt from shifts must match InStat's own column, or the game shows a warning."],
     ["Where the numbers come from", "InStat's Match report (team, player, line, shot, challenge and pass tables plus the shift chart) and Player report (full names, jersey numbers, xG, goalie details and each player's recent-games history). InStat prints wrong jersey numbers in some Match-report tables; the reader uses names and ice time instead."],
   ];
@@ -1303,7 +1404,7 @@ function render() {
   }
   const sections = {
     lines: { title: "Lines & pairs", views: { units: viewLines, chemistry: viewChemistry, passing: viewPassing } },
-    team: { title: "Team & goalies", views: { team: viewTeam, goalies: viewGoalies } },
+    team: { title: "Team & goalies", views: { team: viewTeam, play: viewPlay, focus: viewFocus, goalies: viewGoalies } },
     deep: { title: "Deep dive", views: { impact: viewImpact, profiles: viewProfiles, advanced: viewAdvanced } },
   };
   const views = { games: viewGames, summary: viewSummary, rankings: viewRankings, players: viewPlayers, game: viewGame, help: viewHelp };

@@ -11,6 +11,7 @@ pub mod profiles;
 pub mod rankings;
 pub mod significance;
 pub mod stints;
+pub mod style;
 pub mod team;
 pub mod units;
 
@@ -107,6 +108,7 @@ pub struct Analysis {
     pub focus: Option<GameId>,
     pub request: Request,
     pub team: team::TeamReport,
+    pub style: style::StyleReport,
     pub players: Vec<players::PlayerSeason>,
     pub rankings: rankings::RankingsReport,
     pub goalies: Vec<goalies::GoalieSeason>,
@@ -255,6 +257,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
             .collect(),
         focus: focus_id,
         request: request.clone(),
+        style: style::style(&context, &team_report),
         team: team_report,
         rankings: rankings::rankings(&context, &player_seasons),
         players: player_seasons,
