@@ -223,11 +223,18 @@ function renderSidebar() {
   document.getElementById("team-name").textContent = state.analysis?.team_name || "Hockey Stats";
 }
 
+// Pages that pool several games show the scope picker; pages that rank players also show
+// the ice-time minimum. Game, Help and Uploads have no filter bar.
+const SCOPE_VIEWS = new Set(["summary", "rankings", "lines", "players", "team", "deep"]);
+const MIN_MINUTES_VIEWS = new Set(["rankings", "lines", "players", "deep"]);
+
 function renderFilters() {
   const bar = document.getElementById("filters");
   bar.replaceChildren();
   const a = state.analysis;
-  if (!a || a.games.length === 0) return;
+  const visible = a && a.games.length > 0 && SCOPE_VIEWS.has(state.view);
+  bar.hidden = !visible;
+  if (!visible) return;
   const request = state.request;
   const single = request.games.length === 1 ? request.games[0] : null;
   const custom = request.games.length > 1;
@@ -252,7 +259,9 @@ function renderFilters() {
     state.request = { ...request, min_minutes: Math.max(0, Number(minInput.value) || 0) };
     refresh();
   });
-  bar.append(el("label", { title: "Players below this total ice time are shown but not ranked" }, ["Min. minutes to rank", minInput]));
+  if (MIN_MINUTES_VIEWS.has(state.view)) {
+    bar.append(el("label", { title: "Players below this total ice time are shown but not ranked" }, ["Min. minutes to rank", minInput]));
+  }
   bar.append(el("span", { class: "spacer" }));
   const inScope = a.games.filter((g) => g.in_scope).length;
   if (inScope < 10) {
