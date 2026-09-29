@@ -83,15 +83,18 @@ fn numeric_atom(token: &str) -> Option<Atom> {
         let seconds: u32 = seconds.parse().ok()?;
         return (seconds < 60).then_some(Atom::Clock(minutes * 60 + seconds));
     }
-    if token.starts_with('+') || token.starts_with('-') || token.starts_with(|c: char| c.is_ascii_digit()) {
+    if token.starts_with('+')
+        || token.starts_with('-')
+        || token.starts_with(|c: char| c.is_ascii_digit())
+    {
         let unsigned = token.strip_prefix('+').unwrap_or(token);
         if let Ok(value) = unsigned.parse::<i64>() {
             return Some(Atom::Int(value));
         }
-        if unsigned.contains('.') {
-            if let Ok(value) = unsigned.parse::<f64>() {
-                return Some(Atom::Decimal(value));
-            }
+        if unsigned.contains('.')
+            && let Ok(value) = unsigned.parse::<f64>()
+        {
+            return Some(Atom::Decimal(value));
         }
     }
     None
@@ -139,10 +142,10 @@ impl Cell {
 
     /// Treats "—" as zero and plain counts as themselves.
     #[must_use]
-    pub const fn count(&self) -> Option<u32> {
+    pub fn count(&self) -> Option<u32> {
         match *self {
             Self::Empty => Some(0),
-            Self::Int(n) if n >= 0 => Some(n as u32),
+            Self::Int(n) => u32::try_from(n).ok(),
             Self::CountShare(n, _) => Some(n),
             _ => None,
         }

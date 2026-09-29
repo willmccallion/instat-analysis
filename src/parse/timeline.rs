@@ -65,7 +65,10 @@ impl Panels {
         panel_rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
         let mut starts: Vec<f64> = Vec::new();
         for rect in &panel_rects {
-            if starts.last().is_none_or(|last| (rect.x0 - last).abs() > 1.0) {
+            if starts
+                .last()
+                .is_none_or(|last| (rect.x0 - last).abs() > 1.0)
+            {
                 starts.push(rect.x0);
             }
         }
@@ -207,7 +210,8 @@ fn goal_markers(page: &Page, panels: &Panels) -> Result<Vec<GoalMarker>, Error> 
         .clips
         .iter()
         .filter(|r| {
-            (MARKER_MIN_WIDTH..MARKER_MAX_WIDTH).contains(&r.width()) && r.height() < MARKER_MAX_HEIGHT
+            (MARKER_MIN_WIDTH..MARKER_MAX_WIDTH).contains(&r.width())
+                && r.height() < MARKER_MAX_HEIGHT
         })
         .collect();
     boxes.sort_by(|a, b| a.x0.total_cmp(&b.x0));

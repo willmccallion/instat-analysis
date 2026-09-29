@@ -10,7 +10,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("=== page {}", page.number);
         for w in &page.words {
-            println!("{:8.2} {:8.2} {:8.2} {:8.2} {}", w.x0, w.top, w.x1, w.bottom, w.text);
+            println!(
+                "{:8.2} {:8.2} {:8.2} {:8.2} {}",
+                w.x0, w.top, w.x1, w.bottom, w.text
+            );
         }
     }
     Ok(())

@@ -36,7 +36,11 @@ fn number_above<'a>(words: &'a [Word], surname: &Word, max_dx: f64) -> Option<&'
 
 /// Surname words at `x` on one line; multi-word surnames are joined.
 fn group_surnames(mut words: Vec<&Word>, same_row_dx: f64) -> Vec<(Word, String)> {
-    words.sort_by(|a, b| a.center_y().total_cmp(&b.center_y()).then(a.x0.total_cmp(&b.x0)));
+    words.sort_by(|a, b| {
+        a.center_y()
+            .total_cmp(&b.center_y())
+            .then(a.x0.total_cmp(&b.x0))
+    });
     let mut result: Vec<(Word, String)> = Vec::new();
     for word in words {
         match result.last_mut() {

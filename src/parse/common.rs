@@ -91,10 +91,7 @@ const HEADING_MAX_Y: f64 = 30.0;
 #[must_use]
 pub fn page_heading(page: &Page) -> Option<PageHeading> {
     let top_lines = layout::lines(&page.words, LINE_TOLERANCE);
-    let heading = top_lines
-        .iter()
-        .filter(|l| l.y < HEADING_MAX_Y)
-        .nth(1)?;
+    let heading = top_lines.iter().filter(|l| l.y < HEADING_MAX_Y).nth(1)?;
     let mut words: Vec<&str> = heading.words.iter().map(|w| w.text.as_str()).collect();
     if words.last().is_some_and(|w| w.parse::<u32>().is_ok()) {
         words.pop();
@@ -153,7 +150,8 @@ fn is_label_start(line: &Line<'_>, label_x: f64) -> bool {
         return false;
     };
     let is_alpha = |w: &Word| w.text.starts_with(|c: char| c.is_alphabetic()) && w.text != "TOTAL";
-    let numbered = (first.x0 - label_x).abs() < 3.0 && first.text.parse::<u16>().is_ok() && is_alpha(second);
+    let numbered =
+        (first.x0 - label_x).abs() < 3.0 && first.text.parse::<u16>().is_ok() && is_alpha(second);
     let unnumbered = first.x0 > label_x + 3.0 && first.x0 < label_x + 20.0 && is_alpha(first);
     numbered || unnumbered
 }
@@ -185,7 +183,12 @@ pub fn player_table(
         .iter()
         .map(|l| Line {
             y: l.y,
-            words: l.words.iter().copied().filter(|w| w.x0 > label_x + 30.0).collect(),
+            words: l
+                .words
+                .iter()
+                .copied()
+                .filter(|w| w.x0 > label_x + 30.0)
+                .collect(),
         })
         .filter(|l| !l.words.is_empty())
         .collect();
@@ -227,8 +230,7 @@ pub fn require_phrase(
     phrase: &str,
     section: &'static str,
 ) -> Result<(f64, f64), Error> {
-    find_phrase(lines, phrase)
-        .ok_or_else(|| Error::parse(section, format!("missing {phrase:?}")))
+    find_phrase(lines, phrase).ok_or_else(|| Error::parse(section, format!("missing {phrase:?}")))
 }
 
 #[cfg(test)]

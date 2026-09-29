@@ -4,9 +4,7 @@
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::layout::{self, Column, Line};
-use crate::model::{
-    EvenStrengthUnitStats, Seconds, SpecialTeamsUnitStats, UnitKind, UnitStats,
-};
+use crate::model::{EvenStrengthUnitStats, Seconds, SpecialTeamsUnitStats, UnitKind, UnitStats};
 use crate::parse::common::{
     COLUMN_SLACK, LINE_TOLERANCE, PAGE_RIGHT, PHRASE_GAP, RowLabel, find_phrase, parse_members,
 };
@@ -87,7 +85,11 @@ fn parse_half(
             .iter()
             .filter(|l| l.y > *start_y + 0.5 && l.y < end_y - 0.5)
             .collect();
-        units.extend(parse_section(&section_lines, spec.kind, names_on_own_lines)?);
+        units.extend(parse_section(
+            &section_lines,
+            spec.kind,
+            names_on_own_lines,
+        )?);
     }
     Ok(units)
 }
@@ -100,7 +102,10 @@ fn header_end(lines: &[&Line<'_>]) -> usize {
     lines
         .iter()
         .position(|l| {
-            let has_clock = l.words.iter().any(|w| matches!(Cell::parse(&w.text), Cell::Clock(_)));
+            let has_clock = l
+                .words
+                .iter()
+                .any(|w| matches!(Cell::parse(&w.text), Cell::Clock(_)));
             let starts_with_player = l.words.len() >= 2
                 && l.words[0].text.parse::<u16>().is_ok()
                 && l.words[1].text.starts_with(|c: char| c.is_alphabetic());
@@ -115,15 +120,19 @@ fn parse_section(
     names_on_own_lines: bool,
 ) -> Result<Vec<RawUnit>, Error> {
     let header_count = header_end(lines);
-    let header_lines: Vec<Line<'_>> = lines[..header_count]
-        .iter()
-        .map(|l| (*l).clone())
-        .collect();
+    let header_lines: Vec<Line<'_>> = lines[..header_count].iter().map(|l| (*l).clone()).collect();
     let columns = layout::header_columns(&header_lines, PHRASE_GAP);
-    let Some(first_column_x) = columns.iter().find(|c| c.name.starts_with("Time on ice")).map(|c| c.x) else {
+    let Some(first_column_x) = columns
+        .iter()
+        .find(|c| c.name.starts_with("Time on ice"))
+        .map(|c| c.x)
+    else {
         return Err(Error::parse(SECTION, "no 'Time on ice' column"));
     };
-    let columns: Vec<Column> = columns.into_iter().filter(|c| c.x >= first_column_x).collect();
+    let columns: Vec<Column> = columns
+        .into_iter()
+        .filter(|c| c.x >= first_column_x)
+        .collect();
     let body = &lines[header_count..];
     let stat_lines: Vec<&Line<'_>> = body
         .iter()
@@ -193,7 +202,11 @@ fn required<T>(found: Option<T>, what: &str) -> Result<T, Error> {
     found.ok_or_else(|| Error::parse(SECTION, format!("unreadable {what}")))
 }
 
-fn build_unit(kind: UnitKind, members: Vec<RowLabel>, values: &[(String, Cell)]) -> Result<RawUnit, Error> {
+fn build_unit(
+    kind: UnitKind,
+    members: Vec<RowLabel>,
+    values: &[(String, Cell)],
+) -> Result<RawUnit, Error> {
     let toi = Seconds(f64::from(required(
         value(values, "Time on ice").and_then(Cell::seconds),
         "time on ice",
@@ -222,7 +235,9 @@ fn build_unit(kind: UnitKind, members: Vec<RowLabel>, values: &[(String, Cell)])
             )?;
             let shots_cell = values
                 .iter()
-                .find(|(name, _)| name.contains("shots / on goal") || name.starts_with("Shots / on goal"))
+                .find(|(name, _)| {
+                    name.contains("shots / on goal") || name.starts_with("Shots / on goal")
+                })
                 .map(|(_, cell)| cell);
             let (shots, shots_on_goal) = required(shots_cell.and_then(Cell::ratio), "shots")?;
             UnitStats::SpecialTeams(SpecialTeamsUnitStats {
@@ -231,9 +246,13 @@ fn build_unit(kind: UnitKind, members: Vec<RowLabel>, values: &[(String, Cell)])
                 shots,
                 shots_on_goal,
                 time_in_offensive_zone: Seconds(f64::from(
-                    value(values, "Time on opp").and_then(Cell::seconds).unwrap_or_default(),
+                    value(values, "Time on opp")
+                        .and_then(Cell::seconds)
+                        .unwrap_or_default(),
                 )),
-                faceoffs_won: value(values, "Faceoffs").and_then(Cell::count).unwrap_or_default(),
+                faceoffs_won: value(values, "Faceoffs")
+                    .and_then(Cell::count)
+                    .unwrap_or_default(),
                 opponent_breakouts: exact(values, "Opp breakouts")
                     .and_then(Cell::count)
                     .unwrap_or_default(),

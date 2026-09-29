@@ -9,7 +9,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
         let mut words = page.words.clone();
-        words.sort_by(|a, b| a.center_y().total_cmp(&b.center_y()).then(a.x0.total_cmp(&b.x0)));
+        words.sort_by(|a, b| {
+            a.center_y()
+                .total_cmp(&b.center_y())
+                .then(a.x0.total_cmp(&b.x0))
+        });
         let mut rows: Vec<Vec<hockey_stats::pdf::Word>> = Vec::new();
         for w in words {
             match rows.last_mut() {
@@ -19,7 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         for mut row in rows {
             row.sort_by(|a, b| a.x0.total_cmp(&b.x0));
-            let line: Vec<String> = row.iter().map(|w| format!("{}@{:.0}", w.text, w.x0)).collect();
+            let line: Vec<String> = row
+                .iter()
+                .map(|w| format!("{}@{:.0}", w.text, w.x0))
+                .collect();
             println!("{:6.1} | {}", row[0].center_y(), line.join(" "));
         }
     }

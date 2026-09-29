@@ -129,29 +129,11 @@ impl fmt::Display for Date {
     }
 }
 
-/// Which of the two teams, in the order the match report title lists them.
+/// Us (SSAC) or the opponent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Side {
-    First,
-    Second,
-}
-
-impl Side {
-    #[must_use]
-    pub const fn other(self) -> Self {
-        match self {
-            Self::First => Self::Second,
-            Self::Second => Self::First,
-        }
-    }
-
-    #[must_use]
-    pub const fn index(self) -> usize {
-        match self {
-            Self::First => 0,
-            Self::Second => 1,
-        }
-    }
+pub enum Team {
+    Us,
+    Them,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -199,18 +181,19 @@ impl Interval {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Advantage {
     pub interval: Interval,
-    pub team: Side,
+    pub team: Team,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Goal {
     pub time: Seconds,
-    pub team: Side,
-    /// Strength from the scoring team's point of view.
+    pub scored_by: Team,
+    /// Manpower from our point of view when the goal was scored.
     pub strength: Strength,
+    /// (ours, theirs) after the goal.
     pub score_after: (u32, u32),
-    /// Players on ice for each side, indexed by [`Side::index`].
-    pub on_ice: [Vec<PlayerId>; 2],
+    /// Our skaters on the ice.
+    pub on_ice: Vec<PlayerId>,
 }
 
 impl Goal {
@@ -305,12 +288,17 @@ impl CellValue {
             Cell::Int(n) => Some(n as f64),
             Cell::Decimal(d) | Cell::Percent(d) => Some(d),
             Cell::Clock(s) | Cell::ClockShare(s, _) => Some(f64::from(s)),
-            Cell::Ratio(a, _) | Cell::Triple(a, _, _) | Cell::CountShare(a, _) | Cell::Pair(a, _) => {
-                Some(f64::from(a))
-            }
+            Cell::Ratio(a, _)
+            | Cell::Triple(a, _, _)
+            | Cell::CountShare(a, _)
+            | Cell::Pair(a, _) => Some(f64::from(a)),
             Cell::Text(_) => None,
         };
-        let shown = if text.trim().is_empty() { "—" } else { text.trim() };
+        let shown = if text.trim().is_empty() {
+            "—"
+        } else {
+            text.trim()
+        };
         Self {
             text: shown.to_owned(),
             number,
@@ -372,7 +360,7 @@ pub struct HistoryRow {
     pub kind: HistoryKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HistoryKind {
     Skater {
         goals: u32,
@@ -405,23 +393,11 @@ pub struct Player {
 }
 
 /// Passes from row player to column player.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerMatrix {
     pub players: Vec<PlayerId>,
     /// `values[from][to]`, indexed like `players`.
     pub values: Vec<Vec<u32>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TeamGame {
-    pub name: TeamName,
-    pub abbreviation: String,
-    pub goals: u32,
-    pub players: Vec<Player>,
-    pub units: Vec<Unit>,
-    pub passes: Option<PlayerMatrix>,
-    pub team_stats: Vec<StatEntry>,
-    pub summary: TeamSummary,
 }
 
 /// The team-level numbers the analysis relies on (from the TEAMS STATS page).
@@ -450,47 +426,52 @@ pub struct TeamSummary {
     pub hits: u32,
 }
 
+/// One game from our point of view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Game {
     pub id: GameId,
     pub date: Date,
-    pub teams: [TeamGame; 2],
+    pub team: TeamName,
+    pub opponent: TeamName,
+    pub goals_for: u32,
+    pub goals_against: u32,
+    pub players: Vec<Player>,
+    pub units: Vec<Unit>,
+    pub passes: Option<PlayerMatrix>,
     pub goals: Vec<Goal>,
     pub advantages: Vec<Advantage>,
-    /// Regulation plus any overtime, in seconds.
+    pub summary: TeamSummary,
+    pub opponent_summary: TeamSummary,
+    /// Every team-level stat for (us, them), for display.
+    pub team_stats: Vec<TeamStatRow>,
+    /// Regulation plus any overtime.
     pub length: Seconds,
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamStatRow {
+    pub group: String,
+    pub label: String,
+    pub ours: CellValue,
+    pub theirs: CellValue,
+}
+
 impl Game {
+    /// Our manpower state at time `t`.
     #[must_use]
-    pub const fn team(&self, side: Side) -> &TeamGame {
-        &self.teams[side.index()]
-    }
-
-    #[must_use]
-    pub fn side_of(&self, team: &TeamName) -> Option<Side> {
-        if &self.teams[0].name == team {
-            Some(Side::First)
-        } else if &self.teams[1].name == team {
-            Some(Side::Second)
-        } else {
-            None
-        }
-    }
-
-    /// Manpower state for `side` at time `t`.
-    #[must_use]
-    pub fn strength_at(&self, side: Side, t: Seconds) -> Strength {
+    pub fn strength_at(&self, t: Seconds) -> Strength {
         self.advantages
             .iter()
             .find(|a| a.interval.start.0 < t.0 && t.0 <= a.interval.end.0)
-            .map_or(Strength::Even, |a| {
-                if a.team == side {
-                    Strength::PowerPlay
-                } else {
-                    Strength::ShortHanded
-                }
+            .map_or(Strength::Even, |a| match a.team {
+                Team::Us => Strength::PowerPlay,
+                Team::Them => Strength::ShortHanded,
             })
+    }
+
+    #[must_use]
+    pub fn player(&self, id: &PlayerId) -> Option<&Player> {
+        self.players.iter().find(|p| &p.id == id)
     }
 }

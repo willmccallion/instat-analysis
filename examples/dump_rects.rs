@@ -9,10 +9,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
         for r in &page.fills {
-            println!("fill {:8.2} {:8.2} {:8.2} {:8.2}", r.x0, r.top, r.x1, r.bottom);
+            println!(
+                "fill {:8.2} {:8.2} {:8.2} {:8.2}",
+                r.x0, r.top, r.x1, r.bottom
+            );
         }
         for r in &page.clips {
-            println!("clip {:8.2} {:8.2} {:8.2} {:8.2}", r.x0, r.top, r.x1, r.bottom);
+            println!(
+                "clip {:8.2} {:8.2} {:8.2} {:8.2}",
+                r.x0, r.top, r.x1, r.bottom
+            );
         }
     }
     Ok(())

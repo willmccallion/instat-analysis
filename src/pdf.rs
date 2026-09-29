@@ -140,6 +140,8 @@ impl Matrix {
     };
 
     /// `self` applied after `inner` (PDF `cm` semantics: new CTM = inner × current).
+    // Row-vector affine product; the "odd" operand groupings are the matrix multiply.
+    #[allow(clippy::suspicious_operation_groupings)]
     fn then(self, inner: Self) -> Self {
         Self {
             a: inner.a * self.a + inner.b * self.c,
@@ -209,10 +211,7 @@ fn clip_rects(operations: &[pdf_extract::content::Operation], page_height: f64) 
 }
 
 fn apply(t: &Transform, x: f64, y: f64) -> (f64, f64) {
-    (
-        t.m11 * x + t.m21 * y + t.m31,
-        t.m12 * x + t.m22 * y + t.m32,
-    )
+    (t.m11 * x + t.m21 * y + t.m31, t.m12 * x + t.m22 * y + t.m32)
 }
 
 #[derive(Debug, Clone, Copy)]

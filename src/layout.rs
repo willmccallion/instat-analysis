@@ -13,7 +13,12 @@ impl Line<'_> {
     /// Space-joined text of words whose left edge lies in `[x0, x1)`.
     #[must_use]
     pub fn text_between(&self, x0: f64, x1: f64) -> String {
-        join(self.words.iter().copied().filter(|w| w.x0 >= x0 && w.x0 < x1))
+        join(
+            self.words
+                .iter()
+                .copied()
+                .filter(|w| w.x0 >= x0 && w.x0 < x1),
+        )
     }
 
     #[must_use]
@@ -24,12 +29,6 @@ impl Line<'_> {
     #[must_use]
     pub fn first_x(&self) -> f64 {
         self.words.first().map_or(f64::INFINITY, |w| w.x0)
-    }
-
-    /// Whether the line contains `needle` as a run of consecutive words.
-    #[must_use]
-    pub fn contains_phrase(&self, needle: &str) -> bool {
-        self.find_phrase(needle).is_some()
     }
 
     /// Left x of the first occurrence of `needle` as consecutive words.
@@ -142,12 +141,4 @@ pub fn cells(line: &Line<'_>, columns: &[Column], slack: f64, right_edge: f64) -
             line.text_between(column.x - slack, end)
         })
         .collect()
-}
-
-/// Index of the column whose span contains `x` (spans as in [`cells`]).
-#[must_use]
-pub fn column_index(columns: &[Column], x: f64, slack: f64) -> Option<usize> {
-    columns
-        .iter()
-        .rposition(|column| x >= column.x - slack)
 }

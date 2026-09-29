@@ -39,7 +39,7 @@ fn blocks(title_line: Option<&Line<'_>>, abbreviation_line: &Line<'_>) -> Vec<Bl
         .map(|line| line.words.iter().map(|w| w.x0).collect())
         .unwrap_or_default();
     let mut result: Vec<Block> = Vec::new();
-    for pair in value_xs.chunks_exact(2) {
+    for pair in value_xs.as_chunks::<2>().0 {
         let previous_end = result.last().map_or(0.0, |b: &Block| b.second_value_x);
         let label_x = title_xs
             .iter()
@@ -92,7 +92,8 @@ pub fn parse(page: &Page) -> Result<TeamStatsPage, Error> {
             if !is_label(&label) {
                 continue;
             }
-            let first = line.text_between(block.first_value_x - slack, block.second_value_x - slack);
+            let first =
+                line.text_between(block.first_value_x - slack, block.second_value_x - slack);
             let second = line.text_between(block.second_value_x - slack, block.end_x - slack);
             if !has_value(&first) && !has_value(&second) {
                 continue;
@@ -174,7 +175,9 @@ pub fn summary(entries: &[StatEntry]) -> TeamSummary {
         faceoffs_won: count_in("Faceoffs", "Faceoffs won"),
         faceoffs_won_by_zone,
         puck_battles_won: count_in("Challenges", "Challenges won"),
-        penalties: find_any(entries, "Penalties").and_then(|c| c.count()).unwrap_or_default(),
+        penalties: find_any(entries, "Penalties")
+            .and_then(|c| c.count())
+            .unwrap_or_default(),
         penalty_time: clock("Penalty time"),
         power_plays,
         power_play_goals,
@@ -187,6 +190,8 @@ pub fn summary(entries: &[StatEntry]) -> TeamSummary {
         possession_pct: find(entries, possession_group, "Puck possessions, %")
             .and_then(|c| c.percent()),
         possession_pct_by_period,
-        hits: find_any(entries, "Hits").and_then(|c| c.count()).unwrap_or_default(),
+        hits: find_any(entries, "Hits")
+            .and_then(|c| c.count())
+            .unwrap_or_default(),
     }
 }

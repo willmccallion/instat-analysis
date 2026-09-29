@@ -2,7 +2,7 @@
 
 use crate::error::Error;
 use crate::layout;
-use crate::model::{Date, Side, TeamName};
+use crate::model::{Date, TeamName};
 use crate::parse::common::{
     LINE_TOLERANCE, PAGE_RIGHT, PlayerRow, page_heading, player_table, require_phrase,
 };
@@ -44,7 +44,8 @@ pub struct TeamPages {
 #[derive(Debug, Clone)]
 pub struct MatchReport {
     pub title: Title,
-    pub our_side: Side,
+    /// Index of our team in `title.teams`.
+    pub our_index: usize,
     pub team_stats: TeamStatsPage,
     pub ours: TeamPages,
 }
@@ -52,14 +53,14 @@ pub struct MatchReport {
 /// The team this tool analyses.
 pub const OUR_TEAM_PREFIX: &str = "SSAC";
 
-/// Which title team is ours.
-pub fn our_side(title: &Title) -> Result<Side, Error> {
+/// Index of our team in the title (0 = listed first).
+pub fn our_index(title: &Title) -> Result<usize, Error> {
     match (
         title.teams[0].0.starts_with(OUR_TEAM_PREFIX),
         title.teams[1].0.starts_with(OUR_TEAM_PREFIX),
     ) {
-        (true, false) => Ok(Side::First),
-        (false, true) => Ok(Side::Second),
+        (true, false) => Ok(0),
+        (false, true) => Ok(1),
         _ => Err(Error::parse(
             SECTION,
             format!(
@@ -110,8 +111,8 @@ pub fn parse(pages: &[Page]) -> Result<MatchReport, Error> {
         .first()
         .ok_or_else(|| Error::parse(SECTION, "empty document"))?;
     let title = parse_cover(cover)?;
-    let our_side = our_side(&title)?;
-    let our_name = &title.teams[our_side.index()];
+    let our_index = our_index(&title)?;
+    let our_name = &title.teams[our_index];
     let mut team_stats = None;
     let mut ours = TeamPages::default();
     for page in &pages[1..] {
@@ -129,7 +130,7 @@ pub fn parse(pages: &[Page]) -> Result<MatchReport, Error> {
     let team_stats = team_stats.ok_or_else(|| Error::parse(SECTION, "no TEAMS STATS page"))?;
     Ok(MatchReport {
         title,
-        our_side,
+        our_index,
         team_stats,
         ours,
     })

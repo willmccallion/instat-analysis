@@ -5,7 +5,7 @@ use crate::error::Error;
 use crate::layout::{self, Line};
 use crate::model::{Date, Jersey};
 use crate::parse::common::LINE_TOLERANCE;
-use crate::parse::match_report::{Title, our_side, parse_cover};
+use crate::parse::match_report::{Title, our_index, parse_cover};
 use crate::pdf::{Page, Word};
 
 const SECTION: &str = "player report";
@@ -13,7 +13,8 @@ const SECTION: &str = "player report";
 /// Statistics block columns on a player page.
 const STAT_LABEL_X: f64 = 30.0;
 const STAT_GAME_X: f64 = 115.0;
-const STAT_SEASON_X: f64 = 159.0;
+/// Fallback when the "Season average" header is missing; it moves a few points per page.
+const STAT_SEASON_X: f64 = 155.0;
 const STAT_BLOCK_END_X: f64 = 225.0;
 /// History table starts at the date column.
 const HISTORY_DATE_X: f64 = 628.0;
@@ -86,15 +87,16 @@ pub fn parse(pages: &[Page]) -> Result<PlayersReport, Error> {
         .first()
         .ok_or_else(|| Error::parse(SECTION, "empty document"))?;
     let title = parse_cover(cover)?;
-    let ours = our_side(&title)?.index();
+    let ours = our_index(&title)?;
     let team_of_page = contents_team_map(cover, &title)?;
     let mut players = Vec::new();
     for page in &pages[1..] {
-        let is_ours = team_of_page.iter().any(|&(n, team)| n == page.number && team == ours);
+        let is_ours = team_of_page
+            .iter()
+            .any(|&(n, team)| n == page.number && team == ours);
         if is_ours {
-            let player = parse_player_page(page).map_err(|e| {
-                Error::parse(SECTION, format!("page {}: {e}", page.number))
-            })?;
+            let player = parse_player_page(page)
+                .map_err(|e| Error::parse(SECTION, format!("page {}: {e}", page.number)))?;
             players.push(player);
         }
     }
@@ -110,10 +112,12 @@ fn contents_team_map(cover: &Page, title: &Title) -> Result<Vec<(u32, usize)>, E
             let text = l.text();
             let first = &title.teams[0].0;
             let second = &title.teams[1].0;
-            (text.starts_with(first.as_str()) && text.contains(second.as_str()) && !text.contains(':'))
-                .then(|| l.find_phrase(second.split_whitespace().next().unwrap_or_default()))
-                .flatten()
-                .filter(|x| *x > 100.0)
+            (text.starts_with(first.as_str())
+                && text.contains(second.as_str())
+                && !text.contains(':'))
+            .then(|| l.find_phrase(second.split_whitespace().next().unwrap_or_default()))
+            .flatten()
+            .filter(|x| *x > 100.0)
         })
         .ok_or_else(|| Error::parse(SECTION, "table of contents header not found"))?;
     let header_y = lines
@@ -152,9 +156,13 @@ fn parse_player_page(page: &Page) -> Result<PlayerPage, Error> {
         .map(|w| w.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    let (jersey, full_name) = identity_line(&lines).unwrap_or((None, title_case(&upper_name)));
+    let (jersey, full_name) =
+        identity_line(&lines).unwrap_or_else(|| (None, title_case(&upper_name)));
     let stats = stat_block(&lines);
-    let kind = if stats.iter().any(|(label, _, _)| label.starts_with("Shots against")) {
+    let kind = if stats
+        .iter()
+        .any(|(label, _, _)| label.starts_with("Shots against"))
+    {
         PageKind::Goalie
     } else {
         PageKind::Skater
@@ -171,18 +179,21 @@ fn parse_player_page(page: &Page) -> Result<PlayerPage, Error> {
 
 /// Skater pages start with `"16 Sam Carter"` at the top left.
 fn identity_line(lines: &[Line<'_>]) -> Option<(Option<Jersey>, String)> {
-    lines.iter().filter(|l| l.y > 40.0 && l.y < 75.0).find_map(|line| {
-        let first = line.words.first()?;
-        let number: u16 = first.text.parse().ok()?;
-        let name: Vec<&str> = line
-            .words
-            .iter()
-            .skip(1)
-            .take_while(|w| w.x0 < STAT_BLOCK_END_X)
-            .map(|w| w.text.as_str())
-            .collect();
-        (!name.is_empty()).then(|| (Some(Jersey(number)), name.join(" ")))
-    })
+    lines
+        .iter()
+        .filter(|l| l.y > 40.0 && l.y < 75.0)
+        .find_map(|line| {
+            let first = line.words.first()?;
+            let number: u16 = first.text.parse().ok()?;
+            let name: Vec<&str> = line
+                .words
+                .iter()
+                .skip(1)
+                .take_while(|w| w.x0 < STAT_BLOCK_END_X)
+                .map(|w| w.text.as_str())
+                .collect();
+            (!name.is_empty()).then(|| (Some(Jersey(number)), name.join(" ")))
+        })
 }
 
 fn title_case(upper: &str) -> String {
@@ -191,7 +202,10 @@ fn title_case(upper: &str) -> String {
         .map(|word| {
             let mut chars = word.chars();
             chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect()
+                first
+                    .to_uppercase()
+                    .chain(chars.flat_map(char::to_lowercase))
+                    .collect()
             })
         })
         .collect::<Vec<_>>()
@@ -199,13 +213,18 @@ fn title_case(upper: &str) -> String {
 }
 
 fn stat_block(lines: &[Line<'_>]) -> Vec<(String, String, String)> {
+    let season_x = lines
+        .iter()
+        .flat_map(|l| l.words.iter())
+        .find(|w| w.text == "Season" && w.x0 < STAT_BLOCK_END_X)
+        .map_or(STAT_SEASON_X, |w| w.x0 - 3.0);
     lines
         .iter()
         .filter(|l| l.y > 80.0)
         .filter_map(|line| {
             let label = line.text_between(STAT_LABEL_X, STAT_GAME_X);
-            let game = line.text_between(STAT_GAME_X, STAT_SEASON_X);
-            let season = line.text_between(STAT_SEASON_X, STAT_BLOCK_END_X);
+            let game = line.text_between(STAT_GAME_X, season_x);
+            let season = line.text_between(season_x, STAT_BLOCK_END_X);
             let is_row = label.starts_with(|c: char| c.is_alphabetic()) && !game.is_empty();
             is_row.then_some((label, game, season))
         })
@@ -221,7 +240,10 @@ fn day_month(text: &str) -> Option<(u8, u8)> {
 
 /// x of the `nth` header word starting with `prefix` (headers sometimes wrap mid-word).
 fn anchor_x(words: &[&Word], prefix: &str, nth: usize) -> Option<f64> {
-    let mut found: Vec<&&Word> = words.iter().filter(|w| w.text.starts_with(prefix)).collect();
+    let mut found: Vec<&&Word> = words
+        .iter()
+        .filter(|w| w.text.starts_with(prefix))
+        .collect();
     found.sort_by(|a, b| a.x0.total_cmp(&b.x0));
     found.get(nth).map(|w| w.x0)
 }
@@ -269,7 +291,9 @@ fn history(words: &[Word], kind: PageKind) -> Result<Vec<RawHistoryRow>, Error> 
     };
     let mut date_words: Vec<&&Word> = right
         .iter()
-        .filter(|w| w.center_y() > title_y && w.x0 < HISTORY_OPPONENT_X && day_month(&w.text).is_some())
+        .filter(|w| {
+            w.center_y() > title_y && w.x0 < HISTORY_OPPONENT_X && day_month(&w.text).is_some()
+        })
         .collect();
     date_words.sort_by(|a, b| a.top.total_cmp(&b.top));
     let Some(first_date) = date_words.first() else {
@@ -289,8 +313,12 @@ fn history(words: &[Word], kind: PageKind) -> Result<Vec<RawHistoryRow>, Error> 
             continue;
         };
         let y = date.center_y();
-        let previous_y = i.checked_sub(1).map_or(f64::NEG_INFINITY, |p| date_words[p].center_y());
-        let next_y = date_words.get(i + 1).map_or(f64::INFINITY, |n| n.center_y());
+        let previous_y = i
+            .checked_sub(1)
+            .map_or(f64::NEG_INFINITY, |p| date_words[p].center_y());
+        let next_y = date_words
+            .get(i + 1)
+            .map_or(f64::INFINITY, |n| n.center_y());
         let row_words: Vec<&Word> = right
             .iter()
             .copied()
@@ -302,7 +330,8 @@ fn history(words: &[Word], kind: PageKind) -> Result<Vec<RawHistoryRow>, Error> 
             .filter(|w| w.x0 >= HISTORY_OPPONENT_X && w.x0 < first_column_x - slack)
             .filter(|w| {
                 let cy = w.center_y();
-                let nearest_is_this = (cy - y).abs() <= (cy - previous_y).abs() && (cy - y).abs() < (cy - next_y).abs();
+                let nearest_is_this = (cy - y).abs() <= (cy - previous_y).abs()
+                    && (cy - y).abs() < (cy - next_y).abs();
                 (cy - y).abs() < 7.0 && nearest_is_this
             })
             .collect();
@@ -316,7 +345,9 @@ fn history(words: &[Word], kind: PageKind) -> Result<Vec<RawHistoryRow>, Error> 
             .iter()
             .enumerate()
             .map(|(c, (column, x))| {
-                let end = columns.get(c + 1).map_or(f64::INFINITY, |next| next.1 - slack);
+                let end = columns
+                    .get(c + 1)
+                    .map_or(f64::INFINITY, |next| next.1 - slack);
                 let text = row_words
                     .iter()
                     .filter(|w| w.x0 >= x - slack && w.x0 < end)
