@@ -2,16 +2,18 @@
 //! player's recent games compare with their own usual level.
 //!
 //! Each stat is rated against same-position teammates (z-score), after pulling low-ice-time
-//! values toward the position average. Stats are grouped into Offence, Defence and Puck play;
-//! the three groups count equally and the result is shown on a 50 ± 10 scale.
+//! values toward the position average. Stats are grouped into Offence, Defence and Puck play
+//! and combined with the coach's weights (see [`rating_setup`](super::rating_setup)); the
+//! result is shown on a 50 ± 10 scale.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
 use crate::analysis::Context;
-use crate::analysis::common::{PlayerRef, per_60, share_pct};
+use crate::analysis::common::PlayerRef;
 use crate::analysis::players::{PlayerSeason, SkaterTotals};
+use crate::analysis::rating_setup::{Category, PositionWeights, RatingStat, RatingWeights};
 use crate::model::{Date, GameId, PlayerId, Position};
 use crate::stats::describe::{mean, sample_sd};
 
@@ -33,71 +35,12 @@ pub struct RatingInput {
     pub qualified: bool,
 }
 
-type Extractor = fn(&RatingInput) -> Option<f64>;
-
-struct Metric {
-    name: &'static str,
-    category: Category,
-    higher_is_better: bool,
-    value: Extractor,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub enum Category {
-    Offence,
-    Defence,
-    PuckPlay,
-}
-
-fn f(v: u32) -> f64 {
-    f64::from(v)
-}
-
-fn corsi_rel(i: &RatingInput) -> Option<f64> {
-    let t = &i.totals;
-    let on = share_pct(f(t.corsi_for), f(t.corsi_against))?;
-    let off_for = (i.team_even_strength.0 - f(t.corsi_for)).max(0.0);
-    let off_against = (i.team_even_strength.1 - f(t.corsi_against)).max(0.0);
-    Some(on - share_pct(off_for, off_against)?)
-}
-
-fn battles_won_pct(i: &RatingInput) -> Option<f64> {
-    let t = &i.totals;
-    (t.puck_battles > 0).then(|| 100.0 * f(t.puck_battles_won) / f(t.puck_battles))
-}
-
-const FORWARD_METRICS: [Metric; 11] = [
-    Metric { name: "Points/60", category: Category::Offence, higher_is_better: true, value: |i| per_60(f(i.totals.points), i.totals.toi) },
-    Metric { name: "Shots/60", category: Category::Offence, higher_is_better: true, value: |i| per_60(f(i.totals.shots), i.totals.toi) },
-    Metric { name: "xG/60", category: Category::Offence, higher_is_better: true, value: |i| per_60(i.totals.xg, i.totals.toi) },
-    Metric { name: "Entries/60", category: Category::Offence, higher_is_better: true, value: |i| per_60(f(i.totals.entries), i.totals.toi) },
-    Metric { name: "Shot share vs team", category: Category::Defence, higher_is_better: true, value: corsi_rel },
-    Metric { name: "Attempts against/60", category: Category::Defence, higher_is_better: false, value: |i| per_60(f(i.totals.corsi_against), i.totals.ev_toi) },
-    Metric { name: "xG against on ice/60", category: Category::Defence, higher_is_better: false, value: |i| per_60(i.totals.on_ice_xg_against, i.totals.toi) },
-    Metric { name: "Battles won %", category: Category::PuckPlay, higher_is_better: true, value: battles_won_pct },
-    Metric { name: "Recoveries/60", category: Category::PuckPlay, higher_is_better: true, value: |i| per_60(f(i.totals.puck_recoveries), i.totals.toi) },
-    Metric { name: "Puck losses/60", category: Category::PuckPlay, higher_is_better: false, value: |i| per_60(f(i.totals.puck_losses), i.totals.toi) },
-    Metric { name: "Passes/60", category: Category::PuckPlay, higher_is_better: true, value: |i| per_60(f(i.totals.passes), i.totals.toi) },
-];
-
-const DEFENCE_METRICS: [Metric; 11] = [
-    Metric { name: "Points/60", category: Category::Offence, higher_is_better: true, value: |i| per_60(f(i.totals.points), i.totals.toi) },
-    Metric { name: "Shots/60", category: Category::Offence, higher_is_better: true, value: |i| per_60(f(i.totals.shots), i.totals.toi) },
-    Metric { name: "Attempts for on ice/60", category: Category::Offence, higher_is_better: true, value: |i| per_60(f(i.totals.corsi_for), i.totals.ev_toi) },
-    Metric { name: "Attempts against/60", category: Category::Defence, higher_is_better: false, value: |i| per_60(f(i.totals.corsi_against), i.totals.ev_toi) },
-    Metric { name: "xG against on ice/60", category: Category::Defence, higher_is_better: false, value: |i| per_60(i.totals.on_ice_xg_against, i.totals.toi) },
-    Metric { name: "Blocks/60", category: Category::Defence, higher_is_better: true, value: |i| per_60(f(i.totals.blocked_shots), i.totals.toi) },
-    Metric { name: "Shot share vs team", category: Category::Defence, higher_is_better: true, value: corsi_rel },
-    Metric { name: "Battles won %", category: Category::PuckPlay, higher_is_better: true, value: battles_won_pct },
-    Metric { name: "Recoveries/60", category: Category::PuckPlay, higher_is_better: true, value: |i| per_60(f(i.totals.puck_recoveries), i.totals.toi) },
-    Metric { name: "Puck losses/60", category: Category::PuckPlay, higher_is_better: false, value: |i| per_60(f(i.totals.puck_losses), i.totals.toi) },
-    Metric { name: "Passes/60", category: Category::PuckPlay, higher_is_better: true, value: |i| per_60(f(i.totals.passes), i.totals.toi) },
-];
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Component {
     pub metric: String,
     pub category: Category,
+    /// How much it counts within its category (the coach's weight).
+    pub weight: f64,
     pub value: Option<f64>,
     /// Standing vs same-position teammates, sign-adjusted so positive is always good.
     pub score: Option<f64>,
@@ -121,13 +64,23 @@ pub struct RankingRow {
     pub qualified: bool,
 }
 
+fn f(v: u32) -> f64 {
+    f64::from(v)
+}
+
+/// Weighted mean of the `(value, weight)` pairs that have a value; `None` if none count.
+fn weighted_mean(pairs: impl Iterator<Item = (Option<f64>, f64)>) -> Option<f64> {
+    let (sum, total) = pairs
+        .filter_map(|(value, weight)| Some((value?, weight)))
+        .filter(|(_, weight)| *weight > 0.0)
+        .fold((0.0, 0.0), |(sum, total), (value, weight)| (sum + value * weight, total + weight));
+    (total > 0.0).then(|| sum / total)
+}
+
 /// Rates one position group. Only qualified players set the averages, but everyone is rated.
 #[must_use]
-pub fn rate(inputs: &[RatingInput], position: Position) -> Vec<RankingRow> {
-    let metrics: &[Metric] = match position {
-        Position::Defence => &DEFENCE_METRICS,
-        _ => &FORWARD_METRICS,
-    };
+pub fn rate(inputs: &[RatingInput], position: Position, weights: &PositionWeights) -> Vec<RankingRow> {
+    let metrics: Vec<RatingStat> = RatingStat::ALL.into_iter().filter(|s| weights.stat(*s) > 0.0).collect();
     let group: Vec<&RatingInput> = inputs.iter().filter(|i| i.player.position == position).collect();
     let reference: Vec<&RatingInput> = {
         let qualified: Vec<&RatingInput> = group.iter().copied().filter(|i| i.qualified).collect();
@@ -136,7 +89,7 @@ pub fn rate(inputs: &[RatingInput], position: Position) -> Vec<RankingRow> {
     let stats: Vec<(Option<f64>, Option<f64>)> = metrics
         .iter()
         .map(|m| {
-            let values: Vec<f64> = reference.iter().filter_map(|i| (m.value)(i)).collect();
+            let values: Vec<f64> = reference.iter().filter_map(|i| m.value(i)).collect();
             (mean(&values), sample_sd(&values))
         })
         .collect();
@@ -148,30 +101,33 @@ pub fn rate(inputs: &[RatingInput], position: Position) -> Vec<RankingRow> {
                 .iter()
                 .zip(&stats)
                 .map(|(m, (average, sd))| {
-                    let value = (m.value)(input);
+                    let value = m.value(input);
                     let score = match (value, average, sd) {
                         (Some(v), Some(avg), Some(sd)) if *sd > 0.0 => {
                             let shrunk = weight * v + (1.0 - weight) * avg;
                             let z = ((shrunk - avg) / sd).clamp(-Z_CAP, Z_CAP);
-                            Some(if m.higher_is_better { z } else { -z })
+                            Some(if m.higher_is_better() { z } else { -z })
                         }
                         (Some(_), Some(_), _) => Some(0.0),
                         _ => None,
                     };
                     Component {
-                        metric: m.name.to_owned(),
-                        category: m.category,
+                        metric: m.name().to_owned(),
+                        category: m.category(),
+                        weight: weights.stat(*m),
                         value,
                         score,
                     }
                 })
                 .collect();
-            let category = |c: Category| {
-                let scores: Vec<f64> = components.iter().filter(|x| x.category == c).filter_map(|x| x.score).collect();
-                mean(&scores)
-            };
+            let category = |c: Category| weighted_mean(components.iter().filter(|x| x.category == c).map(|x| (x.score, x.weight)));
             let (offence, defence, puck_play) = (category(Category::Offence), category(Category::Defence), category(Category::PuckPlay));
-            let overall = mean(&[offence, defence, puck_play].into_iter().flatten().collect::<Vec<_>>()).unwrap_or(0.0);
+            let overall = weighted_mean(
+                [(offence, Category::Offence), (defence, Category::Defence), (puck_play, Category::PuckPlay)]
+                    .into_iter()
+                    .map(|(score, c)| (score, weights.category(c))),
+            )
+            .unwrap_or(0.0);
             let mut ordered: Vec<&Component> = components.iter().filter(|c| c.score.is_some()).collect();
             ordered.sort_by(|a, b| b.score.unwrap_or(0.0).total_cmp(&a.score.unwrap_or(0.0)));
             let strengths = ordered.iter().take(2).filter(|c| c.score.unwrap_or(0.0) > 0.25).map(|c| c.metric.clone()).collect();
@@ -225,7 +181,7 @@ pub fn season_inputs(context: &Context<'_>, seasons: &[PlayerSeason]) -> Vec<Rat
 }
 
 /// Ratings within each single game (every player who dressed counts as qualified).
-fn game_ratings(context: &Context<'_>) -> BTreeMap<PlayerId, Vec<(GameId, Date, f64)>> {
+fn game_ratings(context: &Context<'_>, weights: &RatingWeights) -> BTreeMap<PlayerId, Vec<(GameId, Date, f64)>> {
     let mut result: BTreeMap<PlayerId, Vec<(GameId, Date, f64)>> = BTreeMap::new();
     for game in &context.scope {
         let team = (f(game.summary.even_strength_shots.0), f(game.opponent_summary.even_strength_shots.0));
@@ -245,8 +201,8 @@ fn game_ratings(context: &Context<'_>) -> BTreeMap<PlayerId, Vec<(GameId, Date, 
                 })
             })
             .collect();
-        for position in [Position::Forward, Position::Defence] {
-            for row in rate(&inputs, position) {
+        for (position, position_weights) in [(Position::Forward, &weights.forwards), (Position::Defence, &weights.defence)] {
+            for row in rate(&inputs, position, position_weights) {
                 result
                     .entry(row.player.id.clone())
                     .or_default()
@@ -334,9 +290,9 @@ pub struct RankingsReport {
 }
 
 #[must_use]
-pub fn rankings(context: &Context<'_>, seasons: &[PlayerSeason]) -> RankingsReport {
+pub fn rankings(context: &Context<'_>, seasons: &[PlayerSeason], weights: &RatingWeights) -> RankingsReport {
     let inputs = season_inputs(context, seasons);
-    let per_game = game_ratings(context);
+    let per_game = game_ratings(context, weights);
     let mut form: Vec<FormRow> = seasons
         .iter()
         .filter(|s| matches!(s.player.position, Position::Forward | Position::Defence))
@@ -359,8 +315,8 @@ pub fn rankings(context: &Context<'_>, seasons: &[PlayerSeason]) -> RankingsRepo
         .collect();
     form.sort_by(|a, b| b.recent_z.total_cmp(&a.recent_z).then_with(|| a.player.id.cmp(&b.player.id)));
     RankingsReport {
-        forwards: rate(&inputs, Position::Forward),
-        defence: rate(&inputs, Position::Defence),
+        forwards: rate(&inputs, Position::Forward, &weights.forwards),
+        defence: rate(&inputs, Position::Defence, &weights.defence),
         form,
         recent_window: RECENT_GAMES,
         composite_form_needs: MIN_LOADED_GAMES_FOR_COMPOSITE_FORM,
@@ -399,7 +355,7 @@ mod tests {
 
     #[test]
     fn better_offence_ranks_higher() {
-        let rows = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0)], Position::Forward);
+        let rows = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0)], Position::Forward, &RatingWeights::default().forwards);
         let order: Vec<&str> = rows.iter().map(|r| r.player.name.as_str()).collect();
         assert_eq!(order, vec!["b", "c", "a"]);
         assert_eq!(rows[0].rank, Some(1));
@@ -408,12 +364,50 @@ mod tests {
 
     #[test]
     fn low_ice_time_is_pulled_toward_average() {
-        let full = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0)], Position::Forward);
-        let short = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0), input("d", 1, 3, 2.0)], Position::Forward);
+        let full = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0)], Position::Forward, &RatingWeights::default().forwards);
+        let short = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0), input("d", 1, 3, 2.0)], Position::Forward, &RatingWeights::default().forwards);
         let d = short.iter().find(|r| r.player.name == "d").unwrap();
         let offence_short = d.offence.unwrap();
         let top = full.iter().map(|r| r.offence.unwrap()).fold(f64::MIN, f64::max);
         assert!(offence_short < top, "a 2-minute player should not top the list on rates alone");
+    }
+
+    /// `(stat, weight)` pairs for one position, with the given category weights.
+    fn weights(categories: &[(Category, f64)], stats: &[(RatingStat, f64)]) -> PositionWeights {
+        let json = serde_json::json!({
+            "categories": categories.iter().map(|(c, w)| (serde_json::to_value(c).unwrap().as_str().unwrap().to_owned(), *w)).collect::<BTreeMap<_, _>>(),
+            "stats": stats.iter().map(|(s, w)| (serde_json::to_value(s).unwrap().as_str().unwrap().to_owned(), *w)).collect::<BTreeMap<_, _>>(),
+        });
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn two_way(name: &str, points: u32, blocks: u32) -> RatingInput {
+        let mut i = input(name, points, 5, 15.0);
+        i.totals.blocked_shots = blocks;
+        i
+    }
+
+    #[test]
+    fn a_stat_weighted_zero_is_left_out() {
+        let only_shots = weights(&[(Category::Offence, 1.0)], &[(RatingStat::ShotsPer60, 1.0), (RatingStat::PointsPer60, 0.0)]);
+
+        let rows = rate(&[input("a", 5, 1, 15.0), input("b", 0, 8, 15.0), input("c", 2, 4, 15.0)], Position::Forward, &only_shots);
+
+        assert_eq!(rows[0].player.name, "b");
+        assert!(rows[0].components.iter().all(|c| c.metric != "Points/60"));
+    }
+
+    #[test]
+    fn category_weights_decide_between_a_scorer_and_a_shot_blocker() {
+        let players = [two_way("scorer", 4, 0), two_way("blocker", 0, 6), two_way("middle", 2, 3)];
+        let stats = [(RatingStat::PointsPer60, 1.0), (RatingStat::BlocksPer60, 1.0)];
+        let top = |offence: f64, defence: f64| {
+            let w = weights(&[(Category::Offence, offence), (Category::Defence, defence)], &stats);
+            rate(&players, Position::Forward, &w)[0].player.name.clone()
+        };
+
+        assert_eq!(top(3.0, 1.0), "scorer");
+        assert_eq!(top(1.0, 3.0), "blocker");
     }
 
     #[test]

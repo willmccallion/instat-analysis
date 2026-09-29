@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::rating_setup::RatingWeights;
 use crate::error::Error;
 use crate::ingest::{Document, describe, parse_document, same_game};
 use crate::model::{Game, GameId, TeamPrefix};
@@ -20,6 +21,8 @@ pub const PARSER_VERSION: u32 = 12;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Settings {
     team: TeamPrefix,
+    #[serde(default)]
+    rating_weights: RatingWeights,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +54,7 @@ pub enum AddOutcome {
 pub struct Store {
     dir: PathBuf,
     team: Option<TeamPrefix>,
+    rating_weights: RatingWeights,
     games: Vec<StoredGame>,
     pending: Vec<Pending>,
     pub problems: Vec<String>,
@@ -97,17 +101,22 @@ impl Store {
         let mut store = Self {
             dir: dir.to_path_buf(),
             team: None,
+            rating_weights: RatingWeights::default(),
             games: Vec::new(),
             pending: Vec::new(),
             problems: Vec::new(),
         };
         fs::create_dir_all(store.pdf_dir())?;
         fs::create_dir_all(store.game_dir())?;
-        store.team = match fs::read(store.settings_path()) {
-            Ok(bytes) => Some(serde_json::from_slice::<Settings>(&bytes)?.team),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        match fs::read(store.settings_path()) {
+            Ok(bytes) => {
+                let settings = serde_json::from_slice::<Settings>(&bytes)?;
+                store.team = Some(settings.team);
+                store.rating_weights = settings.rating_weights;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
-        };
+        }
         store.load()?;
         Ok(store)
     }
@@ -117,9 +126,30 @@ impl Store {
         self.team.as_ref()
     }
 
+    #[must_use]
+    pub const fn rating_weights(&self) -> &RatingWeights {
+        &self.rating_weights
+    }
+
+    fn save_settings(&self, team: &TeamPrefix) -> Result<(), Error> {
+        let settings = Settings {
+            team: team.clone(),
+            rating_weights: self.rating_weights.clone(),
+        };
+        fs::write(self.settings_path(), serde_json::to_vec(&settings)?)?;
+        Ok(())
+    }
+
+    /// Saves the coach's player-rating weights.
+    pub fn set_rating_weights(&mut self, weights: RatingWeights) -> Result<(), Error> {
+        let team = self.team.clone().ok_or(Error::NoTeam)?;
+        self.rating_weights = weights;
+        self.save_settings(&team)
+    }
+
     /// Saves the coach's team and rebuilds every game for it.
     pub fn set_team(&mut self, team: TeamPrefix) -> Result<(), Error> {
-        fs::write(self.settings_path(), serde_json::to_vec(&Settings { team: team.clone() })?)?;
+        self.save_settings(&team)?;
         self.team = Some(team);
         self.games.clear();
         self.pending.clear();

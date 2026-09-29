@@ -10,6 +10,7 @@ pub mod passing;
 pub mod players;
 pub mod profiles;
 pub mod rankings;
+pub mod rating_setup;
 pub mod shots;
 pub mod significance;
 pub mod stints;
@@ -36,6 +37,9 @@ pub struct Request {
     /// Players and units below this many minutes are shown but not ranked.
     pub min_minutes: f64,
     pub min_unit_minutes: f64,
+    /// How the player ratings weigh each stat.
+    #[serde(default)]
+    pub weights: rating_setup::RatingWeights,
 }
 
 impl Default for Request {
@@ -45,8 +49,18 @@ impl Default for Request {
             focus: None,
             min_minutes: 10.0,
             min_unit_minutes: 3.0,
+            weights: rating_setup::RatingWeights::default(),
         }
     }
+}
+
+/// What the ratings screen needs to let a coach change the weights.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RatingOptions {
+    pub stats: Vec<rating_setup::StatInfo>,
+    pub presets: Vec<rating_setup::Preset>,
+    /// The weights in use are the default ones.
+    pub default_weights: bool,
 }
 
 /// Everything the analysis modules share.
@@ -126,6 +140,7 @@ pub struct Analysis {
     pub models: models::ModelsReport,
     pub profiles: profiles::ProfilesReport,
     pub timelines: Vec<GameTimeline>,
+    pub rating_options: RatingOptions,
 }
 
 fn timeline(game: &Game, roster: &HashMap<PlayerId, PlayerRef>) -> GameTimeline {
@@ -267,7 +282,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         request: request.clone(),
         style: style::style(&context, &team_report),
         team: team_report,
-        rankings: rankings::rankings(&context, &player_seasons),
+        rankings: rankings::rankings(&context, &player_seasons, &request.weights),
         players: player_seasons,
         goalies: goalies::goalies(&context),
         units: units_report,
@@ -279,5 +294,10 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         models: models_report,
         profiles: profiles_report,
         timelines: context.scope.iter().map(|g| timeline(g, &context.roster)).collect(),
+        rating_options: RatingOptions {
+            stats: rating_setup::catalogue(),
+            presets: rating_setup::presets(),
+            default_weights: request.weights == rating_setup::RatingWeights::default(),
+        },
     }
 }

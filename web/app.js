@@ -60,11 +60,14 @@ window.Charts.setGlossary({
   "+/-": "Plus/minus: even-strength and short-handed goals for minus goals against while on the ice (power-play goals don't count).",
   "InStat": "InStat Index: InStat's own overall rating for a game, based on every action the player made. Higher is better; roughly 100 is a typical game.",
   "InStat Index": "InStat's own overall rating for a game, based on every action the player made. Higher is better; roughly 100 is a typical game.",
-  "Rating": "This app's position rating: 50 = average at the player's position, 60+ clearly above, 40 or less clearly below. Built from Offence, Defence and Puck play stats compared with teammates at the same position.",
+  "Rating": "This app's position rating: 50 = average at the player's position, 60+ clearly above, 40 or less clearly below. Built from Offence, Defence and Puck play stats compared with teammates at the same position, each weighted by importance (change the weights under Rankings → Customise the ranking).",
   "Form": "Last few games compared with the player's own usual level, in standard deviations. ▲ 1.0 means one typical game-to-game swing above normal.",
-  "Off": "Offence part of the rating (points, shots, chance quality, zone entries; for defence also shot attempts for).",
-  "Def": "Defence part of the rating (shot attempts and chances allowed on ice, shot share vs team; for defence also blocks).",
-  "Puck": "Puck play part of the rating (battles won, recoveries, passes, and fewer puck losses).",
+  "Off": "Offence part of the rating: points, goals, shots, chance quality (xG), shot attempts for, zone entries and recoveries in their zone, each weighted by importance.",
+  "Def": "Defence part of the rating: shot share vs team, shot attempts and chances allowed on ice, own-zone giveaways, blocks and hits, each weighted by importance.",
+  "Puck": "Puck play part of the rating: battles won, recoveries, puck losses, passes, faceoffs and carrying the puck in, each weighted by importance.",
+  "Own-zone losses/60": `Puck losses in our own zone ${PER_60}. Lower is better.`,
+  "Recoveries in their zone/60": `Loose pucks won back in the offensive zone ${PER_60}; keeps attacks alive.`,
+  "Faceoff %": "Share of faceoffs won. Only counts for players who take faceoffs.",
   "Power play": "Goals scored on the power play divided by power-play chances.",
   "Penalty kill": "Share of short-handed situations where we didn't allow a goal.",
   "PP": "Power play: goals / chances.",
@@ -210,6 +213,10 @@ async function refresh() {
   try {
     const status = await api("/api/state");
     state.team = status.team;
+    if (!state.weightsLoaded && status.rating_weights) {
+      state.request = { ...state.request, weights: status.rating_weights };
+      state.weightsLoaded = true;
+    }
     state.pending = status.pending;
     state.problems = status.problems;
     state.analysis = await api("/api/analyze", { method: "POST", body: JSON.stringify(state.request) });
@@ -794,6 +801,76 @@ function formList(rows) {
   ])));
 }
 
+function customChip() {
+  return el("span", { class: "source scope", text: "custom weights" });
+}
+
+function defaultWeights(a) {
+  return a.rating_options.presets[0].weights;
+}
+
+async function saveWeights(weights) {
+  state.request = { ...state.request, weights };
+  if (!snapshot) {
+    try {
+      await api("/api/rating-weights", { method: "POST", body: JSON.stringify(weights) });
+    } catch (error) {
+      state.error = `Couldn't save the weights: ${error.message}`;
+    }
+  }
+  refresh();
+}
+
+const CATEGORY_NAMES = { Offence: "Offence", Defence: "Defence", PuckPlay: "Puck play" };
+const WEIGHT_STEPS = { min: 0, max: 3, step: 0.5 };
+
+/** A 0–3 slider that shows its value as it moves and saves when released. */
+function weightSlider(value, onSave) {
+  const shown = el("span", { class: "weight-value", text: value ? fmt(value, 1) : "off" });
+  const input = el("input", { type: "range", ...WEIGHT_STEPS, value, disabled: !!snapshot });
+  input.addEventListener("input", () => { shown.textContent = Number(input.value) ? fmt(Number(input.value), 1) : "off"; });
+  input.addEventListener("change", () => onSave(Number(input.value)));
+  return [input, shown];
+}
+
+/** Presets, part weights and stat weights for the position shown in the rankings. */
+function weightsEditor(a) {
+  const options = a.rating_options;
+  const weights = state.request.weights;
+  const key = state.rankingTab === "defence" ? "defence" : "forwards";
+  const position = weights[key];
+  const withPosition = (change) => ({ ...weights, [key]: change(structuredClone(position)) });
+  const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  const presetButtons = el("div", { class: "segmented", style: "flex-wrap:wrap" }, options.presets.map((p) => el("button", {
+    class: same(p.weights, weights) ? "on" : "", text: p.name, title: p.description, disabled: !!snapshot, onclick: () => saveWeights(p.weights),
+  })));
+  const parts = el("div", { class: "weight-grid" }, Object.entries(CATEGORY_NAMES).flatMap(([category, label]) => [
+    el("span", { text: label }),
+    ...weightSlider(position.categories[category] ?? 0, (v) => saveWeights(withPosition((w) => { w.categories[category] = v; return w; }))),
+  ]));
+  const groups = Object.entries(CATEGORY_NAMES).map(([category, label]) => el("div", {}, [
+    el("div", { class: "group-label", text: label }),
+    el("div", { class: "weight-grid" }, options.stats.filter((x) => x.category === category).flatMap((x) => [
+      el("span", {}, [term(x.name), x.higher_is_better ? null : el("span", { class: "muted small", text: " (lower is better)" })]),
+      ...weightSlider(position.stats[x.stat] ?? 0, (v) => saveWeights(withPosition((w) => { if (v) w.stats[x.stat] = v; else delete w.stats[x.stat]; return w; }))),
+    ])),
+  ]));
+  const positionName = key === "defence" ? "defence" : "forwards";
+  const panel = el("details", { class: "more", open: state.weightsOpen || undefined }, [
+    el("summary", { text: `Customise the ranking (${positionName})` }),
+    el("div", { class: "more-body" }, [
+      el("p", { class: "small muted", text: "Start from a preset (it sets both forwards and defence), then drag any weight: 0 leaves a stat out, 3 makes it count three times as much as a weight of 1. The three parts are weighted the same way. Changes apply everywhere ratings appear and are saved on this computer. Switch the Forwards / Defence tab above to edit the other position." }),
+      presetButtons,
+      el("div", { style: "margin-top:10px" }, [snapshot ? null : el("button", { text: "Reset to recommended", onclick: () => saveWeights(defaultWeights(a)) })]),
+      el("div", { class: "group-label", text: `How much each part counts (${positionName})` }),
+      parts,
+      ...groups,
+    ]),
+  ]);
+  panel.addEventListener("toggle", () => { state.weightsOpen = panel.open; });
+  return panel;
+}
+
 function viewRankings() {
   const a = state.analysis;
   const r = a.rankings;
@@ -808,13 +885,19 @@ function viewRankings() {
     { key: "rating", label: "Rating", format: (v) => fmt(v, 0), tone: "higher" },
     ...rows[0]?.components.map((c, i) => ({ key: `c${i}`, label: c.metric, tone: "higher", value: (x) => x.components[i].score, render: (x) => `${fmt(x.components[i].value, 1)} (${signed(x.components[i].score, 1)})`, title: "value (standing vs position, in SDs)" })) ?? [],
   ], rows, { sortKey: "rating" });
+  const custom = !a.rating_options.default_weights;
   return page("Rankings", "Who is playing best at each position, and who is above or below their own usual level.",
+    custom ? el("div", { class: "callout", style: "margin-bottom:14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap" }, [
+      el("span", { text: "Ratings use your custom weights." }),
+      snapshot ? null : el("button", { class: "primary", text: "Reset to recommended", onclick: () => saveWeights(defaultWeights(a)) }),
+    ]) : null,
     el("div", {}, [
       el("div", { class: "card" }, [
-        cardTitle("Position rankings"),
+        cardTitle("Position rankings", custom ? customChip() : null),
         el("p", { class: "desc", text: "Rating: 50 = average at the position, 60+ = clearly above, 40- = clearly below. Off / Def / Puck show where it comes from. Click a player for their card." }),
         tabs, rankingList(rows),
       ]),
+      weightsEditor(a),
       el("div", { class: "card", style: "margin-top:16px" }, [
         cardTitle("Form: last few games vs their usual", historyChip()),
         el("p", { class: "desc", text: `Compares each player's last ${r.recent_window} games with the rest of their games, using ${formSource}.` }),
@@ -824,7 +907,7 @@ function viewRankings() {
         cold.length ? formList(cold) : el("p", { class: "muted small", text: "Nobody yet." }),
       ]),
     ]),
-    more("How the rating is built, stat by stat", el("p", { class: "small muted", text: "Each stat is compared with same-position teammates (in standard deviations; positive is always good), after pulling low-ice-time players toward the average. Offence, Defence and Puck play each count one third." }), breakdown));
+    more("How the rating is built, stat by stat", el("p", { class: "small muted", text: "Each stat is compared with same-position teammates (in standard deviations; positive is always good), after pulling low-ice-time players toward the average. Within Offence, Defence and Puck play each stat counts by its weight, and the three parts are combined by their weights (see Customise the ranking)." }), breakdown));
 }
 
 // ---------- Single game ----------
@@ -1273,7 +1356,7 @@ function viewPlayers() {
     { key: "gp", label: "GP", value: (p) => p.totals.games },
     { key: "toi", label: "TOI/GP", value: (p) => p.totals.toi / Math.max(1, p.totals.games), format: (v) => clock(v) },
     { key: "pts", label: "P", value: (p) => p.totals.points, tone: "higher" },
-    { key: "rating", label: "Rating", value: (p) => ratingOf(p)?.rating, format: (v) => fmt(v, 0), title: "50 = average at their position", tone: "higher" },
+    { key: "rating", label: "Rating", value: (p) => ratingOf(p)?.rating, format: (v) => fmt(v, 0), title: a.rating_options.default_weights ? "50 = average at their position" : "50 = average at their position (custom weights)", tone: "higher" },
     { key: "form", label: "Form", value: (p) => formOf(p)?.recent_z, format: (v) => (v === undefined || v === null ? "—" : `${v >= 0 ? "▲" : "▼"} ${fmt(Math.abs(v), 1)}`), title: "Last few games vs their usual, in standard deviations", tone: "higher" },
     { key: "rel", label: "Shot share vs team", value: (p) => p.shares.corsi_rel, format: (v) => signed(v, 1), title: "On-ice CF% minus team CF% without them", tone: "higher" },
     { key: "idx", label: "InStat", value: (p) => p.instat_mean, format: (v) => fmt(v, 0), tone: "higher" },
@@ -1327,7 +1410,7 @@ function playerOverview(a, s) {
   const PERCENTILE_ORDER = ["InStat Index", "Points/60", "Shots/60", "xG/60", "CF%", "CF% rel", "Passes/60", "Recoveries/60", "Battles won %", "Blocks/60"];
   const ranking = [...a.rankings.forwards, ...a.rankings.defence].find((r) => r.player.id === s.player.id);
   const form = a.rankings.form.find((r) => r.player.id === s.player.id);
-  const ratingCard = ranking ? chartCard(`Rating ${fmt(ranking.rating, 0)}${ranking.rank ? `, #${ranking.rank} of the ${s.player.position === "Defence" ? "defence" : "forwards"}` : ""}`, `Each stat vs other ${s.player.position === "Defence" ? "defencemen" : "forwards"} (right = better).${form ? ` Form: ${signed(form.recent_z, 1)} SD vs their usual over the last ${form.recent_games} games.` : ""}`, (c) => hBarChart(c, ranking.components.filter((x) => x.score !== null).map((x) => ({ label: x.metric, value: x.score, color: x.score >= 0 ? css("--div-pos") : css("--div-neg"), note: `value ${fmt(x.value, 2)}` })), { min: -3, max: 3, valueFormat: (v) => signed(v, 1), labelWidth: 160, valueName: "SDs vs position" }), null) : null;
+  const ratingCard = ranking ? chartCard(`Rating ${fmt(ranking.rating, 0)}${ranking.rank ? `, #${ranking.rank} of the ${s.player.position === "Defence" ? "defence" : "forwards"}` : ""}`, `Each stat vs other ${s.player.position === "Defence" ? "defencemen" : "forwards"} (right = better).${form ? ` Form: ${signed(form.recent_z, 1)} SD vs their usual over the last ${form.recent_games} games.` : ""}`, (c) => hBarChart(c, ranking.components.filter((x) => x.score !== null).map((x) => ({ label: x.metric, value: x.score, color: x.score >= 0 ? css("--div-pos") : css("--div-neg"), note: `value ${fmt(x.value, 2)}` })), { min: -3, max: 3, valueFormat: (v) => signed(v, 1), labelWidth: 160, valueName: "SDs vs position" }), null, { source: a.rating_options.default_weights ? [] : customChip() }) : null;
   const pctRows = PERCENTILE_ORDER.filter((label) => label in s.percentiles).map((label) => ({ label, value: s.percentiles[label] }));
   const percentileCard = chartCard("Where they rank on this team", "Percentile among qualified skaters (50 = middle of the team).", (c) => (pctRows.length ? percentileBars(c, pctRows) : c.replaceChildren(el("p", { class: "muted", text: "Below the minimum ice time for ranking." }))), (c) => dataTable(c, [{ key: "label", label: "Metric", left: true }, { key: "value", label: "Percentile", format: (v) => fmt(v, 0) }], pctRows));
   const trendPoints = s.trend.map((p, i) => ({ ...p, i }));
@@ -2016,6 +2099,7 @@ function viewHelp() {
     ["Shot locations", "Every shot attempt (on net, missed or blocked) from InStat's shooting charts (ours and the opponent's). The charts mark goals but not which other attempts were on net, so on-net totals come from the zone maps. Attempts are placed on a standard rink using the chart's own faceoff circles. Distances are measured to the middle of the net; InStat's drawing is approximate, so treat them as a few feet either way."],
     ["Shot map", "Where shots came from, using InStat's seven zones: slot, high slot, left and right sides, and three spots along the blue line. Each zone shows shots / on goal; darker = more shots."],
     ["Puck battles by area", "InStat splits every one-on-one puck battle by where it happened: in front of each net, behind each net, the corners, along each blue line, and the neutral zone. The map shows the share we won in each area; corners are one area drawn top and bottom."],
+    ["Player ratings", "Each stat is compared with same-position teammates (in standard deviations, after pulling low-ice-time players toward the average). Stats are grouped into Offence, Defence and Puck play; within each part a stat counts by its weight, and the parts are combined by their weights. The Recommended weights favour stats most tied to goals for and against; coaches can pick a preset or set any weight from 0 (left out) to 3 under Rankings → Customise the ranking, and reset to the recommended weights at any time."],
     ["Matchups", "InStat's challenge and hits distributions list every one-on-one puck battle and every hit between each of our skaters and each of theirs. Opponents are shown as InStat labels them (number and surname); bars show battles won minus lost, so one battle never looks like a 100% record."],
     ["Goalie breakdowns", "From the goalie's Player-report page: save % by distance, zone, shot type, screened or clear view, where on the net the shot was headed (seen from the shooter), and where the puck met the goalie (the goalie's own left and right). Colours compare each part with the goalie's overall save %. Rebound control splits every save by what happened to the puck next."],
     ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request as HttpRequest, Response, Server, StatusCode};
 
+use crate::analysis::rating_setup::RatingWeights;
 use crate::analysis::{Request, analyse};
 use crate::error::Error;
 use crate::model::{GameId, TeamPrefix};
@@ -144,6 +145,7 @@ struct App {
 #[derive(Serialize)]
 struct StateResponse<'a> {
     team: Option<&'a TeamPrefix>,
+    rating_weights: &'a RatingWeights,
     games: usize,
     pending: Vec<String>,
     problems: &'a [String],
@@ -243,6 +245,7 @@ impl App {
             (Method::Get, "/api/state") => {
                 let state = StateResponse {
                     team: self.store.team(),
+                    rating_weights: self.store.rating_weights(),
                     games: self.store.games().len(),
                     pending: self.store.pending_descriptions(),
                     problems: &self.store.problems,
@@ -296,6 +299,14 @@ impl App {
                         self.cache.clear();
                         respond_json(request, 200, &self.store.team());
                     }
+                    Err(e) => error_json(request, 400, e.to_string()),
+                }
+            }
+            (Method::Post, "/api/rating-weights") => {
+                let parsed = read_body(&mut request)
+                    .and_then(|body| serde_json::from_slice::<RatingWeights>(&body).map_err(Error::from));
+                match parsed.and_then(|weights| self.store.set_rating_weights(weights)) {
+                    Ok(()) => respond_json(request, 200, self.store.rating_weights()),
                     Err(e) => error_json(request, 400, e.to_string()),
                 }
             }
