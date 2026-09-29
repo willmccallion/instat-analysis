@@ -14,6 +14,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 r.x0, r.top, r.x1, r.bottom
             );
         }
+        for s in &page.shapes {
+            let r = s.bounds;
+            println!(
+                "shape {:8.2} {:8.2} {:8.2} {:8.2} rgb({:.2},{:.2},{:.2}){}",
+                r.x0, r.top, r.x1, r.bottom, s.fill.r, s.fill.g, s.fill.b,
+                if s.stroked { " outlined" } else { "" }
+            );
+        }
         for r in &page.clips {
             println!(
                 "clip {:8.2} {:8.2} {:8.2} {:8.2}",

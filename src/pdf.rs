@@ -1,7 +1,8 @@
-//! Positioned words, filled rectangles and clip rectangles from PDF pages.
+//! Positioned words, filled rectangles, clip rectangles and coloured shapes from PDF pages.
 //!
 //! Words and fills come from `pdf-extract`'s rendering callbacks; clip rectangles (which
-//! InStat uses for goal markers and power-play bands) are read from the raw content stream.
+//! InStat uses for goal markers and power-play bands) and coloured shapes (event markers on
+//! rink charts) are read from the raw content stream.
 
 use pdf_extract::content::Content;
 use pdf_extract::{
@@ -56,6 +57,16 @@ impl Rect {
     pub const fn center_x(&self) -> f64 {
         f64::midpoint(self.x0, self.x1)
     }
+
+    #[must_use]
+    pub const fn union(&self, other: &Self) -> Self {
+        Self {
+            x0: self.x0.min(other.x0),
+            x1: self.x1.max(other.x1),
+            top: self.top.min(other.top),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +78,8 @@ pub struct Page {
     pub fills: Vec<Rect>,
     /// Clipping rectangles, e.g. goal markers and special-teams bands.
     pub clips: Vec<Rect>,
+    /// Filled paths with their colours, e.g. event markers on rink charts.
+    pub shapes: Vec<Shape>,
 }
 
 impl Page {
@@ -99,7 +112,7 @@ pub fn extract_pages(bytes: &[u8]) -> Result<Vec<Page>, Error> {
             .operations;
         let height = page_height(&doc, page_id);
         if let Some(page) = pages.iter_mut().find(|p| p.number == number) {
-            page.clips = clip_rects(&operations, height);
+            (page.clips, page.shapes) = vector_graphics(&operations, height);
         }
     }
     Ok(pages)
@@ -139,6 +152,17 @@ impl Matrix {
         f: 0.0,
     };
 
+    const fn from_array(m: [f64; 6]) -> Self {
+        Self {
+            a: m[0],
+            b: m[1],
+            c: m[2],
+            d: m[3],
+            e: m[4],
+            f: m[5],
+        }
+    }
+
     /// `self` applied after `inner` (PDF `cm` semantics: new CTM = inner × current).
     // Row-vector affine product; the "odd" operand groupings are the matrix multiply.
     #[allow(clippy::suspicious_operation_groupings)]
@@ -168,46 +192,155 @@ fn operand_floats(operands: &[Object]) -> Option<Vec<f64>> {
         .collect()
 }
 
-fn clip_rects(operations: &[pdf_extract::content::Operation], page_height: f64) -> Vec<Rect> {
-    let mut ctm = Matrix::IDENTITY;
-    let mut stack = Vec::new();
-    let mut path_rects: Vec<Rect> = Vec::new();
-    let mut clips = Vec::new();
-    for op in operations {
-        match op.operator.as_str() {
-            "q" => stack.push(ctm),
-            "Q" => ctm = stack.pop().unwrap_or(Matrix::IDENTITY),
-            "cm" => {
-                if let Some([a, b, c, d, e, f]) = operand_floats(&op.operands).as_deref() {
-                    let inner = Matrix {
-                        a: *a,
-                        b: *b,
-                        c: *c,
-                        d: *d,
-                        e: *e,
-                        f: *f,
-                    };
-                    ctm = ctm.then(inner);
+/// An sRGB colour with channels in `0.0..=1.0`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rgb {
+    pub r: f64,
+    pub g: f64,
+    pub b: f64,
+}
+
+impl Rgb {
+    const BLACK: Self = Self { r: 0.0, g: 0.0, b: 0.0 };
+
+    const fn gray(level: f64) -> Self {
+        Self { r: level, g: level, b: level }
+    }
+
+    fn from_cmyk(c: f64, m: f64, y: f64, k: f64) -> Self {
+        Self {
+            r: (1.0 - c) * (1.0 - k),
+            g: (1.0 - m) * (1.0 - k),
+            b: (1.0 - y) * (1.0 - k),
+        }
+    }
+}
+
+/// A filled path (circle, cross, box …): its bounds and fill colour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shape {
+    pub bounds: Rect,
+    pub fill: Rgb,
+    /// Filled with `B`/`b`, i.e. also outlined.
+    pub stroked: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GraphicsState {
+    ctm: Matrix,
+    fill: Rgb,
+}
+
+impl GraphicsState {
+    const INITIAL: Self = Self {
+        ctm: Matrix::IDENTITY,
+        fill: Rgb::BLACK,
+    };
+}
+
+/// Walks a content stream, tracking the transform and fill colour, and collects clip
+/// rectangles and filled shapes.
+struct ContentWalker {
+    page_height: f64,
+    state: GraphicsState,
+    stack: Vec<GraphicsState>,
+    path_rects: Vec<Rect>,
+    path_extent: Option<Rect>,
+    clips: Vec<Rect>,
+    shapes: Vec<Shape>,
+}
+
+impl ContentWalker {
+    const fn new(page_height: f64) -> Self {
+        Self {
+            page_height,
+            state: GraphicsState::INITIAL,
+            stack: Vec::new(),
+            path_rects: Vec::new(),
+            path_extent: None,
+            clips: Vec::new(),
+            shapes: Vec::new(),
+        }
+    }
+
+    fn point(&self, x: f64, y: f64) -> (f64, f64) {
+        let (px, py) = self.state.ctm.apply(x, y);
+        (px, self.page_height - py)
+    }
+
+    fn extend_path(&mut self, points: &[f64]) {
+        for pair in points.as_chunks::<2>().0 {
+            let (x, top) = self.point(pair[0], pair[1]);
+            let point = Rect { x0: x, x1: x, top, bottom: top };
+            self.path_extent = Some(self.path_extent.map_or(point, |r| r.union(&point)));
+        }
+    }
+
+    fn add_rect(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        self.extend_path(&[x, y, x + width, y + height]);
+        let (ax, atop) = self.point(x, y);
+        let (bx, btop) = self.point(x + width, y + height);
+        self.path_rects.push(Rect {
+            x0: ax.min(bx),
+            x1: ax.max(bx),
+            top: atop.min(btop),
+            bottom: atop.max(btop),
+        });
+    }
+
+    fn fill_path(&mut self, stroked: bool) {
+        if let Some(bounds) = self.path_extent {
+            self.shapes.push(Shape {
+                bounds,
+                fill: self.state.fill,
+                stroked,
+            });
+        }
+        self.discard_path();
+    }
+
+    fn discard_path(&mut self) {
+        self.path_rects.clear();
+        self.path_extent = None;
+    }
+
+    fn apply(&mut self, operator: &str, operands: &[f64]) {
+        match (operator, operands) {
+            ("q", _) => self.stack.push(self.state),
+            ("Q", _) => self.state = self.stack.pop().unwrap_or(GraphicsState::INITIAL),
+            ("cm", _) => {
+                if let Ok(inner) = <[f64; 6]>::try_from(operands) {
+                    self.state.ctm = self.state.ctm.then(Matrix::from_array(inner));
                 }
             }
-            "re" => {
-                if let Some([x, y, w, h]) = operand_floats(&op.operands).as_deref() {
-                    let p = ctm.apply(*x, *y);
-                    let q = ctm.apply(x + w, y + h);
-                    path_rects.push(Rect {
-                        x0: p.0.min(q.0),
-                        x1: p.0.max(q.0),
-                        top: page_height - p.1.max(q.1),
-                        bottom: page_height - p.1.min(q.1),
-                    });
-                }
+            ("rg", &[r, g, b]) => self.state.fill = Rgb { r, g, b },
+            ("g", &[level]) => self.state.fill = Rgb::gray(level),
+            ("k", &[c, m, y, k]) => self.state.fill = Rgb::from_cmyk(c, m, y, k),
+            ("m" | "l", &[_, _]) | ("c", &[_, _, _, _, _, _]) | ("v" | "y", &[_, _, _, _]) => {
+                self.extend_path(operands);
             }
-            "W" | "W*" => clips.append(&mut path_rects),
-            "n" | "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" => path_rects.clear(),
+            ("re", &[x, y, width, height]) => self.add_rect(x, y, width, height),
+            ("W" | "W*", _) => self.clips.append(&mut self.path_rects),
+            ("f" | "F" | "f*", _) => self.fill_path(false),
+            ("B" | "B*" | "b" | "b*", _) => self.fill_path(true),
+            ("n" | "S" | "s", _) => self.discard_path(),
             _ => {}
         }
     }
-    clips
+}
+
+/// Clip rectangles and filled shapes, read straight from the content stream.
+fn vector_graphics(
+    operations: &[pdf_extract::content::Operation],
+    page_height: f64,
+) -> (Vec<Rect>, Vec<Shape>) {
+    let mut walker = ContentWalker::new(page_height);
+    for op in operations {
+        if let Some(operands) = operand_floats(&op.operands) {
+            walker.apply(&op.operator, &operands);
+        }
+    }
+    (walker.clips, walker.shapes)
 }
 
 fn apply(t: &Transform, x: f64, y: f64) -> (f64, f64) {
@@ -288,6 +421,7 @@ impl OutputDev for WordCollector {
             words: Vec::new(),
             fills: Vec::new(),
             clips: Vec::new(),
+            shapes: Vec::new(),
         });
         Ok(())
     }
