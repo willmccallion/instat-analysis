@@ -21,6 +21,8 @@ Options:
   --data-dir DIR   where games are stored (default: platform app-data folder)
   --port N         serve on a fixed port (default: any free port)
   --no-browser     do not open a browser window
+  --foreground     keep the server attached to this process (default except on macOS)
+  --background     run the server as a detached background process (default on macOS)
   -h, --help       show this help";
 
 enum Mode {
@@ -34,6 +36,7 @@ struct Options {
     data_dir: PathBuf,
     port: u16,
     open_browser: bool,
+    foreground: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
@@ -42,6 +45,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         data_dir: store::default_dir(),
         port: 0,
         open_browser: true,
+        foreground: !cfg!(target_os = "macos"),
     };
     let mut inputs = Vec::new();
     let mut output = None;
@@ -61,6 +65,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                     .map_err(|_| "--port needs a number between 0 and 65535")?;
             }
             "--no-browser" => options.open_browser = false,
+            "--foreground" => options.foreground = true,
+            "--background" => options.foreground = false,
             // macOS may pass a process serial number when launched from Finder.
             other if other.starts_with("-psn_") => {}
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
@@ -102,6 +108,32 @@ fn write_report(inputs: &[PathBuf], output: &PathBuf) -> Result<(), Error> {
     Ok(())
 }
 
+/// Relaunches this executable as a detached background server and returns at once.
+///
+/// macOS sends a launched app an "open" Apple Event and reports error -1712 if nothing
+/// answers it; this binary has no event loop, so the launched process must exit promptly
+/// while the server carries on in a child process.
+fn spawn_background_server(options: &Options) -> Result<(), Error> {
+    let log_path = options.data_dir.join("hockey-stats.log");
+    let log = std::fs::File::create(&log_path)?;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("--foreground")
+        .arg("--data-dir")
+        .arg(&options.data_dir)
+        .arg("--port")
+        .arg(options.port.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    if !options.open_browser {
+        command.arg("--no-browser");
+    }
+    command.spawn()?;
+    eprintln!("Hockey Stats is starting in the background (log: {})", log_path.display());
+    Ok(())
+}
+
 fn run_app(options: &Options) -> Result<(), Error> {
     std::fs::create_dir_all(&options.data_dir)?;
     if let Some(url) = server::running_instance(&options.data_dir) {
@@ -110,6 +142,9 @@ fn run_app(options: &Options) -> Result<(), Error> {
             server::open_browser(&url)?;
         }
         return Ok(());
+    }
+    if !options.foreground {
+        return spawn_background_server(options);
     }
     let store = Store::open(&options.data_dir)?;
     for problem in &store.problems {
