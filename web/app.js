@@ -86,6 +86,9 @@ window.Charts.setGlossary({
   "Shot attempts together": "Shot attempts for and against while both were on the ice (from InStat's line tables).",
   "Passes": "Passes between the two players, both directions.",
   "SDs vs position": "Standard deviations above (+) or below (−) the average of teammates at the same position.",
+  "source:game": "These numbers come from this one game only.",
+  "source:season": "These numbers pool every loaded game in the current scope (change it with Season / Single game / Custom at the top).",
+  "source:history": "Also uses earlier games from InStat's recent-games table in the Player report (games you haven't loaded). Used for form, trends and 'vs usual'.",
 });
 
 const params = new URLSearchParams(location.search);
@@ -274,8 +277,45 @@ function renderFilters() {
 
 let insideTabs = false;
 
+function pageTitle(title) {
+  return el("h1", { class: "title-row" }, [title, SCOPE_VIEWS.has(state.view) && state.analysis?.games.length ? scopeChip() : null]);
+}
+
 function page(title, lede, ...children) {
-  return [insideTabs ? null : el("h1", { text: title }), lede ? el("p", { class: "lede", text: lede }) : null, ...children];
+  return [insideTabs ? null : pageTitle(title), lede ? el("p", { class: "lede", text: lede }) : null, ...children];
+}
+
+function scopeChip() {
+  const a = state.analysis;
+  const inScope = a.games.filter((g) => g.in_scope);
+  const single = state.request.games.length === 1 && inScope.length === 1;
+  const count = `${inScope.length} game${inScope.length === 1 ? "" : "s"}`;
+  const label = single ? `This game: ${inScope[0].date.slice(5)} vs ${inScope[0].opponent}` : `${state.request.games.length > 1 ? "Custom" : "Season"} · ${count}`;
+  const chip = el("span", { class: "source scope" }, [single ? "◉ " : "▦ ", label]);
+  window.Charts.explain(chip, single ? "source:game" : "source:season");
+  return chip;
+}
+
+function historyChip() {
+  const chip = el("span", { class: "source history" }, ["⟲ + InStat history"]);
+  window.Charts.explain(chip, "source:history");
+  return chip;
+}
+
+function gameChip(label) {
+  const chip = el("span", { class: "source scope" }, [`◉ ${label}`]);
+  window.Charts.explain(chip, "source:game");
+  return chip;
+}
+
+function cardTitle(title, ...chips) {
+  return el("h3", { class: "title-row" }, [title, ...chips]);
+}
+
+function ratingDot(rating) {
+  if (rating === null || rating === undefined) return null;
+  const color = window.Charts.divergingColor(Math.max(-1, Math.min(1, (rating - 50) / 6)));
+  return el("span", { class: "rating-dot", style: `background:${color}`, title: `Rating ${fmt(rating, 0)}` });
 }
 
 /** A collapsed section for detail that most readers can skip. */
@@ -523,7 +563,7 @@ function viewSummary() {
   const unitNote = (u) => `${pct(u.corsi_pct, 0)} of shot attempts (${u.corsi_for}–${u.corsi_against}) in ${minutes(u.toi)} min`;
   const formNote = (r) => `${signed(r.recent_z, 1)} SD vs their usual (last ${r.recent_games} games)`;
   const good = el("div", { class: "card column good" }, [
-    el("h3", { text: "Going well" }),
+    cardTitle("Going well", historyChip()),
     el("div", { class: "group-label", text: "Top-rated players" }),
     ...[...f.top, ...d.top].map((r) => miniRow(`${r.player.name} (${positionShort(r.player.position)})`, ratingNote(r, true), () => goToPlayer(r.player.id))),
     el("div", { class: "group-label", text: "Best units" }),
@@ -532,7 +572,7 @@ function viewSummary() {
     ...form.filter((r) => r.recent_z > 0).slice(0, 2).map((r) => miniRow(r.player.name, formNote(r), () => goToPlayer(r.player.id))),
   ]);
   const bad = el("div", { class: "card column bad" }, [
-    el("h3", { text: "Needs attention" }),
+    cardTitle("Needs attention", historyChip()),
     el("div", { class: "group-label", text: "Lowest-rated players" }),
     ...[...f.bottom, ...d.bottom].map((r) => miniRow(`${r.player.name} (${positionShort(r.player.position)})`, ratingNote(r, false), () => goToPlayer(r.player.id))),
     el("div", { class: "group-label", text: "Toughest units" }),
@@ -558,7 +598,7 @@ function viewSummary() {
     : chartCard("Shots by period", "Where the game was won or lost.", (c) => groupedColumns(c, t.periods.map((p) => ({ label: p.period <= 3 ? `Period ${p.period}` : "OT", values: [p.shots_for, p.shots_against] })), [{ name: "Our shots", color: css("--series-1") }, { name: "Their shots", color: css("--series-2") }]), null);
   return page("Summary", `${a.team_name}: what stands out in the games in scope.`,
     kpis,
-    el("div", { class: "card" }, [el("h3", { text: "Key takeaways" }), takeawayList(takeaways(a))]),
+    el("div", { class: "card" }, [cardTitle("Key takeaways"), takeawayList(takeaways(a))]),
     el("div", { class: "grid two", style: "margin-top:16px" }, [good, bad]),
     el("div", { style: "margin-top:16px" }, [chart]),
     more("More team numbers", extra));
@@ -638,18 +678,18 @@ function viewRankings() {
   const breakdown = el("div");
   dataTable(breakdown, [
     { key: "name", label: "Player", left: true, value: (x) => x.player.name },
-    { key: "rating", label: "Rating", format: (v) => fmt(v, 0) },
-    ...rows[0]?.components.map((c, i) => ({ key: `c${i}`, label: c.metric, value: (x) => x.components[i].score, render: (x) => `${fmt(x.components[i].value, 1)} (${signed(x.components[i].score, 1)})`, title: "value (standing vs position, in SDs)" })) ?? [],
+    { key: "rating", label: "Rating", format: (v) => fmt(v, 0), tone: "higher" },
+    ...rows[0]?.components.map((c, i) => ({ key: `c${i}`, label: c.metric, tone: "higher", value: (x) => x.components[i].score, render: (x) => `${fmt(x.components[i].value, 1)} (${signed(x.components[i].score, 1)})`, title: "value (standing vs position, in SDs)" })) ?? [],
   ], rows, { sortKey: "rating" });
   return page("Rankings", "Who is playing best at each position, and who is above or below their own usual level.",
     el("div", {}, [
       el("div", { class: "card" }, [
-        el("h3", { text: "Position rankings" }),
+        cardTitle("Position rankings"),
         el("p", { class: "desc", text: "Rating: 50 = average at the position, 60+ = clearly above, 40- = clearly below. Off / Def / Puck show where it comes from. Click a player for their card." }),
         tabs, rankingList(rows),
       ]),
       el("div", { class: "card", style: "margin-top:16px" }, [
-        el("h3", { text: "Form: last few games vs their usual" }),
+        cardTitle("Form: last few games vs their usual", historyChip()),
         el("p", { class: "desc", text: `Compares each player's last ${r.recent_window} games with the rest of their games, using ${formSource}.` }),
         el("div", { class: "group-label", text: "Above their usual" }),
         hot.length ? formList(hot) : el("p", { class: "muted small", text: "Nobody yet." }),
@@ -694,8 +734,8 @@ function viewGame() {
     .sort((x, y) => y.latest_z - x.latest_z);
   const usualRow = (r) => miniRow(r.player.name, `${r.source === "InstatIndex" ? "InStat Index" : "Rating"} ${fmt(r.latest_value, 0)} vs usual ${fmt(r.baseline_mean, 0)} (${signed(r.latest_z, 1)} SD)`, () => goToPlayer(r.player.id));
   const compareCard = el("div", { class: "grid two" }, [
-    el("div", { class: "card column good" }, [el("h3", { text: "Above their usual in this game" }), ...vsUsual.filter((r) => r.latest_z > 0.5).slice(0, 5).map(usualRow), vsUsual.some((r) => r.latest_z > 0.5) ? null : el("p", { class: "muted small", text: "Nobody clearly above their usual." })]),
-    el("div", { class: "card column bad" }, [el("h3", { text: "Below their usual in this game" }), ...vsUsual.filter((r) => r.latest_z < -0.5).slice(-5).reverse().map(usualRow), vsUsual.some((r) => r.latest_z < -0.5) ? null : el("p", { class: "muted small", text: "Nobody clearly below their usual." })]),
+    el("div", { class: "card column good" }, [cardTitle("Above their usual in this game", gameChip(timeline.date.slice(5)), historyChip()), ...vsUsual.filter((r) => r.latest_z > 0.5).slice(0, 5).map(usualRow), vsUsual.some((r) => r.latest_z > 0.5) ? null : el("p", { class: "muted small", text: "Nobody clearly above their usual." })]),
+    el("div", { class: "card column bad" }, [cardTitle("Below their usual in this game", gameChip(timeline.date.slice(5)), historyChip()), ...vsUsual.filter((r) => r.latest_z < -0.5).slice(-5).reverse().map(usualRow), vsUsual.some((r) => r.latest_z < -0.5) ? null : el("p", { class: "muted small", text: "Nobody clearly below their usual." })]),
   ]);
   const badgeRows = comparisons.filter((x) => x.badges.length);
   const badges = badgeRows.length ? more("Season bests and unusual numbers", ...badgeRows.map(({ p, badges: list }) => el("div", { class: "callout", style: "margin-top:6px" }, [
@@ -757,12 +797,12 @@ function viewLines() {
     { key: "games", label: "GP" },
     { key: "toi", label: "Min", format: (v) => minutes(v) },
     { key: "corsi_for", label: "CF" }, { key: "corsi_against", label: "CA" },
-    { key: "corsi_pct", label: "CF%", format: (v) => pct(v, 0) },
-    { key: "shrunk", label: "Adj. CF%", value: (u) => u.shrunk_corsi?.estimate.value, render: (u) => u.shrunk_corsi ? `${pct(u.shrunk_corsi.estimate.value, 0)} (${fmt(u.shrunk_corsi.estimate.low, 0)}–${fmt(u.shrunk_corsi.estimate.high, 0)})` : "—", title: "Shrunk toward team average; 90% range" },
-    { key: "prob", label: "Above avg?", value: (u) => u.shrunk_corsi?.prob_above_average, format: (v) => (v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`) },
-    { key: "goals_for", label: "GF" }, { key: "goals_against", label: "GA" },
-    { key: "corsi_for_60", label: "CF/60", format: (v) => fmt(v, 0) },
-    { key: "corsi_against_60", label: "CA/60", format: (v) => fmt(v, 0) },
+    { key: "corsi_pct", label: "CF%", format: (v) => pct(v, 0), tone: "higher" },
+    { key: "shrunk", label: "Adj. CF%", tone: "higher", value: (u) => u.shrunk_corsi?.estimate.value, render: (u) => u.shrunk_corsi ? `${pct(u.shrunk_corsi.estimate.value, 0)} (${fmt(u.shrunk_corsi.estimate.low, 0)}–${fmt(u.shrunk_corsi.estimate.high, 0)})` : "—", title: "Shrunk toward team average; 90% range" },
+    { key: "prob", label: "Above avg?", value: (u) => u.shrunk_corsi?.prob_above_average, format: (v) => (v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`), tone: "higher" },
+    { key: "goals_for", label: "GF", tone: "higher" }, { key: "goals_against", label: "GA", tone: "lower" },
+    { key: "corsi_for_60", label: "CF/60", format: (v) => fmt(v, 0), tone: "higher" },
+    { key: "corsi_against_60", label: "CA/60", format: (v) => fmt(v, 0), tone: "lower" },
     { key: "possession_pct", label: "Poss%", format: (v) => pct(v, 0) },
     { key: "pens", label: "Pen ±", value: (u) => u.penalties_drawn - u.penalties_taken, format: (v) => signed(v, 0) },
   ];
@@ -922,28 +962,28 @@ function viewPlayers() {
   const ratingOf = (p) => [...a.rankings.forwards, ...a.rankings.defence].find((r) => r.player.id === p.player.id);
   const formOf = (p) => a.rankings.form.find((r) => r.player.id === p.player.id);
   const keyColumns = [
-    { key: "name", label: "Player", left: true, value: (p) => `${p.player.jersey ?? ""} ${p.player.name}`.trim() },
+    { key: "name", label: "Player", left: true, value: (p) => `${p.player.jersey ?? ""} ${p.player.name}`.trim(), render: (p) => el("span", {}, [ratingDot(ratingOf(p)?.rating), `${p.player.jersey ?? ""} ${p.player.name}`.trim()]) },
     { key: "pos", label: "Pos", left: true, value: (p) => positionShort(p.player.position) },
     { key: "gp", label: "GP", value: (p) => p.totals.games },
     { key: "toi", label: "TOI/GP", value: (p) => p.totals.toi / Math.max(1, p.totals.games), format: (v) => clock(v) },
-    { key: "pts", label: "P", value: (p) => p.totals.points },
-    { key: "rating", label: "Rating", value: (p) => ratingOf(p)?.rating, format: (v) => fmt(v, 0), title: "50 = average at their position" },
-    { key: "form", label: "Form", value: (p) => formOf(p)?.recent_z, format: (v) => (v === undefined || v === null ? "—" : `${v >= 0 ? "▲" : "▼"} ${fmt(Math.abs(v), 1)}`), title: "Last few games vs their usual, in standard deviations" },
-    { key: "rel", label: "Shot share vs team", value: (p) => p.shares.corsi_rel, format: (v) => signed(v, 1), title: "On-ice CF% minus team CF% without them" },
-    { key: "idx", label: "InStat", value: (p) => p.instat_mean, format: (v) => fmt(v, 0) },
+    { key: "pts", label: "P", value: (p) => p.totals.points, tone: "higher" },
+    { key: "rating", label: "Rating", value: (p) => ratingOf(p)?.rating, format: (v) => fmt(v, 0), title: "50 = average at their position", tone: "higher" },
+    { key: "form", label: "Form", value: (p) => formOf(p)?.recent_z, format: (v) => (v === undefined || v === null ? "—" : `${v >= 0 ? "▲" : "▼"} ${fmt(Math.abs(v), 1)}`), title: "Last few games vs their usual, in standard deviations", tone: "higher" },
+    { key: "rel", label: "Shot share vs team", value: (p) => p.shares.corsi_rel, format: (v) => signed(v, 1), title: "On-ice CF% minus team CF% without them", tone: "higher" },
+    { key: "idx", label: "InStat", value: (p) => p.instat_mean, format: (v) => fmt(v, 0), tone: "higher" },
   ];
   const allColumns = [
     ...keyColumns,
     { key: "g", label: "G", value: (p) => p.totals.goals },
     { key: "a", label: "A", value: (p) => p.totals.assists },
-    { key: "pm", label: "+/-", value: (p) => p.totals.plus_minus, format: (v) => signed(v, 0) },
-    { key: "p60", label: "P/60", value: (p) => p.rates.points, format: (v) => fmt(v, 1) },
-    { key: "s60", label: "Shots/60", value: (p) => p.rates.shots, format: (v) => fmt(v, 1) },
-    { key: "xg60", label: "xG/60", value: (p) => p.rates.xg, format: (v) => fmt(v, 2) },
-    { key: "cf", label: "CF%", value: (p) => p.shares.corsi_pct, format: (v) => pct(v, 0) },
-    { key: "adj", label: "Adj. CF%", value: (p) => p.shrunk_corsi?.estimate.value, format: (v) => pct(v, 0) },
-    { key: "gfp", label: "EV goal share", value: (p) => p.shares.goals_pct, format: (v) => pct(v, 0) },
-    { key: "bat", label: "Battles won", value: (p) => p.shares.battles_pct?.value, format: (v) => pct(v, 0) },
+    { key: "pm", label: "+/-", value: (p) => p.totals.plus_minus, format: (v) => signed(v, 0), tone: "higher" },
+    { key: "p60", label: "P/60", value: (p) => p.rates.points, format: (v) => fmt(v, 1), tone: "higher" },
+    { key: "s60", label: "Shots/60", value: (p) => p.rates.shots, format: (v) => fmt(v, 1), tone: "higher" },
+    { key: "xg60", label: "xG/60", value: (p) => p.rates.xg, format: (v) => fmt(v, 2), tone: "higher" },
+    { key: "cf", label: "CF%", value: (p) => p.shares.corsi_pct, format: (v) => pct(v, 0), tone: "higher" },
+    { key: "adj", label: "Adj. CF%", value: (p) => p.shrunk_corsi?.estimate.value, format: (v) => pct(v, 0), tone: "higher" },
+    { key: "gfp", label: "EV goal share", value: (p) => p.shares.goals_pct, format: (v) => pct(v, 0), tone: "higher" },
+    { key: "bat", label: "Battles won", value: (p) => p.shares.battles_pct?.value, format: (v) => pct(v, 0), tone: "higher" },
   ];
   const columns = state.playerColumns === "all" ? allColumns : keyColumns;
   const toggle = el("button", { class: "small", text: state.playerColumns === "all" ? "Key columns only" : "All columns", onclick: () => { state.playerColumns = state.playerColumns === "all" ? "key" : "all"; render(); } });
@@ -980,8 +1020,8 @@ function playerDetail(a, s) {
     { key: "instat_index", label: "InStat", format: (v) => fmt(v, 0) }, { key: "toi", label: "TOI", format: (v) => clock(v) },
     { key: "points", label: "P" }, { key: "shots", label: "Shots" }, { key: "plus_minus", label: "+/-", format: (v) => signed(v, 0) },
     { key: "loaded", label: "Source", format: (v) => (v ? "loaded game" : "InStat history") },
-  ], s.trend));
-  const toiCard = chartCard("Ice time per game", "", (c) => lineChart(c, [{ name: "TOI", color: css("--series-1"), points: trendPoints.map((p) => ({ x: p.i, y: p.toi / 60, hollow: !p.loaded, label: p.opponent })) }], { xFormat: (i) => trendPoints[i]?.date.slice(5) || "", yFormat: (v) => fmt(v, 0) }), null);
+  ], s.trend), { source: historyChip() });
+  const toiCard = chartCard("Ice time per game", "", (c) => lineChart(c, [{ name: "TOI", color: css("--series-1"), points: trendPoints.map((p) => ({ x: p.i, y: p.toi / 60, hollow: !p.loaded, label: p.opponent })) }], { xFormat: (i) => trendPoints[i]?.date.slice(5) || "", yFormat: (v) => fmt(v, 0) }), null, { source: historyChip() });
   const focus = s.focus.length ? el("div", { class: "card" }, [el("h3", { text: "Selected game vs their usual" }), el("div")]) : null;
   if (focus) {
     dataTable(focus.lastChild, [
@@ -1032,7 +1072,7 @@ function viewGoalies() {
       el("div", { class: "grid two" }, [
         chartCard("Save % by game", "Hollow dots come from InStat's recent-games table.", (c) => lineChart(c, [{ name: "Save %", color: css("--series-1"), points: points.map((p) => ({ x: p.i, y: p.save_pct, hollow: !p.loaded, label: `${p.saves}/${p.shots_against} vs ${p.opponent}` })) }], { xFormat: (i) => points[i]?.date.slice(5) || "", yFormat: (v) => pct(v, 0) }), (c) => dataTable(c, [
           { key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true }, { key: "shots_against", label: "SA" }, { key: "saves", label: "Saves" }, { key: "save_pct", label: "Sv%", format: (v) => pct(v, 1) },
-        ], g.trend)),
+        ], g.trend), { source: historyChip() }),
         (() => {
           const card = el("div", { class: "card" }, [el("h3", { text: "Every InStat goalie number (latest game)" }), el("div")]);
           dataTable(card.lastChild, [{ key: "label", label: "Stat", left: true }, { key: "v", label: "Value", value: (r) => r.value.text }], g.focus_details);
@@ -1103,7 +1143,7 @@ function viewImpact() {
       { key: "for_se", label: "± SE", format: (v) => fmt(v, per) },
       { key: "against_per_60", label: "Against /60", format: (v) => signed(v, per) },
       { key: "against_se", label: "± SE", format: (v) => fmt(v, per) },
-      { key: "net_per_60", label: "Net /60", format: (v) => signed(v, per) },
+      { key: "net_per_60", label: "Net /60", format: (v) => signed(v, per), tone: "higher" },
     ], m.rows, { sortKey: "net_per_60" }));
   });
   return page("Individual impact", "Plus/minus-style numbers are unfair to players stuck on weak lines. These models credit each player only for the difference they make once their linemates are accounted for.", el("div", { class: "grid two" }, cards));
@@ -1270,7 +1310,7 @@ function render() {
     const sub = state.sub[state.view] || SUBVIEWS[state.view][0][0];
     insideTabs = true;
     try {
-      content = [el("h1", { text: section.title }), subTabs(state.view), ...[].concat(section.views[sub]())];
+      content = [pageTitle(section.title), subTabs(state.view), ...[].concat(section.views[sub]())];
     } finally {
       insideTabs = false;
     }

@@ -320,3 +320,14 @@ button.link.quiet:hover, button.link.quiet:focus-visible { color: var(--series-1
 .chart .term-svg { text-decoration: underline dotted; cursor: help; }
 #tooltip .tt-explain { color: var(--text-secondary); line-height: 1.4; margin-top: 2px; }
 .rank-cats .cat.term { text-decoration: none; }
+
+.tone-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); margin-top: 8px; flex-wrap: wrap; }
+.tone-legend .swatch { width: 12px; height: 10px; border-radius: 2px; display: inline-block; margin-left: 8px; }
+.tone-legend .swatch.good { background: color-mix(in srgb, var(--good) 30%, transparent); }
+.tone-legend .swatch.bad { background: color-mix(in srgb, var(--critical) 30%, transparent); }
+
+.source { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 1px 8px; margin-left: 8px; vertical-align: 2px; border: 1px solid; white-space: nowrap; }
+.source.scope { color: var(--series-1); border-color: color-mix(in srgb, var(--series-1) 45%, transparent); }
+.source.history { color: var(--text-secondary); border-color: var(--axis); border-style: dashed; }
+.title-row { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
+.rating-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }

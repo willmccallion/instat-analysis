@@ -719,6 +719,23 @@ function dataTable(container, columns, rows, options = {}) {
   let descending = options.descending ?? true;
   const valueOf = (col, row) => (col.value ? col.value(row) : row[col.key]);
   const wrap = el("div", { class: "table-wrap" });
+  // Columns with `tone: "higher" | "lower"` tint each cell by how far it sits from the
+  // column average (green = better, red = worse).
+  const toneStats = new Map(columns.filter((c) => c.tone).map((col) => {
+    const values = rows.map((r) => valueOf(col, r)).filter((v) => typeof v === "number" && !Number.isNaN(v));
+    const avg = values.reduce((sum, v) => sum + v, 0) / Math.max(1, values.length);
+    const sd = Math.sqrt(values.reduce((sum, v) => sum + (v - avg) ** 2, 0) / Math.max(1, values.length - 1));
+    return [col.key, { avg, sd }];
+  }));
+  const toneStyle = (col, value) => {
+    const stats = toneStats.get(col.key);
+    if (!stats || typeof value !== "number" || Number.isNaN(value) || !(stats.sd > 0)) return "";
+    const z = ((value - stats.avg) / stats.sd) * (col.tone === "lower" ? -1 : 1);
+    if (Math.abs(z) < 0.35) return "";
+    const color = z > 0 ? css("--good") : css("--critical");
+    const strength = Math.round(Math.min(1, Math.abs(z) / 2) * 30);
+    return `background:color-mix(in srgb, ${color} ${strength}%, transparent)`;
+  };
   const render = () => {
     const sorted = [...rows];
     if (sortKey !== null) {
@@ -751,12 +768,18 @@ function dataTable(container, columns, rows, options = {}) {
       for (const col of columns) {
         const raw = valueOf(col, row);
         const shown = col.render ? col.render(row) : col.format ? col.format(raw, row) : raw ?? "—";
-        tr.append(el("td", { class: `${col.left ? "left" : ""} ${col.wrap ? "wrap" : ""}` }, [shown instanceof Node ? shown : String(shown)]));
+        tr.append(el("td", { class: `${col.left ? "left" : ""} ${col.wrap ? "wrap" : ""}`, style: col.tone ? toneStyle(col, raw) : undefined }, [shown instanceof Node ? shown : String(shown)]));
       }
       if (options.onRow) tr.addEventListener("click", () => options.onRow(row));
       return tr;
     });
     wrap.replaceChildren(el("table", {}, [el("thead", {}, [head]), el("tbody", {}, body)]));
+    if (toneStats.size) {
+      wrap.append(el("div", { class: "tone-legend" }, [
+        el("span", { class: "swatch good" }), "better than the rest of the team",
+        el("span", { class: "swatch bad" }), "worse (stronger colour = further from average)",
+      ]));
+    }
   };
   render();
   container.replaceChildren(wrap);
@@ -777,7 +800,7 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
   if (toggle) toggle.addEventListener("click", () => { showing = showing === "chart" ? "table" : "chart"; draw(); });
   const card = el("div", { class: `card ${options.class || ""}` }, [
     el("div", { class: "card-head" }, [
-      el("div", {}, [el("h3", { text: title }), description ? el("p", { class: "desc", text: description }) : null]),
+      el("div", {}, [el("h3", {}, [title, ...[].concat(options.source || [])]), description ? el("p", { class: "desc", text: description }) : null]),
       el("div", { class: "actions" }, [toggle]),
     ]),
     body,
