@@ -105,6 +105,8 @@ const state = {
   rankingTab: "forwards",
   playerColumns: "key",
   player: null,
+  playerTab: "overview",
+  gameTab: "overview",
   goalie: null,
   unitTab: "defence_pairs",
   chemistryMetric: "toi",
@@ -346,10 +348,24 @@ function more(label, ...children) {
   return el("details", { class: "more" }, [el("summary", { text: label }), el("div", { class: "more-body" }, children)]);
 }
 
+/** A row of tabs: `tabs` is [[id, label]], `choose(id)` switches to one. */
+function tabBar(tabs, current, choose) {
+  return el("div", { class: "tabs" }, tabs.map(([id, label]) => el("button", { class: current === id ? "on" : "", text: label, onclick: () => choose(id) })));
+}
+
 function subTabs(view) {
   const tabs = SUBVIEWS[view];
-  const current = state.sub[view] || tabs[0][0];
-  return el("div", { class: "tabs" }, tabs.map(([id, label]) => el("button", { class: current === id ? "on" : "", text: label, onclick: () => { state.sub[view] = id; render(); } })));
+  return tabBar(tabs, state.sub[view] || tabs[0][0], (id) => { state.sub[view] = id; render(); });
+}
+
+/** Tabs within one page (a player card, a game); `key` names the state field holding the choice. */
+function pageTabs(key, tabs) {
+  const current = tabs.some(([id]) => id === state[key]) ? state[key] : tabs[0][0];
+  return [tabBar(tabs, current, (id) => { state[key] = id; render(); }), current];
+}
+
+function emptyNote(text) {
+  return el("p", { class: "muted", text });
 }
 
 function tiles(items) {
@@ -809,6 +825,8 @@ function viewRankings() {
 
 // ---------- Single game ----------
 
+const GAME_TABS = [["overview", "Overview"], ["stats", "Team stats"]];
+
 function viewGame() {
   const a = state.analysis;
   if (!a.timelines.length) return page("Single game", "No games in scope.");
@@ -820,6 +838,13 @@ function viewGame() {
     state.request = { ...state.request, focus: focusId };
     queueMicrotask(refresh);
   }
+  const [tabs, current] = pageTabs("gameTab", GAME_TABS);
+  const body = { overview: gameOverview, stats: gameTeamStats }[current](a, timeline);
+  return page("Single game", "Pick a game to see its shifts, goals and how each player compared with their usual.",
+    el("div", { style: "margin-bottom:14px" }, [select]), tabs, ...[].concat(body));
+}
+
+function gameOverview(a, timeline) {
   let highlight = null;
   const positionRank = { Defence: 0, Forward: 1, Goalie: 2, Unknown: 3 };
   const toiOf = (row) => row.shifts.reduce((sum, [s0, e0]) => sum + e0 - s0, 0);
@@ -849,19 +874,20 @@ function viewGame() {
     playerLink(p.player),
     el("div", { class: "pill-row" }, list.map((b) => el("span", { class: "badge", text: b.badge }))),
   ]))) : null;
+  return [compareCard, el("div", { style: "margin-top:16px" }, [shiftCard]), badges];
+}
+
+function gameTeamStats(a, timeline) {
   const groupOrder = [...new Set(timeline.team_stats.map((r) => r.group))];
   const statsRows = [...timeline.team_stats].sort((x, y) => groupOrder.indexOf(x.group) - groupOrder.indexOf(y.group));
-  const statsBody = el("div");
-  const teamStatsCard = more(`Every team stat vs ${timeline.opponent}`, statsBody);
-  dataTable(statsBody, [
+  const card = el("div", { class: "card" }, [cardTitle(`Every team stat vs ${timeline.opponent}`), el("div")]);
+  dataTable(card.lastChild, [
     { key: "group", label: "Section", left: true },
     { key: "label", label: "Stat", left: true },
     { key: "ours", label: "Us", value: (r) => r.ours.text },
     { key: "theirs", label: "Them", value: (r) => r.theirs.text },
   ], statsRows, {});
-  return page("Single game", "Pick a game to see its shifts, goals and how each player compared with their usual.",
-    el("div", { style: "margin-bottom:14px" }, [select]),
-    compareCard, el("div", { style: "margin-top:16px" }, [shiftCard]), badges, teamStatsCard);
+  return card;
 }
 
 // ---------- Lines & pairs ----------
@@ -1103,6 +1129,8 @@ function viewPlayers() {
   return page("Players", "Season numbers for every skater in scope.", card);
 }
 
+const PLAYER_TABS = [["overview", "Overview"], ["shooting", "Shooting"], ["puck", "Puck play"], ["numbers", "All numbers"]];
+
 function playerDetail(a, s) {
   const back = el("button", { class: "link", text: "← All players", onclick: () => { state.player = null; render(); } });
   const t = s.totals;
@@ -1119,6 +1147,12 @@ function playerDetail(a, s) {
     { label: "EV goals on ice", value: `${t.on_ice_goals_for}–${t.on_ice_goals_against}`, note: `+/- ${signed(t.plus_minus, 0)}` },
     { label: "InStat Index", value: fmt(s.instat_mean, 0), note: s.instat_sd ? `± ${fmt(s.instat_sd, 0)} game to game` : "" },
   ]);
+  const [tabs, current] = pageTabs("playerTab", PLAYER_TABS);
+  const body = { overview: playerOverview, shooting: playerShooting, puck: playerPuckPlay, numbers: playerNumbers }[current](a, s);
+  return [back, head, kpis, tabs, ...[].concat(body)];
+}
+
+function playerOverview(a, s) {
   const PERCENTILE_ORDER = ["InStat Index", "Points/60", "Shots/60", "xG/60", "CF%", "CF% rel", "Passes/60", "Recoveries/60", "Battles won %", "Blocks/60"];
   const ranking = [...a.rankings.forwards, ...a.rankings.defence].find((r) => r.player.id === s.player.id);
   const form = a.rankings.form.find((r) => r.player.id === s.player.id);
@@ -1154,16 +1188,36 @@ function playerDetail(a, s) {
   ], units, { sortKey: "toi" });
   const partners = a.pairs.filter((p) => p.a.id === s.player.id || p.b.id === s.player.id).map((p) => ({ partner: p.a.id === s.player.id ? p.b : p.a, pair: p }));
   const partnerCard = chartCard("Most frequent linemates", "Even-strength minutes together (from shifts).", (c) => hBarChart(c, partners.sort((x, y) => y.pair.together.toi - x.pair.together.toi).slice(0, 10).map(({ partner, pair }) => ({ label: partner.name, value: pair.together.toi / 60, note: `goals ${pair.together.goals_for}–${pair.together.goals_against}${pair.corsi ? ` · CF% ${pct(pair.corsi.corsi_pct, 0)}` : ""}` })), { valueFormat: (v) => `${fmt(v, 0)} min`, labelWidth: 150 }), null);
-  const shotCard = t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Where they shoot from", "Shots by zone over the games in scope.", t.shot_zones) : null;
-  const battleCard = t.battle_areas.some((x) => x.battles > 0) ? battleMapCard("Puck battles by area", "Where they win and lose battles (our net on the left).", t.battle_areas) : null;
-  const detailBody = el("div");
-  const detailCard = more("Every InStat number (latest game in scope)", detailBody);
-  dataTable(detailBody, [
+  return [
+    el("div", { class: "grid two" }, [ratingCard, trendCard, partnerCard, unitsCard].filter(Boolean)),
+    more("More: percentiles, ice time, selected game", el("div", { class: "grid two" }, [percentileCard, toiCard, focus].filter(Boolean))),
+  ];
+}
+
+function playerShooting(a, s) {
+  const t = s.totals;
+  const cards = [
+    t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Where they shoot from", "Shots by zone over the games in scope.", t.shot_zones) : null,
+  ].filter(Boolean);
+  return cards.length ? el("div", { class: "grid two" }, cards) : emptyNote("No shots in the games in scope.");
+}
+
+function playerPuckPlay(a, s) {
+  const t = s.totals;
+  const cards = [
+    t.battle_areas.some((x) => x.battles > 0) ? battleMapCard("Puck battles by area", "Where they win and lose battles (our net on the left).", t.battle_areas) : null,
+  ].filter(Boolean);
+  return cards.length ? el("div", { class: "grid two" }, cards) : emptyNote("No puck battles in the games in scope.");
+}
+
+function playerNumbers(a, s) {
+  const card = el("div", { class: "card" }, [cardTitle("Every InStat number (latest game in scope)"), el("div")]);
+  dataTable(card.lastChild, [
     { key: "group", label: "Table", left: true },
     { key: "label", label: "Stat", left: true },
     { key: "value", label: "Value", value: (r) => r.value.text },
   ], s.focus_details);
-  return [back, head, kpis, el("div", { class: "grid two" }, [ratingCard, trendCard, partnerCard, unitsCard, shotCard, battleCard].filter(Boolean)), more("More: percentiles, ice time, selected game", el("div", { class: "grid two" }, [percentileCard, toiCard, focus].filter(Boolean))), el("div", { style: "height:16px" }), detailCard];
+  return card;
 }
 
 // ---------- Goalies ----------
