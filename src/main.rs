@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use hockey_stats::analysis::{Request, analyse};
 use hockey_stats::error::Error;
 use hockey_stats::ingest::{build_games, parse_document};
-use hockey_stats::server;
+use hockey_stats::server::{self, RunningInstance};
 use hockey_stats::store::{self, Store};
 use hockey_stats::web;
 
@@ -136,12 +136,20 @@ fn spawn_background_server(options: &Options) -> Result<(), Error> {
 
 fn run_app(options: &Options) -> Result<(), Error> {
     std::fs::create_dir_all(&options.data_dir)?;
-    if let Some(url) = server::running_instance(&options.data_dir) {
-        eprintln!("Hockey Stats is already running: {url}");
-        if options.open_browser {
-            server::open_browser(&url)?;
+    let build = server::build_id()?;
+    match server::running_instance(&options.data_dir, &build) {
+        Some(RunningInstance::Current(url)) => {
+            eprintln!("Hockey Stats is already running: {url}");
+            if options.open_browser {
+                server::open_browser(&url)?;
+            }
+            return Ok(());
         }
-        return Ok(());
+        Some(RunningInstance::Outdated(stale)) => {
+            eprintln!("stopping an older copy of Hockey Stats");
+            server::stop(&stale)?;
+        }
+        None => {}
     }
     if !options.foreground {
         return spawn_background_server(options);
@@ -151,7 +159,7 @@ fn run_app(options: &Options) -> Result<(), Error> {
         eprintln!("warning: {problem}");
     }
     let open = options.open_browser;
-    server::serve(&options.data_dir, store, options.port, |url| {
+    server::serve(&options.data_dir, store, options.port, build, |url| {
         eprintln!("Hockey Stats is running at {url}");
         if open
             && let Err(e) = server::open_browser(url)

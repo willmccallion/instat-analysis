@@ -27,19 +27,90 @@ const TOKEN_HEADER: &str = "X-Hockey-Token";
 struct LockFile {
     port: u16,
     token: String,
+    /// Fingerprint of the executable serving; absent in locks from older versions.
+    #[serde(default)]
+    build: String,
+}
+
+/// A server already running for this library.
+#[derive(Debug, Clone)]
+pub enum RunningInstance {
+    /// Same executable: reuse it.
+    Current(String),
+    /// A different (usually older) build: it must be stopped so its stale page isn't shown.
+    Outdated(StaleServer),
+}
+
+#[derive(Debug, Clone)]
+pub struct StaleServer {
+    port: u16,
+    token: String,
+}
+
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Identifies this executable, so a relaunch after an update replaces the old server.
+pub fn build_id() -> Result<String, Error> {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(&std::fs::read(std::env::current_exe()?)?);
+    Ok(format!("{:016x}", hasher.finish()))
 }
 
 fn lock_path(data_dir: &Path) -> PathBuf {
     data_dir.join("server.json")
 }
 
-/// If another instance is already serving this library, returns its URL.
+fn is_listening(port: u16) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok()
+}
+
+/// The server already serving this library, if any, and whether it is this build.
 #[must_use]
-pub fn running_instance(data_dir: &Path) -> Option<String> {
+pub fn running_instance(data_dir: &Path, build: &str) -> Option<RunningInstance> {
     let lock: LockFile = serde_json::from_slice(&std::fs::read(lock_path(data_dir)).ok()?).ok()?;
-    let address = SocketAddr::from(([127, 0, 0, 1], lock.port));
-    TcpStream::connect_timeout(&address, Duration::from_millis(300)).ok()?;
-    Some(format!("http://127.0.0.1:{}/?t={}", lock.port, lock.token))
+    if !is_listening(lock.port) {
+        return None;
+    }
+    Some(if lock.build == build {
+        RunningInstance::Current(format!("http://127.0.0.1:{}/?t={}", lock.port, lock.token))
+    } else {
+        RunningInstance::Outdated(StaleServer {
+            port: lock.port,
+            token: lock.token,
+        })
+    })
+}
+
+/// Asks an outdated server to quit and waits until its port is free.
+pub fn stop(server: &StaleServer) -> Result<(), Error> {
+    use std::io::Write;
+    let mut stream = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], server.port)), STOP_TIMEOUT)?;
+    stream.set_read_timeout(Some(STOP_TIMEOUT))?;
+    write!(
+        stream,
+        "POST /api/quit HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        server.token
+    )?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    if !response.starts_with("HTTP/1.1 200") {
+        return Err(Error::Io(std::io::Error::other(format!(
+            "the running copy refused to quit: {}",
+            response.lines().next().unwrap_or_default()
+        ))));
+    }
+    let started = Instant::now();
+    while is_listening(server.port) {
+        if started.elapsed() > STOP_TIMEOUT {
+            return Err(Error::Io(std::io::Error::other(
+                "an older copy is still running; use Quit app in its page, then open the app again",
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
 }
 
 /// 256 bits from the OS-seeded generator, hex-encoded.
@@ -205,7 +276,7 @@ impl App {
 
 /// Serves until the coach quits or the page has been gone for [`IDLE_SHUTDOWN`].
 /// `on_ready` receives the URL (including the token) once the port is bound.
-pub fn serve(data_dir: &Path, store: Store, port: u16, on_ready: impl FnOnce(&str)) -> Result<(), Error> {
+pub fn serve(data_dir: &Path, store: Store, port: u16, build: String, on_ready: impl FnOnce(&str)) -> Result<(), Error> {
     let server = Server::http(("127.0.0.1", port)).map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
     let bound = server
         .server_addr()
@@ -216,6 +287,7 @@ pub fn serve(data_dir: &Path, store: Store, port: u16, on_ready: impl FnOnce(&st
     let lock = LockFile {
         port: bound,
         token: token.clone(),
+        build,
     };
     std::fs::write(lock_path(data_dir), serde_json::to_vec(&lock)?)?;
     let url = format!("http://127.0.0.1:{bound}/?t={token}");
