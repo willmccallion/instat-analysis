@@ -6,3 +6,4 @@ pub mod model;
 pub mod parse;
 pub mod pdf;
 pub mod reconcile;
+pub mod stats;
