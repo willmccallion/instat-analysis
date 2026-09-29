@@ -13,13 +13,12 @@ use crate::analysis::Context;
 use crate::analysis::common::share_pct;
 use crate::analysis::team::TeamReport;
 use crate::cell::Cell;
-use crate::model::CellValue;
+use crate::model::{BattleArea, CellValue};
 
 const ATTACKS: &str = "OZ possession";
 const LOSSES: &str = "Puck losses";
 const RECOVERIES: &str = "Puck recoveries";
 const POSSESSION: &str = "Puck possessions at even";
-const BATTLES: &str = "Challenges";
 const SHOTS: &str = "Shots and goals";
 
 /// A team stat's primary number for (us, them), summed over games in scope.
@@ -239,8 +238,10 @@ fn puck_group(stats: &[PooledStat]) -> ComparisonGroup {
     }
 }
 
+/// Turns (ours, theirs, our share %) into the evidence sentence.
+type Describe = Box<dyn Fn(f64, f64, f64) -> String>;
+
 /// A candidate focus area: our and the opponent's count, judged against `benchmark`% for us.
-#[derive(Clone, Copy)]
 struct Candidate {
     area: &'static str,
     suggestion: &'static str,
@@ -248,7 +249,7 @@ struct Candidate {
     better: Better,
     benchmark: f64,
     min_events: f64,
-    describe: fn(f64, f64, f64) -> String,
+    describe: Describe,
 }
 
 const MIN_EVENTS: f64 = 8.0;
@@ -256,10 +257,70 @@ const CLEAR_GAP: f64 = 8.0;
 /// Fewer events than this are too few to call anything more than "watch".
 const MIN_VERDICT_EVENTS: f64 = 10.0;
 
-/// Battles are won by one side, so our defensive-zone wins are contested against the
-/// opponent's offensive-zone wins.
-fn battles(stats: &[PooledStat], ours_zone: &str, their_zone: &str) -> Option<(f64, f64)> {
-    Some((find(stats, BATTLES, ours_zone, 0)?.ours, find(stats, BATTLES, their_zone, 0)?.theirs))
+/// (focus area, where on the ice, practice idea) for each battle area.
+const fn battle_text(area: BattleArea) -> (&'static str, &'static str, &'static str) {
+    match area {
+        BattleArea::OwnSlot => (
+            "Net-front battles in our slot",
+            "in front of our net",
+            "Box-outs and stick-on-puck in front of our net; net-front 1-on-1s.",
+        ),
+        BattleArea::BehindOwnGoal => (
+            "Battles behind our net",
+            "behind our net",
+            "D retrievals under pressure: shoulder checks, wheel or reverse, centre support low.",
+        ),
+        BattleArea::OwnCorners => (
+            "Corner battles in our zone",
+            "in our corners",
+            "1-on-1 and 2-on-1 corner drills; body position and winning the wall.",
+        ),
+        BattleArea::OwnBlueLine => (
+            "Battles at our blue line",
+            "along our blue line",
+            "Winger wall work on breakouts: chip-outs and protecting the puck on the boards.",
+        ),
+        BattleArea::NeutralZone => (
+            "Neutral-zone battles",
+            "in the neutral zone",
+            "Loose-puck races and support in the neutral zone.",
+        ),
+        BattleArea::OppBlueLine => (
+            "Battles at their blue line",
+            "along their blue line",
+            "Holding the line: D pinches, keeping pucks in, winning rims.",
+        ),
+        BattleArea::OppCorners => (
+            "Corner battles in their zone",
+            "in their corners",
+            "Forecheck and cycle: 2-on-1 down low, protect the puck and win the wall.",
+        ),
+        BattleArea::BehindOppGoal => (
+            "Battles behind their net",
+            "behind their net",
+            "Below-the-goal-line play: first player on the puck, second player in support.",
+        ),
+        BattleArea::OppSlot => (
+            "Net-front battles in their slot",
+            "in front of their net",
+            "Net-front presence: screens, tips and winning rebounds.",
+        ),
+    }
+}
+
+fn battle_candidates(team: &TeamReport) -> impl Iterator<Item = Candidate> + '_ {
+    team.battle_areas.iter().map(|a| {
+        let (area, place, suggestion) = battle_text(a.area);
+        Candidate {
+            area,
+            suggestion,
+            values: Some((f64::from(a.won), f64::from(a.battles.saturating_sub(a.won)))),
+            better: Better::Higher,
+            benchmark: 50.0,
+            min_events: MIN_EVENTS,
+            describe: Box::new(move |o, t, s| format!("Won {o:.0} of {:.0} battles {place} ({s:.0}%).", o + t)),
+        }
+    })
 }
 
 fn candidates(stats: &[PooledStat], team: &TeamReport) -> Vec<Candidate> {
@@ -269,41 +330,20 @@ fn candidates(stats: &[PooledStat], team: &TeamReport) -> Vec<Candidate> {
             .find(|z| z.zone == zone)
             .map(|z| (f64::from(z.won), f64::from(z.lost)))
     };
-    let even = |area, suggestion, values, better, describe| Candidate {
+    let even = |area, suggestion, values, better, describe: fn(f64, f64, f64) -> String| Candidate {
         area,
         suggestion,
         values,
         better,
         benchmark: 50.0,
         min_events: MIN_EVENTS,
-        describe,
+        describe: Box::new(describe),
     };
     let pp_goals = f64::from(team.power_play_goals);
     let pp_misses = f64::from(team.power_play_chances.saturating_sub(team.power_play_goals));
     let kills = f64::from(team.times_short_handed.saturating_sub(team.power_play_goals_against));
     let conceded = f64::from(team.power_play_goals_against);
-    vec![
-        even(
-            "Puck battles in our zone",
-            "Board and net-front battles: 1-on-1 corner drills, box-outs, body position.",
-            battles(stats, "Defensive zone", "Offensive zone"),
-            Better::Higher,
-            |o, t, s| format!("Won {o:.0} of {:.0} battles in our zone ({s:.0}%).", o + t),
-        ),
-        even(
-            "Puck battles in their zone",
-            "Forecheck and retrievals: 2-on-1 down low, winning pucks off the wall.",
-            battles(stats, "Offensive zone", "Defensive zone"),
-            Better::Higher,
-            |o, t, s| format!("Won {o:.0} of {:.0} battles in their zone ({s:.0}%).", o + t),
-        ),
-        even(
-            "Neutral-zone battles",
-            "Loose-puck races and support in the neutral zone.",
-            battles(stats, "Neutral zone", "Neutral zone"),
-            Better::Higher,
-            |o, t, s| format!("Won {o:.0} of {:.0} neutral-zone battles ({s:.0}%).", o + t),
-        ),
+    [
         even(
             "Faceoffs in our zone",
             "Centre draw reps, plus wingers jumping in on D-zone faceoffs.",
@@ -346,7 +386,7 @@ fn candidates(stats: &[PooledStat], team: &TeamReport) -> Vec<Candidate> {
             better: Better::Higher,
             benchmark: 20.0,
             min_events: 1.0,
-            describe: |o, t, _| format!("{o:.0} goals on {:.0} power plays.", o + t),
+            describe: Box::new(|o, t, _| format!("{o:.0} goals on {:.0} power plays.", o + t)),
         },
         Candidate {
             area: "Penalty kill",
@@ -355,12 +395,15 @@ fn candidates(stats: &[PooledStat], team: &TeamReport) -> Vec<Candidate> {
             better: Better::Higher,
             benchmark: 80.0,
             min_events: 1.0,
-            describe: |o, t, _| format!("Killed {o:.0} of {:.0} penalties.", o + t),
+            describe: Box::new(|o, t, _| format!("Killed {o:.0} of {:.0} penalties.", o + t)),
         },
     ]
+    .into_iter()
+    .chain(battle_candidates(team))
+    .collect()
 }
 
-fn assess(candidate: Candidate) -> Option<FocusArea> {
+fn assess(candidate: &Candidate) -> Option<FocusArea> {
     let (ours, theirs) = candidate.values?;
     let events = ours + theirs;
     if events < candidate.min_events {
@@ -392,7 +435,7 @@ fn assess(candidate: Candidate) -> Option<FocusArea> {
 
 /// Areas sorted from most to least in need of work.
 fn focus_areas(stats: &[PooledStat], team: &TeamReport) -> Vec<FocusArea> {
-    let mut areas: Vec<FocusArea> = candidates(stats, team).into_iter().filter_map(assess).collect();
+    let mut areas: Vec<FocusArea> = candidates(stats, team).iter().filter_map(assess).collect();
     areas.sort_by(|a, b| {
         (a.verdict as u8)
             .cmp(&(b.verdict as u8))

@@ -1,6 +1,6 @@
 "use strict";
 
-const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, shotMap, shotZoneName, dataTable, chartCard } = window.Charts;
+const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, shotMap, shotZoneName, battleMap, battleAreaName, dataTable, chartCard } = window.Charts;
 
 // Plain-English definitions; any label matching a key explains itself on hover or tap.
 const PER_60 = "per 60 minutes of ice time, so players with different ice time compare fairly";
@@ -1049,6 +1049,7 @@ function playerDetail(a, s) {
   const partners = a.pairs.filter((p) => p.a.id === s.player.id || p.b.id === s.player.id).map((p) => ({ partner: p.a.id === s.player.id ? p.b : p.a, pair: p }));
   const partnerCard = chartCard("Most frequent linemates", "Even-strength minutes together (from shifts).", (c) => hBarChart(c, partners.sort((x, y) => y.pair.together.toi - x.pair.together.toi).slice(0, 10).map(({ partner, pair }) => ({ label: partner.name, value: pair.together.toi / 60, note: `goals ${pair.together.goals_for}–${pair.together.goals_against}${pair.corsi ? ` · CF% ${pct(pair.corsi.corsi_pct, 0)}` : ""}` })), { valueFormat: (v) => `${fmt(v, 0)} min`, labelWidth: 150 }), null);
   const shotCard = t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Where they shoot from", "Shots by zone over the games in scope.", t.shot_zones) : null;
+  const battleCard = t.battle_areas.some((x) => x.battles > 0) ? battleMapCard("Puck battles by area", "Where they win and lose battles (our net on the left).", t.battle_areas) : null;
   const detailBody = el("div");
   const detailCard = more("Every InStat number (latest game in scope)", detailBody);
   dataTable(detailBody, [
@@ -1056,7 +1057,7 @@ function playerDetail(a, s) {
     { key: "label", label: "Stat", left: true },
     { key: "value", label: "Value", value: (r) => r.value.text },
   ], s.focus_details);
-  return [back, head, kpis, el("div", { class: "grid two" }, [ratingCard, trendCard, partnerCard, unitsCard, shotCard].filter(Boolean)), more("More: percentiles, ice time, selected game", el("div", { class: "grid two" }, [percentileCard, toiCard, focus].filter(Boolean))), el("div", { style: "height:16px" }), detailCard];
+  return [back, head, kpis, el("div", { class: "grid two" }, [ratingCard, trendCard, partnerCard, unitsCard, shotCard, battleCard].filter(Boolean)), more("More: percentiles, ice time, selected game", el("div", { class: "grid two" }, [percentileCard, toiCard, focus].filter(Boolean))), el("div", { style: "height:16px" }), detailCard];
 }
 
 // ---------- Goalies ----------
@@ -1174,15 +1175,52 @@ function comparisonCard(group) {
   ], group.items));
 }
 
+const BATTLE_COLUMNS = [
+  ["OwnSlot", "Our slot"], ["BehindOwnGoal", "Behind our net"], ["OwnCorners", "Our corners"], ["OwnBlueLine", "Our blue line"],
+  ["NeutralZone", "Neutral"],
+  ["OppBlueLine", "Their blue line"], ["OppCorners", "Their corners"], ["BehindOppGoal", "Behind their net"], ["OppSlot", "Their slot"],
+];
+
+function battleMapCard(title, description, areas) {
+  return chartCard(title, description, (c) => battleMap(c, areas), (c) => dataTable(c, [
+    { key: "area", label: "Area", left: true, format: battleAreaName },
+    { key: "won", label: "Won" },
+    { key: "battles", label: "Battles" },
+    { key: "pct", label: "Won %", value: (x) => (x.battles ? (100 * x.won) / x.battles : null), format: (v) => pct(v, 0), tone: "higher" },
+  ], areas));
+}
+
+function battlesByPlayer(a) {
+  const body = el("div");
+  const skaters = a.players.filter((p) => p.player.position !== "Goalie" && p.totals.battle_areas.some((x) => x.battles > 0));
+  const area = (p, id) => p.totals.battle_areas.find((x) => x.area === id);
+  dataTable(body, [
+    { key: "name", label: "Player", left: true, value: (p) => p.player.name },
+    { key: "total", label: "Battles", value: (p) => p.totals.battle_areas.reduce((sum, x) => sum + x.battles, 0) },
+    ...BATTLE_COLUMNS.map(([id, label]) => ({
+      key: id,
+      label,
+      tone: "higher",
+      value: (p) => { const x = area(p, id); return x && x.battles ? (100 * x.won) / x.battles : null; },
+      render: (p) => { const x = area(p, id); return x && x.battles ? `${x.won}/${x.battles}` : "—"; },
+      title: "won / battles; shaded by win % vs teammates",
+    })),
+  ], skaters, { sortKey: "total", onRow: (p) => goToPlayer(p.player.id) });
+  return more("Puck battles by player and area (won / total)", body);
+}
+
 function viewPlay() {
   const a = state.analysis;
   const t = a.team;
   const note = el("p", { class: "small muted", text: "InStat's PDFs give totals per game, not the play-by-play feed, so sequences between whistles (e.g. every neutral-zone regroup) can't be rebuilt. Positional attacks vs counter-attacks and entry types are the closest categories InStat provides." });
   return page("Possession & shots", "How we attack, enter the zone and manage the puck, compared with our opponents.",
     el("div", { class: "grid two" }, [
-      t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Our shot map", "Where our shots came from (all skaters, all strengths). Hover a zone for details.", t.shot_zones) : null,
-      ...a.style.groups.filter((g) => g.items.length).map(comparisonCard),
+      t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Our shots", "Where our shots came from (all skaters, all strengths). Hover a zone for details.", t.shot_zones) : null,
+      t.shot_zones_against.some((z) => z.shots > 0) ? shotMapCard("Shots against", "Where opponents shot on our net, from their shots table. Same layout: our net at the top.", t.shot_zones_against) : null,
     ].filter(Boolean)),
+    t.battle_areas.some((x) => x.battles > 0) ? el("div", { style: "margin-top:16px" }, [battleMapCard("Puck battles by area", "Where on the ice we win and lose one-on-one puck battles. Blue = winning most, red = losing most; hover an area for the counts.", t.battle_areas)]) : null,
+    t.battle_areas.some((x) => x.battles > 0) ? battlesByPlayer(a) : null,
+    el("div", { class: "grid two", style: "margin-top:16px" }, a.style.groups.filter((g) => g.items.length).map(comparisonCard)),
     note);
 }
 
@@ -1378,6 +1416,7 @@ function viewHelp() {
     ["Power analysis", "How many more games at the current usage would give an 80% chance of confirming a difference of the size currently estimated."],
     ["Passing lift", "Passes between two players divided by what their overall passing and receiving volumes predict (quasi-independence). Above 1 = a real connection."],
     ["Shot map", "Where shots came from, using InStat's seven zones: slot, high slot, left and right sides, and three spots along the blue line. Each zone shows shots / on goal; darker = more shots."],
+    ["Puck battles by area", "InStat splits every one-on-one puck battle by where it happened: in front of each net, behind each net, the corners, along each blue line, and the neutral zone. The map shows the share we won in each area; corners are one area drawn top and bottom."],
     ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],
     ["Practice focus", "Each area compares us with our opponents (50% = even; power play against 20%, penalty kill against 80%). An area is flagged only when it's 8+ points off and backed by at least 10 events; the drill ideas are starting points, not prescriptions."],
     ["Shift data", "Rebuilt from InStat's time-distribution chart. The reader checks itself: every player's +/- rebuilt from shifts must match InStat's own column, or the game shows a warning."],

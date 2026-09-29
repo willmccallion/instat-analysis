@@ -783,6 +783,97 @@ function shotMap(container, zones, options = {}) {
   ]));
 }
 
+// Full rink in a 300×130 box, our net on the left; corners are one area drawn top and bottom.
+const BATTLE_AREA_SHAPES = {
+  BehindOwnGoal: [[[0, 0], [22, 0], [22, 130], [0, 130]]],
+  OwnCorners: [[[22, 0], [80, 0], [80, 40], [22, 40]], [[22, 90], [80, 90], [80, 130], [22, 130]]],
+  OwnSlot: [[[22, 40], [80, 40], [80, 90], [22, 90]]],
+  OwnBlueLine: [[[80, 0], [105, 0], [105, 130], [80, 130]]],
+  NeutralZone: [[[105, 0], [195, 0], [195, 130], [105, 130]]],
+  OppBlueLine: [[[195, 0], [220, 0], [220, 130], [195, 130]]],
+  OppSlot: [[[220, 40], [278, 40], [278, 90], [220, 90]]],
+  OppCorners: [[[220, 0], [278, 0], [278, 40], [220, 40]], [[220, 90], [278, 90], [278, 130], [220, 130]]],
+  BehindOppGoal: [[[278, 0], [300, 0], [300, 130], [278, 130]]],
+};
+const BATTLE_AREA_NAMES = {
+  OwnSlot: "In front of our net",
+  BehindOwnGoal: "Behind our net",
+  OwnCorners: "Our corners",
+  OwnBlueLine: "Our blue line",
+  NeutralZone: "Neutral zone",
+  OppBlueLine: "Their blue line",
+  OppCorners: "Their corners",
+  BehindOppGoal: "Behind their net",
+  OppSlot: "In front of their net",
+};
+
+/**
+ * Full-rink puck-battle map. areas: [{area, battles, won}]; colour = win % (blue above 50,
+ * red below), labelled won / battles.
+ */
+function battleMap(container, areas, options = {}) {
+  const width = Math.min(measureWidth(container), options.maxWidth ?? 760);
+  const scale = width / 300;
+  const height = Math.round(130 * scale);
+  const id = `rink${Math.random().toString(36).slice(2)}`;
+  const root = svg("svg", { class: "chart", viewBox: "0 0 300 130", width, height, role: "img", "aria-label": options.title || "puck battles by area" });
+  const outline = "M24,0H276Q300,0 300,24V106Q300,130 276,130H24Q0,130 0,106V24Q0,0 24,0Z";
+  const clip = svg("clipPath", { id });
+  clip.append(svg("path", { d: outline }));
+  root.append(clip);
+  const layer = svg("g", { "clip-path": `url(#${id})` });
+  root.append(layer);
+  const byArea = new Map(areas.map((a) => [a.area, a]));
+  const text = (x, y, content, ink, size, weight = 600) => {
+    const node = svg("text", { x, y, "text-anchor": "middle", "pointer-events": "none", style: `fill:${ink};font-size:${size / scale}px;font-weight:${weight}` });
+    node.textContent = content;
+    layer.append(node);
+  };
+  for (const [area, polygons] of Object.entries(BATTLE_AREA_SHAPES)) {
+    const data = byArea.get(area) || { battles: 0, won: 0 };
+    const rate = data.battles ? (100 * data.won) / data.battles : null;
+    const fill = rate === null ? css("--surface-2") : divergingColor(Math.max(-1, Math.min(1, (rate - 50) / 25)));
+    const ink = rate === null ? css("--text-muted") : inkOn(fill);
+    polygons.forEach((points, i) => {
+      const shape = svg("polygon", { points: points.map((p) => p.join(",")).join(" "), fill, stroke: css("--surface-1"), "stroke-width": 2 / scale });
+      layer.append(shape);
+      attachTooltip(shape, BATTLE_AREA_NAMES[area], () => [
+        { value: `${data.won} of ${data.battles}`, name: "battles won" },
+        { value: rate === null ? "—" : `${Math.round(rate)}%`, name: area.endsWith("Corners") ? "win rate (both corners)" : "win rate" },
+      ]);
+      const cx = points.reduce((s, p) => s + p[0], 0) / points.length;
+      const behindNet = area.startsWith("Behind");
+      const cy = points.reduce((s, p) => s + p[1], 0) / points.length - (behindNet ? 28 : 0);
+      const narrow = behindNet || area.endsWith("BlueLine");
+      if (i === 0) {
+        text(cx, cy - 2, rate === null ? "—" : `${Math.round(rate)}%`, ink, narrow ? 11 : 13);
+        text(cx, cy + 10 / scale + 1, `${data.won}/${data.battles}`, ink, 10, 400);
+      } else {
+        text(cx, cy + 3, "same area", ink, 9, 400);
+      }
+    });
+  }
+  const line = (x, color, w) => svg("line", { x1: x, x2: x, y1: 0, y2: 130, stroke: color, "stroke-width": w / scale, "pointer-events": "none", opacity: 0.8 });
+  root.append(
+    line(22, css("--div-neg"), 1), line(278, css("--div-neg"), 1), line(150, css("--div-neg"), 1.5),
+    line(105, css("--series-1"), 3), line(195, css("--series-1"), 3),
+    svg("rect", { x: 17, y: 60, width: 5, height: 10, fill: "none", stroke: css("--text-muted"), "stroke-width": 1.5 / scale, "pointer-events": "none" }),
+    svg("rect", { x: 278, y: 60, width: 5, height: 10, fill: "none", stroke: css("--text-muted"), "stroke-width": 1.5 / scale, "pointer-events": "none" }),
+    svg("path", { d: outline, fill: "none", stroke: css("--axis"), "stroke-width": 1.5 / scale, "pointer-events": "none" }),
+  );
+  container.replaceChildren(root);
+  container.append(el("div", { class: "legend" }, [
+    el("span", {}, [el("span", { class: "key", style: `background:${divergingColor(-1)}` }), "losing most battles"]),
+    el("span", {}, [el("span", { class: "key", style: `background:${divergingColor(0)}` }), "even"]),
+    el("span", {}, [el("span", { class: "key", style: `background:${divergingColor(1)}` }), "winning most"]),
+    el("span", { class: "muted", text: "our net on the left · % won, then won/total" }),
+  ]));
+}
+
+function battleAreaName(area) {
+  return BATTLE_AREA_NAMES[area] || area;
+}
+
 function shotZoneName(zone) {
   return SHOT_ZONE_NAMES[zone] || zone;
 }
@@ -890,6 +981,6 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
   hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
-  shotMap, shotZoneName, dataTable, chartCard, sequentialColor, divergingColor,
+  shotMap, shotZoneName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor,
 };
 })();
