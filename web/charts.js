@@ -282,6 +282,90 @@ function hBarChart(container, rows, options = {}) {
 }
 
 /**
+ * Contribution ("waterfall") chart in the style of a SHAP plot: starts at `start`, then one
+ * floating bar per part, biggest first, going right when it adds and left when it takes
+ * away, and ends at the total. parts: [{label, value, note?}]; parts smaller than
+ * options.minPart (default 0) are folded into one "other" row. options.startLabel /
+ * options.endLabel name the first and last rows; options.valueFormat formats values.
+ */
+function contributionChart(container, start, parts, options = {}) {
+  const format = options.valueFormat || ((v) => signed(v, 1));
+  const small = parts.filter((p) => Math.abs(p.value) < (options.minPart ?? 0));
+  const shown = parts.filter((p) => Math.abs(p.value) >= (options.minPart ?? 0)).sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+  if (small.length) shown.push({ label: `${small.length} other${small.length === 1 ? "" : "s"}`, value: small.reduce((sum, p) => sum + p.value, 0), note: small.map((p) => p.label).join(", "), other: true });
+  const end = shown.reduce((sum, p) => sum + p.value, start);
+  const steps = [];
+  let running = start;
+  for (const part of shown) {
+    steps.push({ ...part, from: running, to: running + part.value });
+    running += part.value;
+  }
+  const width = measureWidth(container);
+  const labelWidth = options.labelWidth ?? Math.min(210, Math.max(110, width * 0.3));
+  const rowHeight = 24;
+  const barHeight = 14;
+  const margin = { top: 6, right: 64, bottom: 26, left: labelWidth };
+  const rowCount = steps.length + 2;
+  const height = margin.top + margin.bottom + rowCount * rowHeight;
+  const edges = [start, end, ...steps.flatMap((s) => [s.from, s.to]), ...(options.reference !== undefined ? [options.reference] : [])];
+  let min = Math.min(...edges);
+  let max = Math.max(...edges);
+  const pad = (max - min) * 0.12 || 1;
+  min -= pad;
+  max += pad;
+  const ticks = niceTicks(min, max, Math.max(3, Math.floor((width - labelWidth) / 90)));
+  min = Math.min(min, ticks[0]);
+  max = Math.max(max, ticks[ticks.length - 1]);
+  const x = (v) => margin.left + ((v - min) / (max - min)) * (width - margin.left - margin.right);
+  const root = svg("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, width, height, role: "img", "aria-label": options.title || "contributions" });
+  for (const t of ticks) {
+    root.append(svg("line", { class: "grid-line", x1: x(t), x2: x(t), y1: margin.top, y2: height - margin.bottom }));
+    root.append(svg("text", { x: x(t), y: height - 6, "text-anchor": "middle", class: "axis-label", text: options.tickFormat ? options.tickFormat(t) : fmt(t, 0) }));
+  }
+  const rowY = (i) => margin.top + i * rowHeight + (rowHeight - barHeight) / 2;
+  const marker = (i, value, label, tip) => {
+    const y = rowY(i);
+    const g = svg("g", { class: "mark" });
+    g.append(svg("text", { x: margin.left - 8, y: y + barHeight / 2 + 4, "text-anchor": "end", class: "value-label", text: label }));
+    g.append(svg("line", { x1: x(value), x2: x(value), y1: y - 3, y2: y + barHeight + 3, stroke: css("--text-primary"), "stroke-width": 2 }));
+    g.append(svg("text", { x: x(value) + 6, y: y + barHeight / 2 + 4, class: "value-label", text: options.totalFormat ? options.totalFormat(value) : fmt(value, 1) }));
+    g.append(svg("rect", { class: "hit", x: 0, y: margin.top + i * rowHeight, width, height: rowHeight }));
+    attachTooltip(g, label, tip);
+    root.append(g);
+  };
+  marker(0, start, options.startLabel || "Start", [{ value: options.totalFormat ? options.totalFormat(start) : fmt(start, 1), name: "" }]);
+  steps.forEach((step, k) => {
+    const i = k + 1;
+    const y = rowY(i);
+    const positive = step.value >= 0;
+    const color = step.other ? css("--deemphasis") : css(positive ? "--div-pos" : "--div-neg");
+    const g = svg("g", { class: "mark" });
+    const label = svg("text", { x: margin.left - 8, y: y + barHeight / 2 + 4, "text-anchor": "end", text: step.label });
+    if (definition(step.label)) {
+      label.setAttribute("class", "term-svg");
+      explain(label, step.label);
+    }
+    g.append(label);
+    const [a, b] = [x(Math.min(step.from, step.to)), x(Math.max(step.from, step.to))];
+    g.append(svg("rect", { x: a, y, width: Math.max(1.5, b - a), height: barHeight, rx: 3, fill: color }));
+    if (k + 1 < steps.length) {
+      g.append(svg("line", { x1: x(step.to), x2: x(step.to), y1: y + barHeight, y2: y + rowHeight, stroke: css("--axis"), "stroke-dasharray": "2 2" }));
+    }
+    g.append(svg("text", { x: positive ? b + 6 : a - 6, y: y + barHeight / 2 + 4, "text-anchor": positive ? "start" : "end", class: "value-label", text: format(step.value) }));
+    g.append(svg("rect", { class: "hit", x: 0, y: margin.top + i * rowHeight, width, height: rowHeight }));
+    attachTooltip(g, step.label, [{ value: format(step.value), name: options.valueName || "", color }, ...(step.note ? [{ value: step.note, name: "" }] : [])]);
+    root.append(g);
+  });
+  marker(rowCount - 1, end, options.endLabel || "Total", [{ value: options.totalFormat ? options.totalFormat(end) : fmt(end, 1), name: "" }]);
+  container.replaceChildren(root);
+  container.append(el("div", { class: "legend" }, [
+    el("span", {}, [el("span", { class: "key", style: `background:${css("--div-pos")}` }), options.upLabel || "adds"]),
+    el("span", {}, [el("span", { class: "key", style: `background:${css("--div-neg")}` }), options.downLabel || "takes away"]),
+    el("span", { class: "muted", text: "biggest effect at the top" }),
+  ]));
+}
+
+/**
  * Lines over an ordered x (dates or indices).
  * series: [{name, color, points: [{x, y, label?, hollow?}]}]
  */
@@ -1345,7 +1429,7 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
-  hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
+  hBarChart, contributionChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
   zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
 };
 })();

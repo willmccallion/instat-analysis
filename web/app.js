@@ -1,6 +1,6 @@
 "use strict";
 
-const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, inkOn } = window.Charts;
+const { el, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, term, hBarChart, contributionChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, inkOn } = window.Charts;
 
 // Plain-English definitions; any label matching a key explains itself on hover or tap.
 const PER_60 = "per 60 minutes of ice time, so players with different ice time compare fairly";
@@ -60,7 +60,7 @@ window.Charts.setGlossary({
   "+/-": "Plus/minus: even-strength and short-handed goals for minus goals against while on the ice (power-play goals don't count).",
   "InStat": "InStat Index: InStat's own overall rating for a game, based on every action the player made. Higher is better; roughly 100 is a typical game.",
   "InStat Index": "InStat's own overall rating for a game, based on every action the player made. Higher is better; roughly 100 is a typical game.",
-  "Rating": "This app's position rating out of 100: 50 = average among teammates at the same position, 65+ clearly above, 35 or less clearly below (15 points is one standard deviation). Built from Offence, Defence and Puck play stats compared with teammates at the same position, each weighted by importance (change the weights under Rankings → Customise the ranking).",
+  "Rating": "This app's position rating out of 100: 50 = the average skater at the same position in the games in scope, ours and the opponents', 65+ clearly above, 35 or less clearly below (15 points is one standard deviation). Built from Offence, Defence and Puck play stats compared with those same skaters, each weighted by importance (change the weights under Rankings → Customise the ranking).",
   "Form": "Last few games compared with the player's own usual level, in standard deviations. ▲ 1.0 means one typical game-to-game swing above normal.",
   "Off": "Offence part of the rating: points, goals, shots, chance quality (xG), shot attempts for, zone entries and recoveries in their zone, each weighted by importance.",
   "Def": "Defence part of the rating: shot share vs team, shot attempts and chances allowed on ice, own-zone giveaways, blocks and hits, each weighted by importance.",
@@ -92,7 +92,7 @@ window.Charts.setGlossary({
   "Goals together (EV)": "Even-strength goals for and against while both were on the ice.",
   "Shot attempts together": "Shot attempts for and against while both were on the ice (from InStat's line tables).",
   "Passes": "Passes between the two players, both directions.",
-  "SDs vs position": "Standard deviations above (+) or below (−) the average of teammates at the same position.",
+  "SDs vs position": "Standard deviations above (+) or below (−) the average skater at the same position in the same games, both teams (xG and passes: our players only).",
   "Expected points": "Standings points our chances would earn on average: every shot's xG decides how often each game is won, lost, lost in overtime or tied (2 points a win, 1 for an overtime loss or a tie).",
   "Deserved win %": "How often the shots both teams took would win us the game, counting overtime wins: each shot scores with its own xG, many thousands of times over.",
   "Pythagorean": "Expected share of games won from goals for and against (goals for² ÷ (goals for² + goals against²)); using xG instead shows what the chances deserved.",
@@ -119,6 +119,7 @@ const state = {
   gameTab: "overview",
   goalieTab: "overview",
   shotPeriod: "all",
+  replayGoal: 0,
   heatWeight: "attempts",
   goalie: null,
   unitTab: "defence_pairs",
@@ -149,7 +150,7 @@ const VIEWS = [
 
 const SUBVIEWS = {
   lines: [["units", "Lines"], ["chemistry", "Pair chemistry"], ["passing", "Passing"]],
-  team: [["team", "Team"], ["luck", "Luck & results"], ["play", "Possession & shots"], ["focus", "Practice focus"], ["goalies", "Goalies"]],
+  team: [["team", "Team"], ["luck", "Luck & results"], ["timing", "Goal timing"], ["usage", "Ice time & fatigue"], ["play", "Possession & shots"], ["focus", "Practice focus"], ["goalies", "Goalies"]],
   deep: [["impact", "Individual impact"], ["profiles", "Player styles"], ["xg", "Shot quality model"], ["advanced", "Statistical tests"]],
 };
 
@@ -889,10 +890,19 @@ function ratingScaleNote() {
   ];
   return el("div", { class: "callout", style: "margin:8px 0 12px" }, [
     el("div", { style: "font-weight:600;margin-bottom:4px", text: "How to read the numbers" }),
-    el("p", { class: "small", style: "margin:0 0 6px", text: "Every rating is out of 100 and compares a player with teammates at the same position over the games in scope. 50 is the average player. Each 15 points is one standard deviation (a typical gap between players): about two thirds of players land between 35 and 65, 65+ is clearly above average, 80+ is standing out (two standard deviations), and 35 or less is clearly below. Off, Def and Puck use the same scale for each part of the game. Ratings are relative to this team, not to other teams." }),
+    el("p", { class: "small", style: "margin:0 0 6px", text: "Every rating is out of 100 and compares a player with every skater at the same position in the games in scope, on both teams. 50 is the average skater in those games, so if we are better than our opponents most of our players sit above 50. Each 15 points is one standard deviation (a typical gap between players): about two thirds of players land between 35 and 65, 65+ is clearly above average, 80+ is standing out (two standard deviations), and 35 or less is clearly below. Off, Def and Puck use the same scale for each part of the game. xG and passes only exist for our players, so those two are compared among our players." }),
     el("div", { class: "pill-row" }, bands.map(([value, label, meaning]) => el("span", { class: "badge", style: `background:${scoreColor(value)};color:${Math.abs(value - 50) > 15 ? "#fff" : "inherit"}` }, [`${label} ${meaning}`]))),
     el("p", { class: "small muted", style: "margin:6px 0 0", text: "Click a player for their card." }),
   ]);
+}
+
+/** Where our qualified players sit on average against every skater in the same games. */
+function teamAverageNote(rows, group) {
+  const ratings = rows.filter((r) => r.qualified).map((r) => r.rating);
+  if (!ratings.length) return null;
+  const average = ratings.reduce((sum, v) => sum + v, 0) / ratings.length;
+  const verdict = average >= 53 ? "above" : average <= 47 ? "below" : "about level with";
+  return el("p", { class: "small", style: "margin:8px 0" }, [`Our ${group} average ${fmt(average, 0)}: ${verdict} the typical skater at the position in these games (50, both teams).`]);
 }
 
 function viewRankings() {
@@ -919,7 +929,7 @@ function viewRankings() {
       el("div", { class: "card" }, [
         cardTitle("Position rankings", custom ? customChip() : null),
         ratingScaleNote(),
-        tabs, rankingList(rows),
+        tabs, teamAverageNote(rows, state.rankingTab === "defence" ? "defence" : "forwards"), rankingList(rows),
       ]),
       weightsEditor(a),
       el("div", { class: "card", style: "margin-top:16px" }, [
@@ -931,12 +941,12 @@ function viewRankings() {
         cold.length ? formList(cold) : el("p", { class: "muted small", text: "Nobody yet." }),
       ]),
     ]),
-    more("How the rating is built, stat by stat", el("p", { class: "small muted", text: "Each stat is compared with same-position teammates (in standard deviations; positive is always good), after pulling low-ice-time players toward the average. Within Offence, Defence and Puck play each stat counts by its weight, and the three parts are combined by their weights (see Customise the ranking)." }), breakdown));
+    more("How the rating is built, stat by stat", el("p", { class: "small muted", text: "Each stat is compared with every skater at the same position in the same games, ours and the opponents' (in standard deviations; positive is always good), after pulling low-ice-time players toward the average. xG and passes are only in our Player report, so they are compared among our players. Within Offence, Defence and Puck play each stat counts by its weight, and the three parts are combined by their weights (see Customise the ranking)." }), breakdown));
 }
 
 // ---------- Single game ----------
 
-const GAME_TABS = [["overview", "Overview"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
+const GAME_TABS = [["overview", "Overview"], ["goals", "Goal replay"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
 
 function viewGame() {
   const a = state.analysis;
@@ -950,7 +960,7 @@ function viewGame() {
     queueMicrotask(refresh);
   }
   const [tabs, current] = pageTabs("gameTab", GAME_TABS);
-  const body = { overview: gameOverview, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
+  const body = { overview: gameOverview, goals: gameGoals, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
   return page("Single game", "Pick a game to see its shifts, goals and how each player compared with their usual.",
     el("div", { style: "margin-bottom:14px" }, [select]), tabs, ...[].concat(body));
 }
@@ -986,7 +996,8 @@ function gameOverview(a, timeline) {
     el("div", { class: "pill-row" }, list.map((b) => el("span", { class: "badge", text: b.badge }))),
   ]))) : null;
   const luck = a.luck.games.find((g) => g.game === timeline.game);
-  return [luck ? el("div", { style: "margin-bottom:16px" }, [deservedCard(luck)]) : null, compareCard, el("div", { style: "margin-top:16px" }, [shiftCard]), badges];
+  const why = luck ? chartCard(`Why it ended ${signed(luck.goals_for - luck.goals_against, 0)}`, "The goal differential built up from shot volume, chance quality, our finishing and our goaltending, biggest first.", (c) => splitChart(c, luck.split), null) : null;
+  return [luck ? el("div", { class: "grid two", style: "margin-bottom:16px" }, [deservedCard(luck), why]) : null, compareCard, el("div", { style: "margin-top:16px" }, [shiftCard]), badges];
 }
 
 function periodName(period) {
@@ -1449,11 +1460,30 @@ function playerDetail(a, s) {
   return [back, head, kpis, tabs, ...[].concat(body)];
 }
 
+/** SHAP-style breakdown: from the average skater's 50, what each stat added or took away. */
+function ratingBreakdownCard(ranking, position, form) {
+  const group = position === "Defence" ? "defence" : "forwards";
+  const parts = ranking.components.filter((c) => c.points !== null).map((c) => ({
+    label: c.metric, value: c.points, note: `${fmt(c.value, 2)} · ${signed(c.score, 1)} SD vs the average ${position === "Defence" ? "defenceman" : "forward"}`,
+  }));
+  const total = ranking.start + parts.reduce((sum, p) => sum + p.value, 0);
+  const clipped = Math.abs(total - ranking.rating) > 0.05;
+  const title = `Rating ${fmt(ranking.rating, 0)}/100${ranking.rank ? `, #${ranking.rank} of our ${group}` : ""}`;
+  const description = `Why: start from the average skater at the position in these games (both teams), then each stat adds or takes away rating points, biggest first.${clipped ? " The total is kept within 0–100." : ""}${form ? ` Form: ${signed(form.recent_z, 1)} SD vs their usual over the last ${form.recent_games} games.` : ""}`;
+  return chartCard(title, description, (c) => contributionChart(c, ranking.start, parts, {
+    startLabel: "Average skater", endLabel: "Rating", minPart: 0.5, valueName: "rating points", totalFormat: (v) => fmt(v, 0), upLabel: "raises the rating", downLabel: "lowers it",
+  }), (c) => dataTable(c, [
+    { key: "metric", label: "Stat", left: true }, { key: "value", label: "Value", format: (v) => fmt(v, 2) },
+    { key: "score", label: "SDs vs position", format: (v) => signed(v, 2), tone: "higher" },
+    { key: "points", label: "Rating points", format: (v) => signed(v, 1), tone: "higher" },
+  ], ranking.components, { sortKey: "points" }), { source: state.analysis.rating_options.default_weights ? [] : customChip() });
+}
+
 function playerOverview(a, s) {
   const PERCENTILE_ORDER = ["InStat Index", "Points/60", "Shots/60", "xG/60", "CF%", "CF% rel", "Passes/60", "Recoveries/60", "Battles won %", "Blocks/60"];
   const ranking = [...a.rankings.forwards, ...a.rankings.defence].find((r) => r.player.id === s.player.id);
   const form = a.rankings.form.find((r) => r.player.id === s.player.id);
-  const ratingCard = ranking ? chartCard(`Rating ${fmt(ranking.rating, 0)}/100${ranking.rank ? `, #${ranking.rank} of the ${s.player.position === "Defence" ? "defence" : "forwards"}` : ""}`, `Each stat vs other ${s.player.position === "Defence" ? "defencemen" : "forwards"} (right = better).${form ? ` Form: ${signed(form.recent_z, 1)} SD vs their usual over the last ${form.recent_games} games.` : ""}`, (c) => hBarChart(c, ranking.components.filter((x) => x.score !== null).map((x) => ({ label: x.metric, value: x.score, color: x.score >= 0 ? css("--div-pos") : css("--div-neg"), note: `value ${fmt(x.value, 2)}` })), { min: -3, max: 3, valueFormat: (v) => signed(v, 1), labelWidth: 160, valueName: "SDs vs position" }), null, { source: a.rating_options.default_weights ? [] : customChip() }) : null;
+  const ratingCard = ranking ? ratingBreakdownCard(ranking, s.player.position, form) : null;
   const pctRows = PERCENTILE_ORDER.filter((label) => label in s.percentiles).map((label) => ({ label, value: s.percentiles[label] }));
   const percentileCard = chartCard("Where they rank on this team", "Percentile among qualified skaters (50 = middle of the team).", (c) => (pctRows.length ? percentileBars(c, pctRows) : c.replaceChildren(el("p", { class: "muted", text: "Below the minimum ice time for ranking." }))), (c) => dataTable(c, [{ key: "label", label: "Metric", left: true }, { key: "value", label: "Percentile", format: (v) => fmt(v, 0) }], pctRows));
   const trendPoints = s.trend.map((p, i) => ({ ...p, i }));
@@ -2238,6 +2268,13 @@ const SPLIT_PARTS = [
   ["goaltending", "Our goaltending", "Their xG minus the goals they scored (also reflects blocked and missed attempts)."],
 ];
 
+/** Goal differential built up from its four parts, SHAP style. */
+function splitChart(container, split) {
+  contributionChart(container, 0, SPLIT_PARTS.map(([key, label, note]) => ({ label, value: split[key], note })), {
+    startLabel: "Even game", endLabel: "Goal differential", valueName: "goals", totalFormat: (v) => signed(v, 1), tickFormat: (v) => signed(v, 0), upLabel: "helped us", downLabel: "hurt us",
+  });
+}
+
 function viewLuck() {
   const a = state.analysis;
   const L = a.luck;
@@ -2265,9 +2302,7 @@ function viewLuck() {
     { key: "xp", label: "Exp. points", value: (g) => g.deserved.expected_points, format: (v) => fmt(v, 2) },
     { key: "points", label: "Points" },
   ], L.games, { sortKey: "date" }));
-  const splitCard = chartCard("Where the goal differential came from", "Each part in goals. Volume and quality are how we played; finishing and goaltending swing more with luck from game to game.", (c) => hBarChart(c, SPLIT_PARTS.map(([key, label, note]) => ({
-    label, value: L.split[key], color: L.split[key] >= 0 ? css("--div-pos") : css("--div-neg"), note,
-  })), { valueFormat: (v) => signed(v, 1), labelWidth: 140, valueName: "goals" }), (c) => dataTable(c, [
+  const splitCard = chartCard("Where the goal differential came from", "From an even game to our goal differential, biggest part first. Volume and quality are how we played; finishing and goaltending swing more with luck from game to game.", (c) => splitChart(c, L.split), (c) => dataTable(c, [
     { key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true },
     ...SPLIT_PARTS.map(([key, label]) => ({ key, label, value: (g) => g.split[key], format: (v) => signed(v, 2), tone: "higher" })),
     { key: "gd", label: "Goal diff.", value: (g) => g.goals_for - g.goals_against, format: (v) => signed(v, 0) },
@@ -2305,6 +2340,211 @@ function viewXgModel() {
     el("p", { class: "small" }, [holdout]), el("div", { class: "grid two" }, [curve, fit]));
 }
 
+const REPLAY_SECONDS = 60;
+/** How many seconds of game time pass per second of animation. */
+const REPLAY_SPEED = 6;
+/** A power play ends with the goal scored on it, so the moment of the goal reads the band just before. */
+const GOAL_SETTLE = 0.5;
+
+function goalLabel(goal) {
+  return `${gameClock(goal.time)} ${goal.scored_by === "Us" ? "Goal for" : "Goal against"} (${goal.score[0]}–${goal.score[1]})`;
+}
+
+/** Our manpower at time t from the timeline's advantage bands. */
+function manpowerAt(timeline, t) {
+  const band = timeline.advantages.find(([start, end]) => start < t && t <= end);
+  if (!band) return "Even strength";
+  return band[2] === "Us" ? "Our power play" : "We're short-handed";
+}
+
+/**
+ * The minute before a goal, replayed: our skaters' shifts fill in as the clock runs, each
+ * on-ice player's time into the shift counts up, and the shot appears on the rink at the end.
+ */
+function goalReplay(timeline, goal) {
+  const from = Math.max(Math.floor((goal.time - 0.001) / 1200) * 1200, goal.time - REPLAY_SECONDS);
+  const span = goal.time - from;
+  const rows = timeline.players
+    .map((p) => ({ ...p, shifts: p.shifts.filter(([a, b]) => Math.min(b, goal.time) - Math.max(a, from) >= 0.5) }))
+    .filter((p) => p.shifts.length)
+    .sort((x, y) => Number(goal.on_ice.includes(y.player.id)) - Number(goal.on_ice.includes(x.player.id)) || x.player.name.localeCompare(y.player.name));
+  const width = 640;
+  const labelWidth = 150;
+  const counterWidth = 70;
+  const rowHeight = 20;
+  const top = 26;
+  const height = top + rows.length * rowHeight + 24;
+  const x = (t) => labelWidth + ((t - from) / span) * (width - labelWidth - counterWidth);
+  const root = window.Charts.svg("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, width: "100%", role: "img", "aria-label": "goal replay" });
+  const svgEl = window.Charts.svg;
+  for (let s = 0; s <= span; s += 10) {
+    const t = goal.time - s;
+    root.append(svgEl("line", { class: "grid-line", x1: x(t), x2: x(t), y1: top - 6, y2: height - 20 }));
+    root.append(svgEl("text", { x: x(t), y: height - 6, "text-anchor": "middle", class: "axis-label", text: s === 0 ? "goal" : `−${s}s` }));
+  }
+  const fills = [];
+  const counters = [];
+  rows.forEach((row, i) => {
+    const y = top + i * rowHeight;
+    const onForGoal = goal.on_ice.includes(row.player.id);
+    root.append(svgEl("text", { x: labelWidth - 8, y: y + 13, "text-anchor": "end", class: onForGoal ? "value-label" : "", text: `${row.player.jersey ?? ""} ${row.player.name}` }));
+    for (const [a, b] of row.shifts) {
+      const [s0, s1] = [Math.max(a, from), Math.min(b, goal.time)];
+      root.append(svgEl("rect", { x: x(s0), y: y + 4, width: Math.max(1, x(s1) - x(s0)), height: 11, rx: 3, fill: css("--surface-2"), stroke: css("--axis"), "stroke-width": 0.5 }));
+      const fill = svgEl("rect", { x: x(s0), y: y + 4, width: 0, height: 11, rx: 3, fill: css(onForGoal ? (goal.scored_by === "Us" ? "--good" : "--critical") : "--series-1") });
+      root.append(fill);
+      fills.push({ fill, a: s0, b: s1 });
+    }
+    const counter = svgEl("text", { x: width - counterWidth + 8, y: y + 13, class: "axis-label", text: "" });
+    root.append(counter);
+    counters.push({ counter, shifts: row.shifts });
+  });
+  const playhead = svgEl("line", { x1: x(from), x2: x(from), y1: top - 8, y2: height - 20, stroke: css("--text-primary"), "stroke-width": 1.5 });
+  root.append(playhead);
+  const clockText = el("div", { class: "replay-clock", style: "font-weight:600;font-variant-numeric:tabular-nums" });
+  const manpower = el("div", { class: "small muted" });
+  const rink = el("div", { style: "transition:opacity .4s;opacity:0.15" });
+  const shot = goal.shot;
+  const shotNote = el("p", { class: "small", style: "margin:6px 0 0" }, [shot
+    ? `${goal.scored_by === "Us" ? (shot.shooter ? shot.shooter.name : "Our shot") : `Their #${shot.jersey ?? "?"}`} from ${fmt(shotDistance(shot.at), 0)} ft${shot.xg !== null && shot.xg !== undefined ? `, a ${pct(100 * shot.xg, 0)} chance (xG ${fmt(shot.xg, 2)})` : ""}.`
+    : "The shooting chart can't place this goal: the team scored more than once that period and InStat's chart doesn't say which marker came first."]);
+  requestAnimationFrame(() => {
+    if (shot) shotPlot(rink, [{ at: shot.at, goal: true, xg: shot.xg }], { goalColor: goal.scored_by === "Us" ? "--good" : "--critical", sizeByXg: true, maxWidth: 300, tip: () => ({ title: "Goal", rows: [] }) });
+  });
+  const slider = el("input", { type: "range", min: 0, max: span, step: 0.1, value: 0, style: "width:100%" });
+  let now = from;
+  let playing = false;
+  let last = null;
+  const draw = () => {
+    playhead.setAttribute("x1", x(now));
+    playhead.setAttribute("x2", x(now));
+    for (const { fill, a, b } of fills) fill.setAttribute("width", Math.max(0, x(Math.min(b, now)) - x(a)) * (now > a ? 1 : 0));
+    for (const { counter, shifts } of counters) {
+      const current = shifts.find(([a, b]) => a <= now && now <= b);
+      counter.textContent = current ? `${Math.round(now - current[0])}s on` : "";
+    }
+    clockText.textContent = `${gameClock(now)} · ${Math.round(goal.time - now)}s to the goal`;
+    manpower.textContent = manpowerAt(timeline, Math.min(now, goal.time - GOAL_SETTLE));
+    rink.style.opacity = now >= goal.time - GOAL_SETTLE ? "1" : "0.15";
+    slider.value = String(now - from);
+  };
+  const button = el("button", { class: "primary", text: "▶ Play" });
+  const tick = (stamp) => {
+    if (!playing) return;
+    if (last !== null) now = Math.min(goal.time, now + ((stamp - last) / 1000) * REPLAY_SPEED);
+    last = stamp;
+    draw();
+    if (now >= goal.time) { playing = false; button.textContent = "↺ Replay"; return; }
+    requestAnimationFrame(tick);
+  };
+  button.addEventListener("click", () => {
+    if (playing) { playing = false; button.textContent = "▶ Play"; return; }
+    if (now >= goal.time) now = from;
+    playing = true;
+    last = null;
+    button.textContent = "❚❚ Pause";
+    requestAnimationFrame(tick);
+  });
+  slider.addEventListener("input", () => { playing = false; button.textContent = "▶ Play"; now = Math.min(goal.time, from + Number(slider.value) + (Number(slider.value) >= span - 0.1 ? 0.1 : 0)); draw(); });
+  draw();
+  const onIce = rows.filter((r) => goal.on_ice.includes(r.player.id)).map((r) => {
+    const shift = r.shifts.find(([a, b]) => a <= goal.time && goal.time <= b + 0.5);
+    return { name: r.player.name, into: shift ? goal.time - shift[0] : null };
+  });
+  const table = el("div");
+  dataTable(table, [{ key: "name", label: "On the ice for the goal", left: true }, { key: "into", label: "Seconds into their shift", format: (v) => fmt(v, 0) }], onIce, { sortKey: "into" });
+  return el("div", { class: "grid two" }, [
+    el("div", { class: "card" }, [
+      el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px" }, [button, clockText, manpower]),
+      slider, root,
+      el("p", { class: "small muted", text: `Our skaters in the ${Math.round(span)} seconds before the goal; the players on the ice for it are listed first and coloured. The counter shows how long each has been out. InStat's reports have shifts and goal times, not the plays in between, so passes and the opponent's skaters can't be shown.` }),
+    ]),
+    el("div", { class: "card" }, [cardTitle("Where it went in from"), rink, shotNote, el("div", { style: "margin-top:12px" }, [table])]),
+  ]);
+}
+
+function gameGoals(a, timeline) {
+  if (!timeline.goals.length) return emptyNote("No goals in this game.");
+  const index = Math.min(state.replayGoal, timeline.goals.length - 1);
+  const pick = el("div", { class: "segmented", style: "margin-bottom:14px;flex-wrap:wrap" }, timeline.goals.map((g, i) => el("button", {
+    class: i === index ? "on" : "", text: goalLabel(g), onclick: () => { state.replayGoal = i; render(); },
+  })));
+  return [pick, goalReplay(timeline, timeline.goals[index])];
+}
+
+function recordText(r) {
+  const extra = r.overtime_losses || r.ties ? `-${r.overtime_losses}${r.ties ? `-${r.ties}` : ""}` : "";
+  return `${r.wins}-${r.losses}${extra}`;
+}
+
+function viewTiming() {
+  const a = state.analysis;
+  const t = a.timing;
+  const kpis = tiles([
+    { label: "Scoring first", value: recordText(t.scored_first), note: "record when we score the first goal" },
+    { label: "Conceding first", value: recordText(t.conceded_first), note: "record when they score first" },
+    { label: "Comebacks", value: `${t.comebacks} of ${t.games_trailed}`, note: "games we trailed and still took points" },
+    { label: "Leads lost", value: `${t.blown_leads} of ${t.games_led}`, note: "games we led and then lost" },
+  ]);
+  const segments = chartCard("Goals by stretch of the game", "Every five minutes of regulation (and overtime), goals for and against over the games in scope.", (c) => groupedColumns(c, t.segments.map((x) => ({
+    label: x.end_minute === null ? "OT" : `${x.start_minute}–${x.end_minute}`, values: [x.goals_for, x.goals_against],
+  })), [{ name: "Goals for", color: css("--series-1") }, { name: "Goals against", color: css("--series-2") }]), (c) => dataTable(c, [
+    { key: "stretch", label: "Minutes", left: true, value: (x) => (x.end_minute === null ? "OT" : `${x.start_minute}–${x.end_minute}`) },
+    { key: "goals_for", label: "For" }, { key: "goals_against", label: "Against" },
+  ], t.segments));
+  const leadName = { Leading: "Leading", Tied: "Tied", Trailing: "Trailing" };
+  const leads = el("div", { class: "card" }, [cardTitle("How games end from each score after a period"), el("div")]);
+  dataTable(leads.lastChild, [
+    { key: "after_period", label: "After period", left: true },
+    { key: "lead", label: "We were", left: true, format: (v) => leadName[v] },
+    { key: "games", label: "Games", value: (r) => r.record.wins + r.record.losses + r.record.overtime_losses + r.record.ties },
+    { key: "record", label: "Record (W-L-OTL-T)", value: (r) => recordText(r.record) },
+  ], t.by_lead);
+  const who = (team) => (team === "Us" ? "we" : "they");
+  const responses = el("div", { class: "card" }, [cardTitle(`The ${fmt(t.response_window_minutes, 0)} minutes after a goal`), el("p", { class: "desc", text: "Do goals come in bunches? Goals inside the windows after each goal against the rest of the game. The Statistical tests page says whether any difference is more than chance." }), el("div")]);
+  dataTable(responses.lastChild, [
+    { key: "q", label: "", left: true, value: (r) => `After ${who(r.after)} score, ${who(r.scorer)} scored`, wrap: true },
+    { key: "goals_in_windows", label: "Goals in windows" },
+    { key: "minutes_in_windows", label: "Minutes", format: (v) => fmt(v, 0) },
+    { key: "in60", label: "Per 60 in windows", value: (r) => (r.minutes_in_windows ? (60 * r.goals_in_windows) / r.minutes_in_windows : null), format: (v) => fmt(v, 1) },
+    { key: "out60", label: "Per 60 otherwise", value: (r) => (r.minutes_elsewhere ? (60 * r.goals_elsewhere) / r.minutes_elsewhere : null), format: (v) => fmt(v, 1) },
+    { key: "rate_ratio", label: "Ratio", format: (v) => (v === null ? "—" : `${fmt(v, 1)}×`) },
+  ], t.responses);
+  return page("Goal timing", "When goals happen, whether they come in bunches, and how games end from each score.", kpis, el("div", { class: "grid two" }, [segments, leads]), el("div", { style: "margin-top:16px" }, [responses]));
+}
+
+function viewUsage() {
+  const a = state.analysis;
+  const u = a.usage;
+  if (!u.players.length) return page("Ice time & fatigue", "No shift data in the games in scope.");
+  const bucketLabel = (b) => (b.to_seconds === null ? `${fmt(b.from_seconds, 0)}s+` : `${fmt(b.from_seconds, 0)}–${fmt(b.to_seconds, 0)}s`);
+  const fatigue = chartCard("Goals by how long our skaters had been out", `Even-strength goals per 60 minutes, split by how far into their shifts our skaters were on average. If the right-hand bars climb for goals against, shifts may be running too long. The test past ${fmt(u.tired_after_seconds, 0)} seconds is on the Statistical tests page.`, (c) => groupedColumns(c, u.fatigue.map((b) => ({
+    label: bucketLabel(b), values: [b.goals_for_per_60 ?? 0, b.goals_against_per_60 ?? 0],
+  })), [{ name: "Goals for /60", color: css("--series-1") }, { name: "Goals against /60", color: css("--series-2") }], { valueFormat: (v) => fmt(v, 1) }), (c) => dataTable(c, [
+    { key: "b", label: "Into the shift", left: true, value: bucketLabel }, { key: "minutes", label: "Minutes", format: (v) => fmt(v, 0) },
+    { key: "goals_for", label: "GF" }, { key: "goals_against", label: "GA" },
+    { key: "goals_for_per_60", label: "GF/60", format: (v) => fmt(v, 1) }, { key: "goals_against_per_60", label: "GA/60", format: (v) => fmt(v, 1) },
+  ], u.fatigue));
+  const trusted = [...u.players].filter((p) => p.shares.late_and_close !== null).sort((x, y) => y.shares.late_and_close - x.shares.late_and_close);
+  const late = chartCard("Who's out there late in close games", "Share of the last five minutes of the third, within a goal, that each skater played. Five skaters are on at once, so the whole team adds up to about 500%.", (c) => hBarChart(c, trusted.map((p) => ({
+    label: p.player.name, value: 100 * p.shares.late_and_close, note: `${pct(100 * (p.shares.leading ?? 0), 0)} when leading · ${pct(100 * (p.shares.trailing ?? 0), 0)} when trailing`,
+  })), { min: 0, max: 100, valueFormat: (v) => pct(v, 0), labelWidth: 160, valueName: "of late, close time" }), null);
+  const table = el("div", { class: "card", style: "margin-top:16px" }, [cardTitle("Every skater's shifts and usage"), el("div")]);
+  const share = (key) => ({ key, value: (p) => (p.shares[key] === null ? null : 100 * p.shares[key]), format: (v) => pct(v, 0) });
+  dataTable(table.lastChild, [
+    { key: "name", label: "Player", left: true, value: (p) => p.player.name },
+    { key: "games", label: "GP" }, { key: "shifts", label: "Shifts" },
+    { key: "average_shift", label: "Avg shift", format: (v) => clock(v) },
+    { key: "long_shifts", label: "Over 1 min", value: (p) => (p.long_shifts === null ? null : 100 * p.long_shifts), format: (v) => pct(v, 0), tone: "lower" },
+    { key: "average_rest", label: "Avg rest", format: (v) => clock(v) },
+    ...[["leading", "Leading"], ["tied", "Tied"], ["trailing", "Trailing"], ["late_and_close", "Late & close"], ["power_play", "PP"], ["penalty_kill", "PK"]].map(([key, label]) => ({
+      ...share(key), label: `${label} (${fmt(u.situation_minutes[key], 0)} min)`, title: `Share of the team's ${fmt(u.situation_minutes[key], 1)} minutes ${label.toLowerCase()} that the player was on the ice for`,
+    })),
+    { key: "linemate_rating", label: "Linemates' rating", format: (v) => fmt(v, 0), title: "Average rating of the teammates on the ice with them at even strength, weighted by time together" },
+  ], u.players, { sortKey: "shifts", onRow: (p) => goToPlayer(p.player.id) });
+  return page("Ice time & fatigue", "How long shifts run, who plays in which situations, and whether goals come late in shifts. Percentages are the share of the team's time in that situation each skater was on the ice for.", el("div", { class: "grid two" }, [fatigue, late]), table);
+}
+
 function viewHelp() {
   const terms = [
     ["CF% (Corsi for %)", "Our share of shot attempts (on goal, missed and blocked) while a player or unit is on the ice at even strength. 50% means even; the best predictor of future results available here."],
@@ -2325,10 +2565,14 @@ function viewHelp() {
     ["Luck & results", "Each shot's xG is its chance of scoring; combining every shot in a game gives the exact chance of each final score, so how often the game is won, lost, tied or goes to overtime. Overtime is 5 minutes of sudden death at each team's regulation scoring rate. Expected points add those up (2 for a win, 1 for an overtime loss or tie). The goal differential splits exactly into shot volume, chance quality, our finishing and our goaltending."],
     ["Goals saved above expected (GSAx)", "The xG of every attempt a goalie faced minus the goals allowed. Attempts include ones that missed or were blocked, so it also reflects the defence. When two goalies shared a game, each gets the team's xG in proportion to the shots on goal they faced. Weak spots on the net pull each area's save % toward the goalie's own average in proportion to how few shots it has."],
     ["Density maps", "Dots smoothed into a heat map (a Gaussian kernel about 7 ft wide on the half rink, 10 ft on the full rink) and shown per game, per 10 × 10 ft square, so seasons with different numbers of games compare fairly. Difference maps subtract one map from another: blue where the first is higher, red where the second is."],
+    ["Rating breakdown", "On each player card, the rating is built up like a SHAP plot from machine learning: start at the average skater (50), then each stat adds or takes away rating points, biggest first. Blue bars push the rating up, red pull it down; stats worth under half a point are grouped. Because the rating is a weighted sum, these points add up exactly to the rating."],
+    ["Goal timing", "Goals by five-minute stretch, records after scoring or conceding first and from each score after a period, comebacks, and whether goals come in bunches: goals in the two minutes after each goal against the rest of the game (tested with an exact conditional Poisson test on the Statistical tests page)."],
+    ["Ice time & fatigue", "From the shift chart: shift and rest lengths, each skater's share of the team's time when leading, tied, trailing, late in close games (last five minutes of the third, within a goal) and on special teams, and the average rating of their linemates. Fatigue splits even-strength time by how long our skaters had been out on average and compares goal rates."],
+    ["Goal replay", "The minute before each goal, replayed from the shift chart: who was on, how long they had been out, the manpower, and where the shot came from when the shooting chart shows it. InStat's reports have no play-by-play, so passes and the opponent's skaters can't be shown."],
     ["Shot map", "Where shots came from, using InStat's seven zones: slot, high slot, left and right sides, and three spots along the blue line. Each zone shows shots / on goal; darker = more shots."],
     ["Puck battles by area", "InStat splits every one-on-one puck battle by where it happened: in front of each net, behind each net, the corners, along each blue line, and the neutral zone. The map shows the share we won in each area; corners are one area drawn top and bottom."],
     ["Faceoffs at every dot", "From the faceoff rink on InStat's team stats page: our wins and losses at each of the nine dots (two in each end, four in the neutral zone, centre ice). The app checks the dots against the zone totals in InStat's faceoff table and leaves them out, with a warning, if they don't match."],
-    ["Player ratings", "Each stat is compared with same-position teammates (in standard deviations, after pulling low-ice-time players toward the average). Stats are grouped into Offence, Defence and Puck play; within each part a stat counts by its weight, and the parts are combined by their weights. The Recommended weights favour stats most tied to goals for and against; coaches can pick a preset or set any weight from 0 (left out) to 3 under Rankings → Customise the ranking, and reset to the recommended weights at any time."],
+    ["Player ratings", "Each stat is compared with every skater at the same position in the games in scope, ours and the opponents' from their pages of the Match report (in standard deviations, after pulling low-ice-time players toward the average). 50 is the average skater in those games, so the team's own average shows how it stacks up. xG and passes are only in our Player report, so they are compared among our players. Stats are grouped into Offence, Defence and Puck play; within each part a stat counts by its weight, and the parts are combined by their weights. The Recommended weights favour stats most tied to goals for and against; coaches can pick a preset or set any weight from 0 (left out) to 3 under Rankings → Customise the ranking, and reset to the recommended weights at any time."],
     ["Matchups", "InStat's challenge and hits distributions list every one-on-one puck battle and every hit between each of our skaters and each of theirs. Opponents are shown as InStat labels them (number and surname); bars show battles won minus lost, so one battle never looks like a 100% record."],
     ["Goalie breakdowns", "From the goalie's Player-report page: save % by distance, zone, shot type, screened or clear view, where on the net the shot was headed (seen from the shooter), and where the puck met the goalie (the goalie's own left and right). Colours compare each part with the goalie's overall save %. Rebound control splits every save by what happened to the puck next."],
     ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],
@@ -2357,7 +2601,7 @@ function render() {
   }
   const sections = {
     lines: { title: "Lines & pairs", views: { units: viewLines, chemistry: viewChemistry, passing: viewPassing } },
-    team: { title: "Team & goalies", views: { team: viewTeam, luck: viewLuck, play: viewPlay, focus: viewFocus, goalies: viewGoalies } },
+    team: { title: "Team & goalies", views: { team: viewTeam, luck: viewLuck, timing: viewTiming, usage: viewUsage, play: viewPlay, focus: viewFocus, goalies: viewGoalies } },
     deep: { title: "Deep dive", views: { impact: viewImpact, profiles: viewProfiles, xg: viewXgModel, advanced: viewAdvanced } },
   };
   const views = { games: viewGames, summary: viewSummary, rankings: viewRankings, players: viewPlayers, game: viewGame, help: viewHelp };

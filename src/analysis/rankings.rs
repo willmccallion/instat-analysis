@@ -1,11 +1,12 @@
 //! Position rankings from a transparent composite of game stats, and "form": how each
 //! player's recent games compare with their own usual level.
 //!
-//! Each stat is rated against same-position teammates (z-score), after pulling low-ice-time
-//! values toward the position average. Stats are grouped into Offence, Defence and Puck play
-//! and combined with the coach's weights (see [`rating_setup`](super::rating_setup)); the
-//! result is graded out of 100 against same-position teammates (average 50, 15 points per
-//! standard deviation).
+//! Each stat is rated against every skater at the position in the same games, ours and the
+//! opponents' (z-score), after pulling low-ice-time values toward the position average. Stats
+//! are grouped into Offence, Defence and Puck play and combined with the coach's weights (see
+//! [`rating_setup`](super::rating_setup)); the result is graded out of 100 against that same
+//! pool (average 50, 15 points per standard deviation), so a strong team can sit above 50.
+//! Stats only our Player report has (xG, passes) are compared among our players alone.
 
 use std::collections::BTreeMap;
 
@@ -15,7 +16,7 @@ use crate::analysis::Context;
 use crate::analysis::common::PlayerRef;
 use crate::analysis::players::{PlayerSeason, SkaterTotals};
 use crate::analysis::rating_setup::{Category, PositionWeights, RatingStat, RatingWeights};
-use crate::model::{Date, GameId, PlayerId, Position};
+use crate::model::{Date, Game, GameId, OpponentSkater, PlayerId, Position};
 use crate::stats::describe::{mean, sample_sd};
 
 /// Ice time that counts as much as the position average when shrinking a player's stats.
@@ -26,10 +27,18 @@ const RECENT_GAMES: usize = 3;
 const MIN_BASELINE_GAMES: usize = 4;
 const MIN_LOADED_GAMES_FOR_COMPOSITE_FORM: usize = 5;
 
+/// Whose skater a rating input is: only ours are ranked, but everyone sets the average.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Ours,
+    Opponent,
+}
+
 /// One player's stats in the period being rated.
 #[derive(Debug, Clone)]
 pub struct RatingInput {
     pub player: PlayerRef,
+    pub side: Side,
     pub totals: SkaterTotals,
     /// Team even-strength shot attempts (for, against) in the same games.
     pub team_even_strength: (f64, f64),
@@ -43,17 +52,24 @@ pub struct Component {
     /// How much it counts within its category (the coach's weight).
     pub weight: f64,
     pub value: Option<f64>,
-    /// Standing vs same-position teammates, sign-adjusted so positive is always good.
+    /// Standing vs every skater at the position in the same games, sign-adjusted so positive
+    /// is always good.
     pub score: Option<f64>,
+    /// Rating points this stat adds (or takes away) from the average skater's rating.
+    pub points: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RankingRow {
     pub player: PlayerRef,
-    /// 1 = best among qualified players at the position.
+    /// 1 = best among our qualified players at the position.
     pub rank: Option<usize>,
-    /// Out of 100: 50 = average of same-position teammates; 15 points per standard deviation.
+    /// Out of 100: 50 = the average skater at the position in the same games, both teams;
+    /// 15 points per standard deviation.
     pub rating: f64,
+    /// Where the component points start from; start plus every component's points is the
+    /// rating (before it is kept within 0–100).
+    pub start: f64,
     pub offence: Option<f64>,
     pub defence: Option<f64>,
     pub puck_play: Option<f64>,
@@ -78,8 +94,8 @@ fn weighted_mean(pairs: impl Iterator<Item = (Option<f64>, f64)>) -> Option<f64>
     (total > 0.0).then(|| sum / total)
 }
 
-/// A grade out of 100: teammates at the position average this, and each standard deviation
-/// above or below them moves it this many points.
+/// A grade out of 100: the average skater at the position gets this, and each standard
+/// deviation above or below moves it this many points.
 const AVERAGE_GRADE: f64 = 50.0;
 const GRADE_PER_SD: f64 = 15.0;
 
@@ -92,26 +108,49 @@ const RATING_FIELDS: [RatingField; 4] = [
     |r| r.puck_play.as_mut(),
 ];
 
+/// Each stat's share of a composite: its weight within its category times the category's
+/// weight, among the stats and categories that have a score.
+fn composite_shares(components: &[Component], weights: &PositionWeights) -> Vec<Option<f64>> {
+    let counts = |c: &Component| c.score.is_some() && c.weight > 0.0;
+    let category_total = |category: Category| -> f64 { components.iter().filter(|c| c.category == category && counts(c)).map(|c| c.weight).sum() };
+    let active: Vec<Category> = Category::ALL.into_iter().filter(|c| category_total(*c) > 0.0 && weights.category(*c) > 0.0).collect();
+    let all_categories: f64 = active.iter().map(|c| weights.category(*c)).sum();
+    components
+        .iter()
+        .map(|c| {
+            (counts(c) && active.contains(&c.category))
+                .then(|| weights.category(c.category) / all_categories * c.weight / category_total(c.category))
+        })
+        .collect()
+}
+
 /// Turns raw composites into grades. Averaging many stats squeezes composites together, so
-/// each one is re-spread over same-position teammates before grading.
-fn grade_against_teammates(rows: &mut [RankingRow]) {
+/// each one is re-spread over every skater at the position before grading. Returns how the
+/// overall composite was spread: grade = 50 + 15 × (composite − mean) ÷ sd.
+fn grade_against_pool(rows: &mut [RankingRow]) -> (f64, f64) {
     let qualified = rows.iter().filter(|r| r.qualified).count();
     let is_reference = |r: &RankingRow| r.qualified || qualified < 3;
-    for field in RATING_FIELDS {
+    let mut overall_spread = (0.0, 1.0);
+    for (index, field) in RATING_FIELDS.into_iter().enumerate() {
         let reference: Vec<f64> = rows
             .iter_mut()
             .filter(|r| is_reference(r))
             .filter_map(|r| field(r).map(|v| *v))
             .collect();
         let spread = mean(&reference).zip(sample_sd(&reference)).filter(|(_, sd)| *sd > 0.0);
+        if index == 0 {
+            overall_spread = spread.unwrap_or((0.0, 1.0));
+        }
         for value in rows.iter_mut().filter_map(field) {
             let z = spread.map_or(*value, |(average, sd)| (*value - average) / sd);
             *value = (AVERAGE_GRADE + GRADE_PER_SD * z).clamp(0.0, 100.0);
         }
     }
+    overall_spread
 }
 
-/// Rates one position group. Only qualified players set the averages, but everyone is rated.
+/// Rates our players at one position against every input at that position, both teams.
+/// Only qualified players set the averages, but all of ours are rated.
 #[must_use]
 pub fn rate(inputs: &[RatingInput], position: Position, weights: &PositionWeights) -> Vec<RankingRow> {
     let metrics: Vec<RatingStat> = RatingStat::ALL.into_iter().filter(|s| weights.stat(*s) > 0.0).collect();
@@ -127,7 +166,7 @@ pub fn rate(inputs: &[RatingInput], position: Position, weights: &PositionWeight
             (mean(&values), sample_sd(&values))
         })
         .collect();
-    let mut rows: Vec<RankingRow> = group
+    let rows: Vec<(Side, RankingRow)> = group
         .iter()
         .map(|input| {
             let weight = input.totals.toi.0 / (input.totals.toi.0 + PRIOR_SECONDS);
@@ -151,6 +190,7 @@ pub fn rate(inputs: &[RatingInput], position: Position, weights: &PositionWeight
                         weight: weights.stat(*m),
                         value,
                         score,
+                        points: None,
                     }
                 })
                 .collect();
@@ -166,10 +206,11 @@ pub fn rate(inputs: &[RatingInput], position: Position, weights: &PositionWeight
             ordered.sort_by(|a, b| b.score.unwrap_or(0.0).total_cmp(&a.score.unwrap_or(0.0)));
             let strengths = ordered.iter().take(2).filter(|c| c.score.unwrap_or(0.0) > 0.25).map(|c| c.metric.clone()).collect();
             let weaknesses = ordered.iter().rev().take(2).filter(|c| c.score.unwrap_or(0.0) < -0.25).map(|c| c.metric.clone()).collect();
-            RankingRow {
+            (input.side, RankingRow {
                 player: input.player.clone(),
                 rank: None,
                 rating: overall,
+                start: AVERAGE_GRADE,
                 offence,
                 defence,
                 puck_play,
@@ -179,10 +220,24 @@ pub fn rate(inputs: &[RatingInput], position: Position, weights: &PositionWeight
                 toi: input.totals.toi.0,
                 games: input.totals.games,
                 qualified: input.qualified,
-            }
+            })
         })
         .collect();
-    grade_against_teammates(&mut rows);
+    let mut graded: Vec<RankingRow> = rows.iter().map(|(_, r)| r.clone()).collect();
+    let (pool_mean, pool_sd) = grade_against_pool(&mut graded);
+    for row in &mut graded {
+        let shares = composite_shares(&row.components, weights);
+        for (component, share) in row.components.iter_mut().zip(shares) {
+            component.points = share.zip(component.score).map(|(a, z)| GRADE_PER_SD * a * z / pool_sd);
+        }
+        row.start = AVERAGE_GRADE - GRADE_PER_SD * pool_mean / pool_sd;
+    }
+    let mut rows: Vec<RankingRow> = rows
+        .iter()
+        .zip(graded)
+        .filter(|((side, _), _)| *side == Side::Ours)
+        .map(|(_, row)| row)
+        .collect();
     rows.sort_by(|a, b| {
         b.qualified
             .cmp(&a.qualified)
@@ -202,6 +257,7 @@ pub fn season_inputs(context: &Context<'_>, seasons: &[PlayerSeason]) -> Vec<Rat
         .filter(|s| matches!(s.player.position, Position::Forward | Position::Defence))
         .map(|s| RatingInput {
             player: s.player.clone(),
+            side: Side::Ours,
             totals: s.totals.clone(),
             team_even_strength: context
                 .scope
@@ -211,6 +267,41 @@ pub fn season_inputs(context: &Context<'_>, seasons: &[PlayerSeason]) -> Vec<Rat
                     (a + f(g.summary.even_strength_shots.0), b + f(g.opponent_summary.even_strength_shots.0))
                 }),
             qualified: s.qualified,
+        })
+        .chain(opponent_inputs(&context.scope, context.min_toi.0))
+        .collect()
+}
+
+/// Opponent skaters in `games`, one input per opponent team, jersey and surname.
+fn opponent_inputs(games: &[&Game], min_toi: f64) -> Vec<RatingInput> {
+    let mut by_player: BTreeMap<String, (&OpponentSkater, SkaterTotals, (f64, f64))> = BTreeMap::new();
+    for game in games {
+        for skater in &game.opponent_skaters {
+            let key = format!(
+                "opponent|{}|{}|{}",
+                game.opponent.0,
+                skater.opponent.jersey.map_or(String::new(), |j| j.to_string()),
+                skater.opponent.surname.to_uppercase()
+            );
+            let entry = by_player.entry(key).or_insert_with(|| (skater, SkaterTotals::default(), (0.0, 0.0)));
+            entry.1.add(&skater.stats);
+            entry.2.0 += f(game.opponent_summary.even_strength_shots.0);
+            entry.2.1 += f(game.summary.even_strength_shots.0);
+        }
+    }
+    by_player
+        .into_iter()
+        .map(|(key, (skater, totals, team_even_strength))| RatingInput {
+            player: PlayerRef {
+                id: PlayerId(key),
+                name: skater.opponent.surname.clone(),
+                jersey: skater.opponent.jersey.map(|j| j.0),
+                position: skater.position,
+            },
+            side: Side::Opponent,
+            qualified: totals.toi.0 >= min_toi,
+            totals,
+            team_even_strength,
         })
         .collect()
 }
@@ -230,11 +321,13 @@ fn game_ratings(context: &Context<'_>, weights: &RatingWeights) -> BTreeMap<Play
                 totals.add(stats);
                 Some(RatingInput {
                     player,
+                    side: Side::Ours,
                     totals,
                     team_even_strength: team,
                     qualified: true,
                 })
             })
+            .chain(opponent_inputs(&[game], 0.0))
             .collect();
         for (position, position_weights) in [(Position::Forward, &weights.forwards), (Position::Defence, &weights.defence)] {
             for row in rate(&inputs, position, position_weights) {
@@ -385,7 +478,43 @@ mod tests {
             },
             team_even_strength: (50.0, 50.0),
             qualified: true,
+            side: Side::Ours,
         }
+    }
+
+    fn opponent(name: &str, points: u32, shots: u32) -> RatingInput {
+        RatingInput { side: Side::Opponent, ..input(name, points, shots, 15.0) }
+    }
+
+    #[test]
+    fn component_points_add_up_to_the_rating() {
+        let rows = rate(&[input("a", 0, 1, 15.0), input("b", 3, 8, 15.0), input("c", 1, 4, 15.0), input("d", 2, 2, 12.0)], Position::Forward, &RatingWeights::default().forwards);
+        for row in &rows {
+            let total = row.start + row.components.iter().filter_map(|c| c.points).sum::<f64>();
+            assert!((total - row.rating).abs() < 1e-9, "{total} vs {}", row.rating);
+        }
+    }
+
+    #[test]
+    fn a_team_better_than_its_opponents_rates_above_fifty() {
+        let rows = rate(
+            &[input("a", 3, 8, 15.0), input("b", 4, 9, 15.0), opponent("x", 0, 1), opponent("y", 1, 2), opponent("z", 0, 2)],
+            Position::Forward,
+            &RatingWeights::default().forwards,
+        );
+        assert_eq!(rows.len(), 2, "opponents set the average but are not ranked");
+        assert!(rows.iter().all(|r| r.rating > 50.0), "{:?}", rows.iter().map(|r| r.rating).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn stats_opponents_lack_are_compared_among_our_players() {
+        let mut ours = [input("a", 1, 4, 15.0), input("b", 1, 4, 15.0)];
+        ours[0].totals.xg = 2.0;
+        ours[1].totals.xg = 0.5;
+        let only_xg = weights(&[(Category::Offence, 1.0)], &[(RatingStat::XgPer60, 1.0)]);
+        let rows = rate(&[ours[0].clone(), ours[1].clone(), opponent("x", 0, 1), opponent("y", 0, 1)], Position::Forward, &only_xg);
+        let xg = |name: &str| rows.iter().find(|r| r.player.name == name).unwrap().components[0].score.unwrap();
+        assert!(xg("a") > 0.0 && xg("b") < 0.0, "a zero xG for opponents who have none would drag the average down");
     }
 
     #[test]

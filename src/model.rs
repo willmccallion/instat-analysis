@@ -1023,6 +1023,15 @@ pub struct Matchup {
     pub hits_against: u32,
 }
 
+/// An opponent skater's numbers from their pages of our match report, so our players can
+/// be rated against everyone on the ice, not just each other.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpponentSkater {
+    pub opponent: Opponent,
+    pub position: Position,
+    pub stats: SkaterStats,
+}
+
 /// Passes from row player to column player.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerMatrix {
@@ -1087,6 +1096,8 @@ pub struct Game {
     pub charted_shots_against: Vec<OpponentShot>,
     #[serde(default)]
     pub faceoff_spots: Vec<SpotFaceoffs>,
+    #[serde(default)]
+    pub opponent_skaters: Vec<OpponentSkater>,
     /// Regulation plus any overtime.
     pub length: Seconds,
     pub warnings: Vec<String>,

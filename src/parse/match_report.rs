@@ -1,4 +1,4 @@
-//! The InStat "Match report": one team-stats page plus eight pages per team (ours parsed).
+//! The InStat "Match report": one team-stats page plus eight pages per team.
 
 use crate::error::Error;
 use crate::layout;
@@ -47,7 +47,7 @@ pub struct TeamPages {
     pub shot_chart: Vec<RawShot>,
 }
 
-/// Our team's pages in full; of the opponent's, only team-level stats and their shots page.
+/// Our team's pages in full; of the opponent's, their player tables, lines and shots.
 #[derive(Debug, Clone)]
 pub struct MatchReport {
     pub title: Title,
@@ -55,9 +55,10 @@ pub struct MatchReport {
     pub our_index: usize,
     pub team_stats: TeamStatsPage,
     pub ours: TeamPages,
-    pub opponent_shots: Vec<PlayerRow>,
-    /// Their shots on our net as their shooting chart draws them.
-    pub opponent_shot_chart: Vec<RawShot>,
+    /// Their shooting chart draws their shots on our net.
+    pub theirs: TeamPages,
+    /// Opponent pages that could not be read; the game still loads without them.
+    pub opponent_problems: Vec<String>,
 }
 
 /// Index of our team in the title (0 = listed first).
@@ -117,8 +118,8 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
     let our_name = &title.teams[our_index];
     let mut team_stats = None;
     let mut ours = TeamPages::default();
-    let mut opponent_shots = Vec::new();
-    let mut opponent_shot_chart = Vec::new();
+    let mut theirs = TeamPages::default();
+    let mut opponent_problems = Vec::new();
     for page in &pages[1..] {
         let Some(heading) = page_heading(page) else {
             continue;
@@ -130,8 +131,12 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
         if heading.team.as_ref() == Some(our_name) {
             parse_team_page(page, &heading.title, &mut ours)?;
         } else if heading.title == "SHOTS" {
-            opponent_shots = shots_table(page)?;
-            opponent_shot_chart = rink::shooting_chart(page);
+            theirs.tables.shots = shots_table(page)?;
+            theirs.shot_chart = rink::shooting_chart(page);
+        } else if OPPONENT_PAGES.contains(&heading.title.as_str())
+            && let Err(e) = parse_team_page(page, &heading.title, &mut theirs)
+        {
+            opponent_problems.push(format!("opponent {}: {e}", heading.title.to_lowercase()));
         }
     }
     let team_stats = team_stats.ok_or_else(|| Error::parse(SECTION, "no TEAMS STATS page"))?;
@@ -140,10 +145,13 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
         our_index,
         team_stats,
         ours,
-        opponent_shots,
-        opponent_shot_chart,
+        theirs,
+        opponent_problems,
     })
 }
+
+/// Opponent pages read beyond their shots: enough to rate their skaters alongside ours.
+const OPPONENT_PAGES: [&str; 3] = ["PLAYERS' STATS", "LINES STATS", "CHALLENGES"];
 
 fn parse_team_page(page: &Page, title: &str, team: &mut TeamPages) -> Result<(), Error> {
     match title {

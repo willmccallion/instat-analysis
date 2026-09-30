@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::model::{
     Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, FaceoffSpot, Game, OpponentShot, SpotFaceoffs,
     TeamSummary, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
-    Jersey, Matchup, Opponent, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
+    Jersey, Matchup, Opponent, OpponentSkater, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
     ShotSituation, ShotSources, ShotType, ShotZone, SkaterStats, StatEntry, Tally, TypeShots, EntryTypes, NetArea, NetShots,
     Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
 };
@@ -845,12 +845,14 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         summary: team_stats::summary(&report.team_stats.entries[ours]),
         opponent_summary: team_stats::summary(&report.team_stats.entries[1 - ours]),
         team_stats: team_stat_rows(report),
-        shot_zones_against: shot_zones_against(&report.opponent_shots),
+        shot_zones_against: shot_zones_against(&report.theirs.tables.shots),
         matchups,
         charted_shots,
         faceoff_spots: faceoff_spots(report.team_stats.faceoff_dots, &team_stats::summary(&report.team_stats.entries[ours]), &mut warnings),
+        opponent_skaters: opponent_skaters(report, &mut warnings),
         charted_shots_against: report
-            .opponent_shot_chart
+            .theirs
+            .shot_chart
             .iter()
             .map(|shot| OpponentShot {
                 period: shot.period,
@@ -872,6 +874,63 @@ fn slug(text: &str) -> String {
             } else {
                 '-'
             }
+        })
+        .collect()
+}
+
+/// The opponent's line-table entries for a player-table row. The player tables print wrong
+/// jersey numbers, so rows match by surname, and by number only when surnames repeat.
+fn opponent_line_members<'a>(units: &'a [crate::parse::lines::RawUnit], label: &RowLabel) -> Vec<(&'a crate::parse::lines::RawUnit, &'a RowLabel)> {
+    let same_surname = |m: &RowLabel| m.surname.eq_ignore_ascii_case(&label.surname);
+    let mut numbers: Vec<Option<u16>> = units.iter().flat_map(|u| u.members.iter()).filter(|m| same_surname(m)).map(|m| m.number).collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    let unique = numbers.len() <= 1;
+    units
+        .iter()
+        .flat_map(|u| u.members.iter().map(move |m| (u, m)))
+        .filter(|(_, m)| same_surname(m) && (unique || m.number == label.number))
+        .collect()
+}
+
+/// Forward or defence from the opponent's own line tables; players on no line who take
+/// faceoffs are forwards, and anyone else (their goalies) is left out.
+fn opponent_position(lines: &[(&crate::parse::lines::RawUnit, &RowLabel)], stats: &SkaterStats) -> Position {
+    let toi_in = |kind: UnitKind| -> f64 { lines.iter().filter(|(u, _)| u.kind == kind).map(|(u, _)| u.toi.0).sum() };
+    let (defence, forward) = (toi_in(UnitKind::DefencePair), toi_in(UnitKind::ForwardLine));
+    if defence > 0.0 || forward > 0.0 {
+        if defence >= forward { Position::Defence } else { Position::Forward }
+    } else if stats.faceoffs > 0 {
+        Position::Forward
+    } else {
+        Position::Unknown
+    }
+}
+
+fn opponent_skaters(report: &MatchReport, warnings: &mut Vec<String>) -> Vec<OpponentSkater> {
+    for problem in &report.opponent_problems {
+        warnings.push(format!("{problem}; ratings compare with our players only for this game"));
+    }
+    let mut unmatched = Vec::new();
+    let sources = skater_sources(&report.theirs.tables, &mut unmatched);
+    if !unmatched.is_empty() {
+        warnings.push(format!("{} opponent table rows could not be matched; those players count with fewer stats", unmatched.len()));
+    }
+    sources
+        .iter()
+        .filter_map(|source| {
+            let stats = skater_stats(source.main, &source.extras, None, 0);
+            let lines = opponent_line_members(&report.theirs.units, &source.main.label);
+            let position = opponent_position(&lines, &stats);
+            let skates = stats.toi.0 > 0.0 && matches!(position, Position::Forward | Position::Defence);
+            skates.then(|| OpponentSkater {
+                opponent: Opponent {
+                    jersey: lines.first().and_then(|(_, m)| m.number).map(Jersey),
+                    surname: source.main.label.surname.clone(),
+                },
+                position,
+                stats,
+            })
         })
         .collect()
 }

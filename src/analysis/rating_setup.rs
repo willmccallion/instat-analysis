@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::common::{per_60, share_pct};
-use crate::analysis::rankings::RatingInput;
+use crate::analysis::rankings::{RatingInput, Side};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Category {
@@ -143,8 +143,16 @@ impl RatingStat {
         )
     }
 
+    /// Only our Player report has these; opponents' zeros would mean "unknown", not "none".
+    const fn needs_players_report(self) -> bool {
+        matches!(self, Self::XgPer60 | Self::XgAgainstPer60 | Self::PassesPer60)
+    }
+
     /// `None` when the player has nothing to measure (e.g. no faceoffs taken).
     pub(crate) fn value(self, i: &RatingInput) -> Option<f64> {
+        if i.side == Side::Opponent && self.needs_players_report() {
+            return None;
+        }
         let t = &i.totals;
         match self {
             Self::PointsPer60 => per_60(f(t.points), t.toi),
