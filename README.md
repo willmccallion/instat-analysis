@@ -34,13 +34,13 @@ standalone report without the app.
 
 ## Releasing
 
-Bump `version` in `Cargo.toml`, commit, then:
+With everything committed, pass the next version (one step up: patch, minor or major) and the notes:
 
 ```sh
-scripts/release.sh "What changed"
+scripts/release.sh 1.2.1 "What changed"
 ```
 
-This builds all three apps, signs the Mac update zip, the Windows `.exe` and the Linux program with the release key
+This bumps `Cargo.toml` and `Cargo.lock`, commits "Release 1.2.1", builds all three apps, signs the Mac update zip, the Windows `.exe` and the Linux program with the release key
 (minisign; kept outside the repo) and publishes a GitHub release. Installed apps offer the update on their next launch and refuse any download
 whose signature doesn't match the key in `src/update.rs`.
 
