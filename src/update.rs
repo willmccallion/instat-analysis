@@ -3,7 +3,9 @@
 //! The Mac app downloads a zip with the system `curl`, unpacks it with `ditto`, swaps its own
 //! `.app` bundle and relaunches. The Windows app downloads its new `.exe` with Windows' own
 //! `curl.exe`, moves itself aside (Windows lets a running program be renamed but not
-//! overwritten) and starts the new copy. Other builds don't update themselves.
+//! overwritten) and starts the new copy. The Linux app downloads its new program with `curl`
+//! and renames it over itself (the running copy keeps its old file until it exits). Other
+//! builds don't update themselves.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -78,16 +80,20 @@ pub enum Package {
     MacZip,
     /// The app itself, a single `.exe`.
     WindowsExe,
+    /// The app itself, a static x86-64 program.
+    LinuxBinary,
 }
 
 impl Package {
-    /// `None` for builds that don't update themselves (e.g. Linux).
+    /// `None` for builds that don't update themselves (other operating systems or chips).
     #[must_use]
     pub const fn for_this_build() -> Option<Self> {
         if cfg!(target_os = "macos") {
             Some(Self::MacZip)
         } else if cfg!(windows) {
             Some(Self::WindowsExe)
+        } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            Some(Self::LinuxBinary)
         } else {
             None
         }
@@ -99,6 +105,7 @@ impl Package {
         match self {
             Self::MacZip => "Hockey-Stats-mac.zip",
             Self::WindowsExe => "Hockey-Stats-windows.exe",
+            Self::LinuxBinary => "Hockey-Stats-linux",
         }
     }
 }
@@ -182,13 +189,16 @@ pub fn verify(public_key: &str, archive: &[u8], signature: &str, version: Versio
     Ok(())
 }
 
-/// The system's own `curl` (Windows 10 and later ship one in System32).
+/// The system's own `curl`: Windows 10 and later ship one in System32, macOS in /usr/bin,
+/// and Linux distributions put it on the `PATH`.
 fn curl_program() -> PathBuf {
     if cfg!(windows) {
         let system_root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
         system_root.join("System32").join("curl.exe")
-    } else {
+    } else if cfg!(target_os = "macos") {
         PathBuf::from("/usr/bin/curl")
+    } else {
+        PathBuf::from("curl")
     }
 }
 
@@ -204,7 +214,7 @@ fn curl(args: &[&str]) -> Result<Vec<u8>, Error> {
 #[must_use]
 pub fn check() -> UpdateStatus {
     let Some(package) = Package::for_this_build() else {
-        return UpdateStatus::Unavailable { reason: "only the Mac and Windows apps install updates".to_owned() };
+        return UpdateStatus::Unavailable { reason: "this build doesn't install updates".to_owned() };
     };
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let latest = curl(&["--max-time", CHECK_TIMEOUT_SECONDS, "-H", "Accept: application/vnd.github+json", &url])
@@ -249,7 +259,20 @@ pub fn install(release: &Release) -> Result<(), Error> {
     match release.package {
         Package::MacZip => install_bundle(release),
         Package::WindowsExe => install_exe(release),
+        Package::LinuxBinary => install_binary(release),
     }
+}
+
+fn install_binary(release: &Release) -> Result<(), Error> {
+    let executable = std::env::current_exe()?;
+    let mut new_name = executable.clone().into_os_string();
+    new_name.push(".new");
+    let new_copy = PathBuf::from(new_name);
+    std::fs::write(&new_copy, download(release)?)?;
+    std::fs::set_permissions(&new_copy, std::fs::metadata(&executable)?.permissions())?;
+    std::fs::rename(&new_copy, &executable)?;
+    Command::new(&executable).arg("--background").spawn()?;
+    Ok(())
 }
 
 /// Where a replaced Windows executable is parked until the next launch can delete it.
@@ -364,6 +387,18 @@ mod tests {
         let release = parse_release(json, Package::WindowsExe).unwrap();
 
         assert_eq!((release.download_url.as_str(), release.signature_url.as_str()), ("https://x/exe", "https://x/exesig"));
+    }
+
+    #[test]
+    fn linux_builds_take_the_program_and_its_signature() {
+        let json = br#"{"tag_name":"v1.2.0","assets":[
+            {"name":"Hockey-Stats-windows.exe","browser_download_url":"https://x/exe"},
+            {"name":"Hockey-Stats-linux","browser_download_url":"https://x/linux"},
+            {"name":"Hockey-Stats-linux.minisig","browser_download_url":"https://x/linuxsig"}]}"#;
+
+        let release = parse_release(json, Package::LinuxBinary).unwrap();
+
+        assert_eq!((release.download_url.as_str(), release.signature_url.as_str()), ("https://x/linux", "https://x/linuxsig"));
     }
 
     #[test]

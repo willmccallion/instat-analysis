@@ -18,7 +18,7 @@
       };
       rust = pkgs.rust-bin.stable.latest.default.override {
         extensions = [ "clippy" "rustfmt" ];
-        targets = [ "aarch64-apple-darwin" "x86_64-apple-darwin" "x86_64-pc-windows-gnu" ];
+        targets = [ "aarch64-apple-darwin" "x86_64-apple-darwin" "x86_64-pc-windows-gnu" "x86_64-unknown-linux-musl" ];
       };
       # Converts an ISO image into a compressed macOS .dmg (the approach Bitcoin Core uses
       # to build Mac disk images off macOS).
