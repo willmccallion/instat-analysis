@@ -1,6 +1,6 @@
 "use strict";
 
-const { el, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, term, hBarChart, contributionChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, inkOn } = window.Charts;
+const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, contributionChart, beeswarmChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, inkOn } = window.Charts;
 
 // Plain-English definitions; any label matching a key explains itself on hover or tap.
 const PER_60 = "per 60 minutes of ice time, so players with different ice time compare fairly";
@@ -895,6 +895,42 @@ function ratingScaleNote() {
   ]);
 }
 
+/** SHAP summary of the ratings: for each stat, how many rating points it gave or took from each player. */
+function ratingDriversCard(rows, group) {
+  const players = rows.filter((r) => r.qualified);
+  if (players.length < 2) return null;
+  const metrics = players[0].components.map((c) => c.metric);
+  const statRows = metrics
+    .map((metric, i) => {
+      const entries = players.filter((r) => r.components[i].points !== null);
+      const values = entries.map((r) => r.components[i].value).filter((v) => v !== null);
+      const low = Math.min(...values);
+      const high = Math.max(...values);
+      return {
+        label: metric,
+        importance: entries.reduce((sum, r) => sum + Math.abs(r.components[i].points), 0) / Math.max(1, entries.length),
+        dots: entries.map((r) => {
+          const c = r.components[i];
+          return {
+            value: c.points,
+            shade: c.value === null || high === low ? null : (c.value - low) / (high - low),
+            title: r.player.name,
+            tip: [{ value: fmt(c.value, 2), name: metric }, { value: `${fmt(r.rating, 0)}`, name: "rating" }],
+            onClick: () => goToPlayer(r.player.id),
+          };
+        }),
+      };
+    })
+    .filter((r) => r.dots.length && r.importance > 0)
+    .sort((x, y) => y.importance - x.importance);
+  return chartCard(`What decides the ${group} ratings`, `A SHAP-style summary: each row is a stat, most influential first; each dot is one of our ${group}, placed by how many rating points that stat gave them (right) or took away (left), and shaded by their own value of the stat. Click a dot for the player's card and their full breakdown.`, (c) => beeswarmChart(c, statRows, {
+    valueName: "rating points", lowLabel: "low value of the stat", highLabel: "high value", labelWidth: 190,
+  }), (c) => dataTable(c, [
+    { key: "label", label: "Stat", left: true },
+    { key: "importance", label: "Average effect (rating points)", format: (v) => fmt(v, 1) },
+  ], statRows, { sortKey: "importance" }));
+}
+
 /** Where our qualified players sit on average against every skater in the same games. */
 function teamAverageNote(rows, group) {
   const ratings = rows.filter((r) => r.qualified).map((r) => r.rating);
@@ -930,6 +966,7 @@ function viewRankings() {
         ratingScaleNote(),
         tabs, teamAverageNote(rows, state.rankingTab === "defence" ? "defence" : "forwards"), rankingList(rows),
       ]),
+      ratingDriversCard(rows, state.rankingTab === "defence" ? "defence" : "forwards"),
       weightsEditor(a),
       formChangesCard(a),
       el("div", { class: "card", style: "margin-top:16px" }, [
@@ -2581,6 +2618,7 @@ function viewHelp() {
     ["What InStat rewards", "A ridge regression of each player-game's InStat Index on that game's numbers (goals, assists, shots, +/-, ice time, shot attempts on ice, battles, recoveries, losses, entries, faceoffs, hits, blocks, penalties, position) over every skater in the games, both teams, with the penalty chosen by 5-fold cross-validation. Gaps compare each of our players' Index with what their own numbers predict."],
     ["Real changes in level", "For each player's InStat Index history (loaded games plus InStat's recent-games table), the single split into before and after that separates the levels most, and a permutation test: shuffle the games 999 times and see how often a split that clear appears by chance."],
     ["Unusual games", "Once there are 5 games, each game's team stats (shot, xG and scoring-chance shares, faceoffs, battles, possession, hits, power plays) become standard scores against the games in scope. Unusualness is their average square (about 1 is typical); look-alikes are the earlier games with the closest profile."],
+    ["What decides the ratings", "On Rankings, a SHAP summary (beeswarm) plot: one row per stat, ordered by how many rating points it moves on average; one dot per player, right when the stat raised their rating and left when it lowered it, darker for a higher value of the stat. A row with dots spread wide is a stat that separates players; a tight row barely matters."],
     ["Rating breakdown", "On each player card, the rating is built up like a SHAP plot from machine learning: start at the average skater (50), then each stat adds or takes away rating points, biggest first. Blue bars push the rating up, red pull it down; stats worth under half a point are grouped. Because the rating is a weighted sum, these points add up exactly to the rating."],
     ["Goal timing", "Goals by five-minute stretch, records after scoring or conceding first and from each score after a period, comebacks, and whether goals come in bunches: goals in the two minutes after each goal against the rest of the game (tested with an exact conditional Poisson test on the Statistical tests page)."],
     ["Ice time & fatigue", "From the shift chart: shift and rest lengths, each skater's share of the team's time when leading, tied, trailing, late in close games (last five minutes of the third, within a goal) and on special teams, and the average rating of their linemates. Fatigue splits even-strength time by how long our skaters had been out on average and compares goal rates."],

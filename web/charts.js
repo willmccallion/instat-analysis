@@ -371,6 +371,63 @@ function contributionChart(container, start, parts, options = {}) {
 }
 
 /**
+ * SHAP summary ("beeswarm") plot: one row per feature, most important at the top; one dot per
+ * item at the amount it moved that item's result (right = up, left = down), coloured light to
+ * dark by the item's own value of the feature. rows: [{label, dots: [{value, shade (0–1 or
+ * null), title, tip}]}] in display order. options.valueFormat formats effects.
+ */
+function beeswarmChart(container, rows, options = {}) {
+  const format = options.valueFormat || ((v) => signed(v, 1));
+  const width = measureWidth(container);
+  const labelWidth = options.labelWidth ?? Math.min(200, Math.max(110, width * 0.28));
+  const rowHeight = 30;
+  const radius = 4.5;
+  const margin = { top: 8, right: 24, bottom: 28, left: labelWidth };
+  const height = margin.top + margin.bottom + rows.length * rowHeight;
+  const values = rows.flatMap((r) => r.dots.map((d) => d.value));
+  const reach = Math.max(1, ...values.map(Math.abs)) * 1.08;
+  const ticks = niceTicks(-reach, reach, Math.max(3, Math.floor((width - labelWidth) / 90)));
+  const [min, max] = [Math.min(-reach, ticks[0]), Math.max(reach, ticks[ticks.length - 1])];
+  const x = (v) => margin.left + ((v - min) / (max - min)) * (width - margin.left - margin.right);
+  const root = svg("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, width, height, role: "img", "aria-label": options.title || "feature effects" });
+  for (const t of ticks) {
+    root.append(svg("line", { class: "grid-line", x1: x(t), x2: x(t), y1: margin.top, y2: height - margin.bottom }));
+    root.append(svg("text", { x: x(t), y: height - 8, "text-anchor": "middle", class: "axis-label", text: options.tickFormat ? options.tickFormat(t) : signed(t, Number.isInteger(t) ? 0 : 1) }));
+  }
+  root.append(svg("line", { class: "baseline", x1: x(0), x2: x(0), y1: margin.top, y2: height - margin.bottom }));
+  rows.forEach((row, i) => {
+    const centre = margin.top + i * rowHeight + rowHeight / 2;
+    const label = svg("text", { x: margin.left - 8, y: centre + 4, "text-anchor": "end", text: row.label });
+    if (definition(row.label)) {
+      label.setAttribute("class", "term-svg");
+      explain(label, row.label);
+    }
+    root.append(label);
+    // Dots that would overlap stack upward and downward from the row's centre line.
+    const placed = [];
+    const offsets = [0, -1, 1, -2, 2, -3, 3];
+    for (const dot of [...row.dots].sort((a, b) => a.value - b.value)) {
+      const cx = x(dot.value);
+      const slot = offsets.find((k) => !placed.some((p) => p.k === k && Math.abs(p.cx - cx) < radius * 2)) ?? 0;
+      placed.push({ k: slot, cx });
+      const fill = dot.shade === null || dot.shade === undefined ? css("--deemphasis") : sequentialColor(0.15 + 0.85 * dot.shade);
+      const g = svg("g", { class: "mark" }, [
+        svg("circle", { cx, cy: centre + slot * radius * 1.35, r: radius, fill, stroke: css("--surface-1"), "stroke-width": 1 }),
+      ]);
+      attachTooltip(g, dot.title, [{ value: format(dot.value), name: options.valueName || "" }, ...(dot.tip || [])]);
+      if (dot.onClick) g.addEventListener("click", dot.onClick);
+      root.append(g);
+    }
+  });
+  container.replaceChildren(root);
+  container.append(el("div", { class: "legend" }, [
+    el("span", {}, [el("span", { class: "key", style: `background:${sequentialColor(0.15)}` }), options.lowLabel || "low value"]),
+    el("span", {}, [el("span", { class: "key", style: `background:${sequentialColor(1)}` }), options.highLabel || "high value"]),
+    el("span", { class: "muted", text: options.note || "right of the line raises the result, left lowers it · most important at the top" }),
+  ]));
+}
+
+/**
  * Lines over an ordered x (dates or indices).
  * series: [{name, color, points: [{x, y, label?, hollow?}]}]
  */
@@ -1438,7 +1495,7 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
-  hBarChart, contributionChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
+  hBarChart, contributionChart, beeswarmChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
   zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
 };
 })();
