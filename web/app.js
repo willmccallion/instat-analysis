@@ -225,6 +225,10 @@ async function refresh() {
       state.request = { ...state.request, weights: status.rating_weights };
       state.weightsLoaded = true;
     }
+    if (!state.targetsLoaded && status.player_targets) {
+      state.request = { ...state.request, targets: status.player_targets };
+      state.targetsLoaded = true;
+    }
     state.pending = status.pending;
     state.problems = status.problems;
     state.analysis = await api("/api/analyze", { method: "POST", body: JSON.stringify(state.request) });
@@ -828,6 +832,18 @@ async function saveWeights(weights) {
   refresh();
 }
 
+async function saveTargets(targets) {
+  state.request = { ...state.request, targets };
+  if (!snapshot) {
+    try {
+      await api("/api/player-targets", { method: "POST", body: JSON.stringify(targets) });
+    } catch (error) {
+      state.error = `Couldn't save the targets: ${error.message}`;
+    }
+  }
+  refresh();
+}
+
 const CATEGORY_NAMES = { Offence: "Offence", Defence: "Defence", PuckPlay: "Puck play" };
 const WEIGHT_STEPS = { min: 0, max: 3, step: 0.5 };
 
@@ -983,7 +999,7 @@ function viewRankings() {
 
 // ---------- Single game ----------
 
-const GAME_TABS = [["overview", "Overview"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
+const GAME_TABS = [["overview", "Overview"], ["summary", "Printable summary"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
 
 function viewGame() {
   const a = state.analysis;
@@ -997,7 +1013,7 @@ function viewGame() {
     queueMicrotask(refresh);
   }
   const [tabs, current] = pageTabs("gameTab", GAME_TABS);
-  const body = { overview: gameOverview, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
+  const body = { overview: gameOverview, summary: gameSummary, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
   return page("Single game", "Pick a game to see its shifts, goals and how each player compared with their usual.",
     el("div", { style: "margin-bottom:14px" }, [select]), tabs, ...[].concat(body));
 }
@@ -1035,6 +1051,58 @@ function gameOverview(a, timeline) {
   const luck = a.luck.games.find((g) => g.game === timeline.game);
   const why = luck ? chartCard(`Why it ended ${signed(luck.goals_for - luck.goals_against, 0)}`, "The goal differential built up from shot volume, chance quality, our finishing and our goaltending, biggest first.", (c) => splitChart(c, luck.split), null) : null;
   return [luck ? el("div", { class: "grid two", style: "margin-bottom:16px" }, [deservedCard(luck), why]) : null, compareCard, el("div", { style: "margin-top:16px" }, [shiftCard]), badges];
+}
+
+const RESULT_WORDS = { Win: "Win", Loss: "Loss", OvertimeLoss: "Overtime loss", Tie: "Tie" };
+
+/** One printable page about one game: result, why, team numbers, goals and every player. */
+function gameSummary(a, timeline) {
+  const log = a.team.game_log.find((g) => g.game === timeline.game);
+  const luck = a.luck.games.find((g) => g.game === timeline.game);
+  const ratings = new Map(a.rankings.game_ratings.filter((r) => r.game === timeline.game).map((r) => [r.player, r.rating]));
+  const skaters = a.players
+    .map((p) => ({ p, row: p.games.find((g) => g.game === timeline.game), rating: ratings.get(p.player.id) ?? null }))
+    .filter((x) => x.row)
+    .sort((x, y) => (y.rating ?? -1) - (x.rating ?? -1));
+  const printButton = el("button", { class: "primary", text: "Print or save as PDF", onclick: () => window.print() });
+  const heading = el("div", {}, [
+    el("h2", { text: `${a.team_name} ${timeline.goals_for}–${timeline.goals_against} ${timeline.opponent}` }),
+    el("div", { class: "muted", text: `${timeline.date} · ${log ? RESULT_WORDS[log.outcome] : ""}` }),
+  ]);
+  const both = (x, y, digits = 0) => `${fmt(x, digits)}–${fmt(y, digits)}`;
+  const numbers = log ? tiles([
+    { label: "Shot attempts", value: both(log.attempts_for, log.attempts_against), note: "us–them" },
+    { label: "Shots on goal", value: both(log.shots_on_goal_for, log.shots_on_goal_against) },
+    { label: "xG", value: both(log.xg_for, log.xg_against, 2), note: "quality of chances" },
+    { label: "Power play", value: `${log.power_play[0]}/${log.power_play[1]}`, note: `PK ${log.penalty_kill[0]}/${log.penalty_kill[1]}` },
+    { label: "Faceoffs", value: pct(log.faceoff_pct, 0), note: `possession ${pct(log.possession_pct, 0)}` },
+  ]) : null;
+  const why = luck ? el("div", { class: "grid two" }, [
+    deservedCard(luck),
+    chartCard("Why it ended that way", "Goal differential built up from four parts, biggest first.", (c) => splitChart(c, luck.split), null),
+  ]) : null;
+  const goals = el("div", { class: "card" }, [cardTitle("Goals"), el("div")]);
+  dataTable(goals.lastChild, [
+    { key: "time", label: "When", left: true, format: (v) => `${periodName(Math.floor(v / 1200) + 1)} ${clock(v - Math.floor(v / 1200) * 1200)}` },
+    { key: "scored_by", label: "", left: true, format: (v) => (v === "Us" ? a.team_name : timeline.opponent) },
+    { key: "strength", label: "", left: true, format: (v) => ({ Even: "even strength", PowerPlay: "our power play", ShortHanded: "we were short-handed" })[v] },
+    { key: "score", label: "Score", value: (g) => `${g.score[0]}–${g.score[1]}` },
+  ], timeline.goals);
+  const players = el("div", { class: "card" }, [cardTitle("Every skater"), el("p", { class: "desc", text: "Rating: this game against every skater on both teams (50 = average). Best first." }), el("div")]);
+  dataTable(players.lastChild, [
+    { key: "name", label: "Player", left: true, value: (x) => `${x.p.player.jersey ?? ""} ${x.p.player.name}`.trim() },
+    { key: "rating", label: "Rating", format: (v) => fmt(v, 0) },
+    { key: "g", label: "G", value: (x) => x.row.goals }, { key: "a", label: "A", value: (x) => x.row.assists },
+    { key: "shots", label: "Shots", value: (x) => x.row.shots },
+    { key: "pm", label: "+/-", value: (x) => x.row.plus_minus, format: (v) => signed(v, 0) },
+    { key: "toi", label: "TOI", value: (x) => x.row.toi, format: (v) => clock(v) },
+    { key: "cf", label: "CF%", value: (x) => x.row.corsi_pct, format: (v) => pct(v, 0) },
+    { key: "bat", label: "Battles", value: (x) => x.row.battles_pct, format: (v) => pct(v, 0) },
+    { key: "idx", label: "InStat", value: (x) => x.row.instat_index, format: (v) => fmt(v, 0) },
+  ], skaters, { sortKey: "rating" });
+  const goalieRows = a.goalies.flatMap((g) => g.trend.filter((t) => t.loaded && t.date === timeline.date).map((t) => `${g.player.name}: ${t.saves} saves on ${t.shots_against} shots (${pct(t.save_pct, 1)})`));
+  const goalies = goalieRows.length ? el("p", { class: "small" }, [`Goalies — ${goalieRows.join(" · ")}`]) : null;
+  return el("div", { class: "print-summary" }, [el("div", { class: "no-print", style: "margin-bottom:6px" }, [printButton]), heading, numbers, why, players, goals, goalies]);
 }
 
 function periodName(period) {
@@ -1487,10 +1555,75 @@ function viewPlayers() {
   const toggle = el("button", { class: "small", text: state.playerColumns === "all" ? "Key columns only" : "All columns", onclick: () => { state.playerColumns = state.playerColumns === "all" ? "key" : "all"; render(); } });
   const card = el("div", { class: "card" }, [el("div", { class: "card-head" }, [el("p", { class: "desc", text: "Click a player for their card. Rating = position ranking (50 = average); Form = recent games vs their usual." }), el("div", { class: "actions" }, [toggle])]), body]);
   dataTable(body, columns, skaters, { sortKey: "toi", onRow: (p) => { state.player = p.player.id; render(); window.scrollTo(0, 0); }, dim: (p) => !p.qualified });
-  return page("Players", "Season numbers for every skater in scope.", card);
+  return page("Players", "Season numbers for every skater in scope.", targetsOverview(a), card);
 }
 
-const PLAYER_TABS = [["overview", "Overview"], ["shooting", "Shooting"], ["puck", "Puck play"], ["matchups", "Matchups"], ["numbers", "All numbers"]];
+const TARGET_STATUS = {
+  Met: ["good", "✓ Met", "the last 3 games meet it"],
+  Improving: ["info", "▲ Improving", "not there yet, but the last 3 games beat the ones before"],
+  NotYet: ["bad", "Not yet", "the last 3 games fall short"],
+  NoData: ["info", "No games yet", "no games with this stat yet"],
+};
+
+function targetBadge(status) {
+  const [tone, text, title] = TARGET_STATUS[status];
+  return el("span", { class: `badge tone-${tone}`, title, text });
+}
+
+/** Every player's targets and where they stand; hidden until a coach sets one. */
+function targetsOverview(a) {
+  if (!a.targets.length) return null;
+  const body = el("div");
+  dataTable(body, [
+    { key: "name", label: "Player", left: true, value: (t) => t.player?.name ?? "Player not in scope" },
+    { key: "stat", label: "Target", left: true, value: (t) => `${t.stat_name} ${t.higher_is_better ? "≥" : "≤"} ${fmt(t.saved.target, 1)}` },
+    { key: "season", label: "Season", format: (v) => fmt(v, 1) },
+    { key: "recent", label: "Last 3 games", format: (v) => fmt(v, 1) },
+    { key: "met", label: "Games met", value: (t) => t.games_met, render: (t) => `${t.games_met} of ${t.games.filter((g) => g.value !== null).length}` },
+    { key: "status", label: "Status", left: true, value: (t) => t.status, render: (t) => targetBadge(t.status) },
+  ], a.targets, { sortKey: "name", descending: false, onRow: (t) => { if (t.player) { state.player = t.player.id; state.playerTab = "targets"; render(); window.scrollTo(0, 0); } } });
+  return el("div", { class: "card", style: "margin-bottom:16px" }, [cardTitle("Player targets"), el("p", { class: "desc", text: "Targets set on each player's card (Targets tab), judged on their last 3 games. Click a row to open it." }), body]);
+}
+
+function targetCard(t, all) {
+  const points = t.games.map((g, i) => ({ x: i, y: g.value, label: `${g.date}${g.met === null ? "" : g.met ? " · met" : " · not met"}` }));
+  const remove = snapshot ? null : el("button", { class: "small", text: "Remove", onclick: () => saveTargets(all.filter((x) => x !== t).map((x) => x.saved)) });
+  const card = chartCard(`${t.stat_name} ${t.higher_is_better ? "≥" : "≤"} ${fmt(t.saved.target, 1)}`, `${TARGET_STATUS[t.status][2]}. Season ${fmt(t.season, 1)}, last 3 games ${fmt(t.recent, 1)}; met in ${t.games_met} game${t.games_met === 1 ? "" : "s"}. One game is a small sample, so single games bounce around; the last-3 average is what counts.`, (c) => lineChart(c, [{ name: t.stat_name, color: css("--series-1"), points }], {
+    reference: t.saved.target, referenceLabel: "target", xFormat: (i) => t.games[i]?.date.slice(5) || "", yFormat: (v) => fmt(v, 1),
+  }), (c) => dataTable(c, [
+    { key: "date", label: "Game", left: true }, { key: "value", label: t.stat_name, format: (v) => fmt(v, 2) },
+    { key: "met", label: "Met?", left: true, format: (v) => (v === null ? "—" : v ? "yes" : "no") },
+  ], t.games), { source: [targetBadge(t.status)] });
+  if (remove) card.querySelector(".actions").append(remove);
+  return card;
+}
+
+function playerTargets(a, s) {
+  const mine = a.targets.filter((t) => t.saved.player === s.player.id);
+  const ranking = [...a.rankings.forwards, ...a.rankings.defence].find((r) => r.player.id === s.player.id);
+  const current = (stat) => ranking?.components.find((c) => c.metric === a.rating_options.stats.find((x) => x.stat === stat)?.name)?.value ?? null;
+  const cards = mine.map((t) => targetCard(t, a.targets));
+  if (snapshot) return cards.length ? el("div", { class: "grid two" }, cards) : emptyNote("No targets set for this player.");
+  const statSelect = el("select", {}, a.rating_options.stats.map((x) => el("option", { value: x.stat, text: `${x.name}${x.higher_is_better ? "" : " (lower is better)"}` })));
+  const value = el("input", { type: "number", step: "any", style: "width:110px" });
+  const prefill = () => { const v = current(statSelect.value); value.value = v === null ? "" : String(Math.round(v * 100) / 100); };
+  statSelect.addEventListener("change", prefill);
+  prefill();
+  const add = el("button", { class: "primary", text: "Add target", onclick: () => {
+    const target = Number(value.value);
+    if (value.value === "" || !Number.isFinite(target)) { value.focus(); return; }
+    const saved = a.targets.map((t) => t.saved).filter((t) => !(t.player === s.player.id && t.stat === statSelect.value));
+    saveTargets([...saved, { player: s.player.id, stat: statSelect.value, target }]);
+  } });
+  const form = el("div", { class: "card" }, [
+    cardTitle("Set a target"),
+    el("p", { class: "desc", text: "Pick a stat and the level to reach; it starts at their current season value. Targets are saved on this computer and judged on the last 3 games. Setting a stat again replaces its target." }),
+    el("div", { style: "display:flex;gap:10px;align-items:center;flex-wrap:wrap" }, [statSelect, value, add]),
+  ]);
+  return [form, cards.length ? el("div", { class: "grid two", style: "margin-top:16px" }, cards) : null];
+}
+
+const PLAYER_TABS = [["overview", "Overview"], ["targets", "Targets"], ["shooting", "Shooting"], ["puck", "Puck play"], ["matchups", "Matchups"], ["numbers", "All numbers"]];
 
 function playerDetail(a, s) {
   const back = el("button", { class: "link", text: "← All players", onclick: () => { state.player = null; render(); } });
@@ -1509,7 +1642,7 @@ function playerDetail(a, s) {
     { label: "InStat Index", value: fmt(s.instat_mean, 0), note: s.instat_sd ? `± ${fmt(s.instat_sd, 0)} game to game` : "" },
   ]);
   const [tabs, current] = pageTabs("playerTab", PLAYER_TABS);
-  const body = { overview: playerOverview, shooting: playerShooting, puck: playerPuckPlay, matchups: playerMatchups, numbers: playerNumbers }[current](a, s);
+  const body = { overview: playerOverview, targets: playerTargets, shooting: playerShooting, puck: playerPuckPlay, matchups: playerMatchups, numbers: playerNumbers }[current](a, s);
   return [back, head, kpis, tabs, ...[].concat(body)];
 }
 
@@ -2618,6 +2751,8 @@ function viewHelp() {
     ["What InStat rewards", "A ridge regression of each player-game's InStat Index on that game's numbers (goals, assists, shots, +/-, ice time, shot attempts on ice, battles, recoveries, losses, entries, faceoffs, hits, blocks, penalties, position) over every skater in the games, both teams, with the penalty chosen by 5-fold cross-validation. Gaps compare each of our players' Index with what their own numbers predict."],
     ["Real changes in level", "For each player's InStat Index history (loaded games plus InStat's recent-games table), the single split into before and after that separates the levels most, and a permutation test: shuffle the games 999 times and see how often a split that clear appears by chance."],
     ["Unusual games", "Once there are 5 games, each game's team stats (shot, xG and scoring-chance shares, faceoffs, battles, possession, hits, power plays) become standard scores against the games in scope. Unusualness is their average square (about 1 is typical); look-alikes are the earlier games with the closest profile."],
+    ["Printable summary", "Game → Printable summary lays out one game on a page: the result, how the game would usually end from the chances, why it ended the way it did, the team numbers, the goals and every skater's rating, points and ice time. The button opens the computer's print dialog, where you can also save it as a PDF."],
+    ["Player targets", "On a player's card (Targets tab), pick one of the rating stats and the level to reach. Each target is tracked game by game and judged on the last 3 games: met, improving (better than the games before, not there yet) or not yet. Targets are saved on this computer and listed on the Players page."],
     ["What decides the ratings", "On Rankings, a SHAP summary (beeswarm) plot: one row per stat, ordered by how many rating points it moves on average; one dot per player, right when the stat raised their rating and left when it lowered it, darker for a higher value of the stat. A row with dots spread wide is a stat that separates players; a tight row barely matters."],
     ["Rating breakdown", "On each player card, the rating is built up like a SHAP plot from machine learning: start at the average skater (50), then each stat adds or takes away rating points, biggest first. Blue bars push the rating up, red pull it down; stats worth under half a point are grouped. Because the rating is a weighted sum, these points add up exactly to the rating."],
     ["Goal timing", "Goals by five-minute stretch, records after scoring or conceding first and from each score after a period, comebacks, and whether goals come in bunches: goals in the two minutes after each goal against the rest of the game (tested with an exact conditional Poisson test on the Statistical tests page)."],

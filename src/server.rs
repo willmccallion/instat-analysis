@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request as HttpRequest, Response, Server, StatusCode};
 
 use crate::analysis::rating_setup::RatingWeights;
+use crate::analysis::targets::PlayerTarget;
 use crate::analysis::{Request, analyse};
 use crate::error::Error;
 use crate::model::{GameId, TeamPrefix};
@@ -146,6 +147,7 @@ struct App {
 struct StateResponse<'a> {
     team: Option<&'a TeamPrefix>,
     rating_weights: &'a RatingWeights,
+    player_targets: &'a [PlayerTarget],
     games: usize,
     pending: Vec<String>,
     problems: &'a [String],
@@ -229,6 +231,20 @@ impl App {
             || self.closing_since.is_some_and(|t| t.elapsed() >= CLOSE_GRACE)
     }
 
+    /// Saves a coach setting sent as JSON and replies with the value now stored.
+    fn save_setting<T: serde::de::DeserializeOwned, R: Serialize>(
+        &mut self,
+        mut request: HttpRequest,
+        save: fn(&mut Store, T) -> Result<(), Error>,
+        saved: fn(&Store) -> R,
+    ) {
+        let parsed = read_body(&mut request).and_then(|body| serde_json::from_slice::<T>(&body).map_err(Error::from));
+        match parsed.and_then(|value| save(&mut self.store, value)) {
+            Ok(()) => respond_json(request, 200, &saved(&self.store)),
+            Err(e) => error_json(request, 400, e.to_string()),
+        }
+    }
+
     fn handle(&mut self, mut request: HttpRequest) {
         self.last_activity = Instant::now();
         let url = request.url().to_owned();
@@ -246,6 +262,7 @@ impl App {
                 let state = StateResponse {
                     team: self.store.team(),
                     rating_weights: self.store.rating_weights(),
+                    player_targets: self.store.player_targets(),
                     games: self.store.games().len(),
                     pending: self.store.pending_descriptions(),
                     problems: &self.store.problems,
@@ -303,12 +320,10 @@ impl App {
                 }
             }
             (Method::Post, "/api/rating-weights") => {
-                let parsed = read_body(&mut request)
-                    .and_then(|body| serde_json::from_slice::<RatingWeights>(&body).map_err(Error::from));
-                match parsed.and_then(|weights| self.store.set_rating_weights(weights)) {
-                    Ok(()) => respond_json(request, 200, self.store.rating_weights()),
-                    Err(e) => error_json(request, 400, e.to_string()),
-                }
+                self.save_setting(request, Store::set_rating_weights, |store: &Store| store.rating_weights().clone());
+            }
+            (Method::Post, "/api/player-targets") => {
+                self.save_setting(request, Store::set_player_targets, |store: &Store| store.player_targets().to_vec());
             }
             (Method::Get, "/api/update") => respond_json(request, 200, &self.update_status()),
             (Method::Post, "/api/update") => match self.update_status() {

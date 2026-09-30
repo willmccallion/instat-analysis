@@ -459,7 +459,8 @@ function lineChart(container, series, options = {}) {
     root.append(svg("text", { x: margin.left - 6, y: y(t) + 4, "text-anchor": "end", class: "axis-label", text: options.yFormat ? options.yFormat(t) : String(t) }));
   }
   if (options.reference !== undefined) {
-    root.append(svg("line", { x1: margin.left, x2: width - margin.right, y1: y(options.reference), y2: y(options.reference), stroke: css("--axis"), "stroke-width": 1 }));
+    root.append(svg("line", { x1: margin.left, x2: width - margin.right, y1: y(options.reference), y2: y(options.reference), stroke: css(options.referenceLabel ? "--text-secondary" : "--axis"), "stroke-width": 1, "stroke-dasharray": options.referenceLabel ? "4 3" : null }));
+    if (options.referenceLabel) root.append(svg("text", { x: width - margin.right + 4, y: y(options.reference) + 4, class: "axis-label", text: options.referenceLabel }));
   }
   const labelEvery = Math.max(1, Math.ceil(xs.length / Math.max(2, Math.floor((width - 120) / 70))));
   xs.forEach((v, i) => {

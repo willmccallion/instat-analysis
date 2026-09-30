@@ -20,6 +20,7 @@ pub mod similarity;
 pub mod significance;
 pub mod stints;
 pub mod style;
+pub mod targets;
 pub mod team;
 pub mod timing;
 pub mod units;
@@ -48,6 +49,8 @@ pub struct Request {
     /// How the player ratings weigh each stat.
     #[serde(default)]
     pub weights: rating_setup::RatingWeights,
+    #[serde(default)]
+    pub targets: Vec<targets::PlayerTarget>,
 }
 
 impl Default for Request {
@@ -58,6 +61,7 @@ impl Default for Request {
             min_minutes: 10.0,
             min_unit_minutes: 3.0,
             weights: rating_setup::RatingWeights::default(),
+            targets: Vec::new(),
         }
     }
 }
@@ -142,6 +146,7 @@ pub struct Analysis {
     pub lineup: lineup::LineupReport,
     pub instat: instat::InstatReport,
     pub form_changes: Vec<changes::FormChange>,
+    pub targets: Vec<targets::TargetProgress>,
     pub similarity: similarity::SimilarityReport,
     pub style: style::StyleReport,
     pub players: Vec<players::PlayerSeason>,
@@ -234,10 +239,9 @@ fn fill_pair_expectations(context: &Context<'_>, pairs: &mut [PairRow], ratings:
     }
 }
 
-#[must_use]
-pub fn analyse(all: &[Game], request: &Request) -> Analysis {
-    let mut sorted: Vec<&Game> = all.iter().collect();
-    sorted.sort_by_key(|g| g.date);
+/// The games in scope and everything shared about them, plus the shot model (fitted on every
+/// loaded game, `sorted` by date).
+fn build_context<'a>(sorted: &[&'a Game], request: &Request) -> (Context<'a>, xg::XgReport) {
     let scope: Vec<&Game> = sorted
         .iter()
         .copied()
@@ -247,8 +251,8 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         .focus
         .as_ref()
         .and_then(|id| scope.iter().copied().find(|g| &g.id == id));
-    let roster = common::roster(&sorted);
-    let (shot_xg, xg_model) = xg::shot_xg(&sorted, &roster);
+    let roster = common::roster(sorted);
+    let (shot_xg, xg_model) = xg::shot_xg(sorted, &roster);
     let context = Context {
         stints: scope.iter().flat_map(|g| stints::stints(g)).collect(),
         scope,
@@ -258,6 +262,30 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         min_unit_toi: Seconds(request.min_unit_minutes * 60.0),
         shot_xg,
     };
+    (context, xg_model)
+}
+
+fn listings(sorted: &[&Game], context: &Context<'_>) -> Vec<GameListing> {
+    sorted
+        .iter()
+        .map(|g| GameListing {
+            id: g.id.clone(),
+            date: g.date,
+            opponent: g.opponent.0.clone(),
+            goals_for: g.goals_for,
+            goals_against: g.goals_against,
+            outcome: team::outcome(g),
+            in_scope: context.scope.iter().any(|s| s.id == g.id),
+            warnings: g.warnings.clone(),
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn analyse(all: &[Game], request: &Request) -> Analysis {
+    let mut sorted: Vec<&Game> = all.iter().collect();
+    sorted.sort_by_key(|g| g.date);
+    let (context, xg_model) = build_context(&sorted, request);
 
     let team_report = team::team(&context);
     let corsi_prior = players::corsi_prior(&context);
@@ -296,19 +324,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
     let focus_id = context.focus.map(|g| g.id.clone());
     Analysis {
         team_name: context.scope.first().or_else(|| sorted.first()).map(|g| g.team.0.clone()).unwrap_or_default(),
-        games: sorted
-            .iter()
-            .map(|g| GameListing {
-                id: g.id.clone(),
-                date: g.date,
-                opponent: g.opponent.0.clone(),
-                goals_for: g.goals_for,
-                goals_against: g.goals_against,
-                outcome: team::outcome(g),
-                in_scope: context.scope.iter().any(|s| s.id == g.id),
-                warnings: g.warnings.clone(),
-            })
-            .collect(),
+        games: listings(&sorted, &context),
         focus: focus_id,
         request: request.clone(),
         style: style::style(&context, &team_report),
@@ -318,6 +334,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         lineup: lineup_report,
         instat: instat::instat(&context),
         form_changes,
+        targets: targets::targets(&context, &request.targets),
         similarity: similarity::similarity(&context),
         team: team_report,
         rankings: rankings_report,

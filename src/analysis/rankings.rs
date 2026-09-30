@@ -407,10 +407,19 @@ fn form_row(player: PlayerRef, source: FormSource, series: Vec<(Date, f64)>, lat
     })
 }
 
+/// One of our players' rating in a single game, against every skater in that game.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GameRating {
+    pub game: GameId,
+    pub player: PlayerId,
+    pub rating: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RankingsReport {
     pub forwards: Vec<RankingRow>,
     pub defence: Vec<RankingRow>,
+    pub game_ratings: Vec<GameRating>,
     /// Best to worst recent form (last few games vs usual).
     pub form: Vec<FormRow>,
     pub recent_window: usize,
@@ -443,6 +452,12 @@ pub fn rankings(context: &Context<'_>, seasons: &[PlayerSeason], weights: &Ratin
         .collect();
     form.sort_by(|a, b| b.recent_z.total_cmp(&a.recent_z).then_with(|| a.player.id.cmp(&b.player.id)));
     RankingsReport {
+        game_ratings: per_game
+            .iter()
+            .flat_map(|(player, games)| {
+                games.iter().map(|(game, _, rating)| GameRating { game: game.clone(), player: player.clone(), rating: *rating })
+            })
+            .collect(),
         forwards: rate(&inputs, Position::Forward, &weights.forwards),
         defence: rate(&inputs, Position::Defence, &weights.defence),
         form,

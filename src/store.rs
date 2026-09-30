@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::rating_setup::RatingWeights;
+use crate::analysis::targets::PlayerTarget;
 use crate::error::Error;
 use crate::ingest::{Document, describe, parse_document, same_game};
 use crate::model::{Game, GameId, TeamPrefix};
@@ -23,6 +24,8 @@ struct Settings {
     team: TeamPrefix,
     #[serde(default)]
     rating_weights: RatingWeights,
+    #[serde(default)]
+    player_targets: Vec<PlayerTarget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +58,7 @@ pub struct Store {
     dir: PathBuf,
     team: Option<TeamPrefix>,
     rating_weights: RatingWeights,
+    player_targets: Vec<PlayerTarget>,
     games: Vec<StoredGame>,
     pending: Vec<Pending>,
     pub problems: Vec<String>,
@@ -102,6 +106,7 @@ impl Store {
             dir: dir.to_path_buf(),
             team: None,
             rating_weights: RatingWeights::default(),
+            player_targets: Vec::new(),
             games: Vec::new(),
             pending: Vec::new(),
             problems: Vec::new(),
@@ -113,6 +118,7 @@ impl Store {
                 let settings = serde_json::from_slice::<Settings>(&bytes)?;
                 store.team = Some(settings.team);
                 store.rating_weights = settings.rating_weights;
+                store.player_targets = settings.player_targets;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
@@ -131,10 +137,23 @@ impl Store {
         &self.rating_weights
     }
 
+    #[must_use]
+    pub fn player_targets(&self) -> &[PlayerTarget] {
+        &self.player_targets
+    }
+
+    /// Saves the coach's player targets.
+    pub fn set_player_targets(&mut self, targets: Vec<PlayerTarget>) -> Result<(), Error> {
+        let team = self.team.clone().ok_or(Error::NoTeam)?;
+        self.player_targets = targets;
+        self.save_settings(&team)
+    }
+
     fn save_settings(&self, team: &TeamPrefix) -> Result<(), Error> {
         let settings = Settings {
             team: team.clone(),
             rating_weights: self.rating_weights.clone(),
+            player_targets: self.player_targets.clone(),
         };
         fs::write(self.settings_path(), serde_json::to_vec(&settings)?)?;
         Ok(())
