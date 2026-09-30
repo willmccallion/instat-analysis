@@ -1,7 +1,9 @@
 //! Checks GitHub for a newer release and installs it after verifying its minisign signature.
 //!
-//! Only the macOS app installs updates: it downloads with the system `curl`, unpacks with
-//! `ditto`, swaps its own `.app` bundle and relaunches.
+//! The Mac app downloads a zip with the system `curl`, unpacks it with `ditto`, swaps its own
+//! `.app` bundle and relaunches. The Windows app downloads its new `.exe` with Windows' own
+//! `curl.exe`, moves itself aside (Windows lets a running program be renamed but not
+//! overwritten) and starts the new copy. Other builds don't update themselves.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -15,8 +17,6 @@ use crate::error::Error;
 const REPO: &str = "willmccallion/instat-analysis";
 /// Release signing key; the secret half lives only on the maintainer's machine.
 const PUBLIC_KEY: &str = "RWTxOXCn0SiJjkAsQAVAkTqw1AdcEbblc4yELiY1bBQhH935ZXLevaLB";
-pub const ZIP_ASSET: &str = "Hockey-Stats-mac.zip";
-const SIGNATURE_ASSET: &str = "Hockey-Stats-mac.zip.minisig";
 const BUNDLE_NAME: &str = "Hockey Stats.app";
 const CHECK_TIMEOUT_SECONDS: &str = "5";
 const DOWNLOAD_TIMEOUT_SECONDS: &str = "300";
@@ -71,13 +71,47 @@ impl Serialize for Version {
     }
 }
 
+/// The release file a build updates itself from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Package {
+    /// A zip of `Hockey Stats.app`.
+    MacZip,
+    /// The app itself, a single `.exe`.
+    WindowsExe,
+}
+
+impl Package {
+    /// `None` for builds that don't update themselves (e.g. Linux).
+    #[must_use]
+    pub const fn for_this_build() -> Option<Self> {
+        if cfg!(target_os = "macos") {
+            Some(Self::MacZip)
+        } else if cfg!(windows) {
+            Some(Self::WindowsExe)
+        } else {
+            None
+        }
+    }
+
+    /// The release asset's file name; the signature is this plus `.minisig`.
+    #[must_use]
+    pub const fn asset(self) -> &'static str {
+        match self {
+            Self::MacZip => "Hockey-Stats-mac.zip",
+            Self::WindowsExe => "Hockey-Stats-windows.exe",
+        }
+    }
+}
+
 /// A published release with the files an update needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Release {
     pub version: Version,
     pub notes: String,
     #[serde(skip)]
-    zip_url: String,
+    package: Package,
+    #[serde(skip)]
+    download_url: String,
     #[serde(skip)]
     signature_url: String,
 }
@@ -96,8 +130,8 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
-/// Reads GitHub's "latest release" response.
-pub fn parse_release(json: &[u8]) -> Result<Release, Error> {
+/// Reads GitHub's "latest release" response, taking `package`'s file and signature.
+pub fn parse_release(json: &[u8], package: Package) -> Result<Release, Error> {
     let release: GithubRelease = serde_json::from_slice(json)?;
     let version = Version::parse(&release.tag_name)
         .ok_or_else(|| Error::Update(format!("release tag {} is not a version", release.tag_name)))?;
@@ -111,8 +145,9 @@ pub fn parse_release(json: &[u8]) -> Result<Release, Error> {
     };
     Ok(Release {
         version,
-        zip_url: url(ZIP_ASSET)?,
-        signature_url: url(SIGNATURE_ASSET)?,
+        package,
+        download_url: url(package.asset())?,
+        signature_url: url(&format!("{}.minisig", package.asset()))?,
         notes: release.body.unwrap_or_default(),
     })
 }
@@ -128,26 +163,37 @@ pub enum UpdateStatus {
     Unavailable { reason: String },
 }
 
-/// The line signed with each release, so a signature can't be reused for another version.
+/// The line signed with each release file, so a signature can't be reused for another
+/// version or file.
 #[must_use]
-pub fn trusted_comment(version: Version) -> String {
-    format!("hockey-stats {version} {ZIP_ASSET}")
+pub fn trusted_comment(version: Version, package: Package) -> String {
+    format!("hockey-stats {version} {}", package.asset())
 }
 
-/// Checks `archive` against `signature` made with `public_key` for `version`.
-pub fn verify(public_key: &str, archive: &[u8], signature: &str, version: Version) -> Result<(), Error> {
+/// Checks `archive` against `signature` made with `public_key` for `package` at `version`.
+pub fn verify(public_key: &str, archive: &[u8], signature: &str, version: Version, package: Package) -> Result<(), Error> {
     let key = PublicKey::from_base64(public_key).map_err(|e| Error::Update(format!("bad release key: {e}")))?;
     let signature = Signature::decode(signature).map_err(|e| Error::Update(format!("unreadable signature: {e}")))?;
     key.verify(archive, &signature, false)
         .map_err(|e| Error::Update(format!("the download failed its signature check ({e})")))?;
-    if signature.trusted_comment() != trusted_comment(version) {
+    if signature.trusted_comment() != trusted_comment(version, package) {
         return Err(Error::Update(format!("the download is signed for \"{}\", not version {version}", signature.trusted_comment())));
     }
     Ok(())
 }
 
+/// The system's own `curl` (Windows 10 and later ship one in System32).
+fn curl_program() -> PathBuf {
+    if cfg!(windows) {
+        let system_root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+        system_root.join("System32").join("curl.exe")
+    } else {
+        PathBuf::from("/usr/bin/curl")
+    }
+}
+
 fn curl(args: &[&str]) -> Result<Vec<u8>, Error> {
-    let output = Command::new("/usr/bin/curl").args(["-fsSL"]).args(args).output()?;
+    let output = Command::new(curl_program()).args(["-fsSL"]).args(args).output()?;
     if !output.status.success() {
         return Err(Error::Update(String::from_utf8_lossy(&output.stderr).trim().to_owned()));
     }
@@ -157,12 +203,12 @@ fn curl(args: &[&str]) -> Result<Vec<u8>, Error> {
 /// Asks GitHub for the latest release and compares it with this build.
 #[must_use]
 pub fn check() -> UpdateStatus {
-    if !cfg!(target_os = "macos") {
-        return UpdateStatus::Unavailable { reason: "updates are only installed by the Mac app".to_owned() };
-    }
+    let Some(package) = Package::for_this_build() else {
+        return UpdateStatus::Unavailable { reason: "only the Mac and Windows apps install updates".to_owned() };
+    };
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let latest = curl(&["--max-time", CHECK_TIMEOUT_SECONDS, "-H", "Accept: application/vnd.github+json", &url])
-        .and_then(|json| parse_release(&json));
+        .and_then(|json| parse_release(&json, package));
     match latest {
         Ok(release) if release.version > Version::CURRENT => UpdateStatus::Available { release },
         Ok(_) => UpdateStatus::UpToDate,
@@ -190,8 +236,55 @@ fn run(program: &str, args: &[&Path]) -> Result<(), Error> {
     }
 }
 
+/// Downloads `release`'s file and checks its signature.
+fn download(release: &Release) -> Result<Vec<u8>, Error> {
+    let file = curl(&["--max-time", DOWNLOAD_TIMEOUT_SECONDS, &release.download_url])?;
+    let signature = curl(&["--max-time", CHECK_TIMEOUT_SECONDS, &release.signature_url])?;
+    verify(PUBLIC_KEY, &file, &String::from_utf8_lossy(&signature), release.version, release.package)?;
+    Ok(file)
+}
+
 /// Downloads, verifies and installs `release` over the running app, then relaunches it.
 pub fn install(release: &Release) -> Result<(), Error> {
+    match release.package {
+        Package::MacZip => install_bundle(release),
+        Package::WindowsExe => install_exe(release),
+    }
+}
+
+/// Where a replaced Windows executable is parked until the next launch can delete it.
+fn replaced_copy(executable: &Path) -> PathBuf {
+    executable.with_extension("previous.exe")
+}
+
+/// Deletes the copy an update moved aside. It can still be running just after an update, so
+/// failing here is expected and harmless.
+pub fn remove_replaced_copy() {
+    if !cfg!(windows) {
+        return;
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        let _ = std::fs::remove_file(replaced_copy(&executable));
+    }
+}
+
+fn install_exe(release: &Release) -> Result<(), Error> {
+    let executable = std::env::current_exe()?;
+    let new_copy = executable.with_extension("new.exe");
+    std::fs::write(&new_copy, download(release)?)
+        .map_err(|e| Error::Update(format!("couldn't save the update next to the app ({e}); move Hockey Stats to a folder you can write to, such as Documents")))?;
+    let parked = replaced_copy(&executable);
+    let _ = std::fs::remove_file(&parked);
+    std::fs::rename(&executable, &parked)?;
+    if let Err(e) = std::fs::rename(&new_copy, &executable) {
+        std::fs::rename(&parked, &executable)?;
+        return Err(e.into());
+    }
+    Command::new(&executable).spawn()?;
+    Ok(())
+}
+
+fn install_bundle(release: &Release) -> Result<(), Error> {
     let executable = std::env::current_exe()?;
     let bundle = bundle_of(&executable).ok_or_else(|| Error::Update("not running from Hockey Stats.app".to_owned()))?;
     if is_translocated(&bundle) {
@@ -210,10 +303,8 @@ pub fn install(release: &Release) -> Result<(), Error> {
 
 fn download_and_swap(release: &Release, bundle: &Path, staging: &Path) -> Result<(), Error> {
     std::fs::create_dir_all(staging)?;
-    let archive = curl(&["--max-time", DOWNLOAD_TIMEOUT_SECONDS, &release.zip_url])?;
-    let signature = curl(&["--max-time", CHECK_TIMEOUT_SECONDS, &release.signature_url])?;
-    verify(PUBLIC_KEY, &archive, &String::from_utf8_lossy(&signature), release.version)?;
-    let archive_path = staging.join(ZIP_ASSET);
+    let archive = download(release)?;
+    let archive_path = staging.join(Package::MacZip.asset());
     std::fs::write(&archive_path, &archive)?;
     let unpacked = staging.join("unpacked");
     run("/usr/bin/ditto", &[Path::new("-x"), Path::new("-k"), &archive_path, &unpacked])?;
@@ -258,14 +349,36 @@ mod tests {
             {"name":"Hockey-Stats-mac.dmg","browser_download_url":"https://x/dmg"},
             {"name":"Hockey-Stats-mac.zip","browser_download_url":"https://x/zip"},
             {"name":"Hockey-Stats-mac.zip.minisig","browser_download_url":"https://x/sig"}]}"#;
-        let release = parse_release(json).unwrap();
-        assert_eq!((release.version, release.zip_url.as_str(), release.signature_url.as_str()), (Version::parse("1.2.0").unwrap(), "https://x/zip", "https://x/sig"));
+        let release = parse_release(json, Package::MacZip).unwrap();
+        assert_eq!((release.version, release.download_url.as_str(), release.signature_url.as_str()), (Version::parse("1.2.0").unwrap(), "https://x/zip", "https://x/sig"));
+    }
+
+    #[test]
+    fn windows_builds_take_the_exe_and_its_signature() {
+        let json = br#"{"tag_name":"v1.2.0","assets":[
+            {"name":"Hockey-Stats-mac.zip","browser_download_url":"https://x/zip"},
+            {"name":"Hockey-Stats-mac.zip.minisig","browser_download_url":"https://x/zipsig"},
+            {"name":"Hockey-Stats-windows.exe","browser_download_url":"https://x/exe"},
+            {"name":"Hockey-Stats-windows.exe.minisig","browser_download_url":"https://x/exesig"}]}"#;
+
+        let release = parse_release(json, Package::WindowsExe).unwrap();
+
+        assert_eq!((release.download_url.as_str(), release.signature_url.as_str()), ("https://x/exe", "https://x/exesig"));
+    }
+
+    #[test]
+    fn a_release_without_a_windows_build_offers_windows_nothing() {
+        let json = br#"{"tag_name":"v1.2.0","assets":[
+            {"name":"Hockey-Stats-mac.zip","browser_download_url":"https://x/zip"},
+            {"name":"Hockey-Stats-mac.zip.minisig","browser_download_url":"https://x/zipsig"}]}"#;
+
+        assert!(parse_release(json, Package::WindowsExe).is_err());
     }
 
     #[test]
     fn release_without_signature_is_rejected() {
         let json = br#"{"tag_name":"v1.2.0","assets":[{"name":"Hockey-Stats-mac.zip","browser_download_url":"https://x/zip"}]}"#;
-        assert!(parse_release(json).is_err());
+        assert!(parse_release(json, Package::MacZip).is_err());
     }
 
     const TEST_KEY: &str = "RWRrmjdeFO8aiQV9oMWh9Al2dJLnIMsM8UiNMBuGP/YLk5UzMHvGhU94";
@@ -282,22 +395,34 @@ trusted comment: hockey-stats 1.2.0 Hockey-Stats-mac.zip
 
     #[test]
     fn correctly_signed_download_passes() {
-        assert!(verify(TEST_KEY, TEST_ARCHIVE, TEST_SIGNATURE, v("1.2.0")).is_ok());
+        assert!(verify(TEST_KEY, TEST_ARCHIVE, TEST_SIGNATURE, v("1.2.0"), Package::MacZip).is_ok());
     }
 
     #[test]
     fn tampered_download_fails() {
-        assert!(verify(TEST_KEY, b"sample archivE", TEST_SIGNATURE, v("1.2.0")).is_err());
+        assert!(verify(TEST_KEY, b"sample archivE", TEST_SIGNATURE, v("1.2.0"), Package::MacZip).is_err());
     }
 
     #[test]
     fn signature_for_another_version_fails() {
-        assert!(verify(TEST_KEY, TEST_ARCHIVE, TEST_SIGNATURE, v("9.0.0")).is_err());
+        assert!(verify(TEST_KEY, TEST_ARCHIVE, TEST_SIGNATURE, v("9.0.0"), Package::MacZip).is_err());
+    }
+
+    #[test]
+    fn signature_for_the_mac_zip_does_not_pass_as_the_windows_exe() {
+        assert!(verify(TEST_KEY, TEST_ARCHIVE, TEST_SIGNATURE, v("1.2.0"), Package::WindowsExe).is_err());
+    }
+
+    #[test]
+    fn replaced_windows_copy_sits_next_to_the_app() {
+        let exe = Path::new(r"C:\Users\coach\Desktop\Hockey-Stats-windows.exe");
+
+        assert_eq!(replaced_copy(exe), Path::new(r"C:\Users\coach\Desktop\Hockey-Stats-windows.previous.exe"));
     }
 
     #[test]
     fn signature_from_another_key_fails() {
-        assert!(verify(PUBLIC_KEY, TEST_ARCHIVE, TEST_SIGNATURE, v("1.2.0")).is_err());
+        assert!(verify(PUBLIC_KEY, TEST_ARCHIVE, TEST_SIGNATURE, v("1.2.0"), Package::MacZip).is_err());
     }
 
     #[test]

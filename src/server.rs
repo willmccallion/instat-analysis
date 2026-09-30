@@ -383,8 +383,9 @@ pub fn serve(data_dir: &Path, store: Store, port: u16, build: String, on_ready: 
 pub fn open_browser(url: &str) -> Result<(), Error> {
     let status = if cfg!(target_os = "macos") {
         std::process::Command::new("/usr/bin/open").arg(url).status()?
-    } else if cfg!(target_os = "windows") {
-        std::process::Command::new("cmd").args(["/C", "start", "", url]).status()?
+    } else if cfg!(windows) {
+        // `cmd /C start` would flash a console window; this opens the browser without one.
+        std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).status()?
     } else {
         std::process::Command::new("xdg-open").arg(url).status()?
     };

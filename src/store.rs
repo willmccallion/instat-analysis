@@ -319,6 +319,11 @@ impl Store {
 /// Default library location for the platform.
 #[must_use]
 pub fn default_dir() -> PathBuf {
+    if cfg!(windows)
+        && let Some(local) = std::env::var_os("LOCALAPPDATA")
+    {
+        return PathBuf::from(local).join("HockeyStats");
+    }
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
     if cfg!(target_os = "macos") {
         home.join("Library").join("Application Support").join("HockeyStats")

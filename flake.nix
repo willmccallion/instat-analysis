@@ -1,5 +1,5 @@
 {
-  description = "Hockey Stats: InStat PDF analyzer (build tools, incl. macOS cross-compilation)";
+  description = "Hockey Stats: InStat PDF analyzer (build tools, incl. macOS and Windows cross-compilation)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -18,7 +18,7 @@
       };
       rust = pkgs.rust-bin.stable.latest.default.override {
         extensions = [ "clippy" "rustfmt" ];
-        targets = [ "aarch64-apple-darwin" "x86_64-apple-darwin" ];
+        targets = [ "aarch64-apple-darwin" "x86_64-apple-darwin" "x86_64-pc-windows-gnu" ];
       };
       # Converts an ISO image into a compressed macOS .dmg (the approach Bitcoin Core uses
       # to build Mac disk images off macOS).

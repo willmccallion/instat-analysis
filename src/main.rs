@@ -1,5 +1,7 @@
 //! Hockey Stats: double-click to open the app in the browser, or run
 //! `hockey-stats --report <pdfs…> -o report.html` to build a report without the UI.
+// On Windows, a double-clicked app must not open a console window.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -10,6 +12,7 @@ use hockey_stats::ingest::{build_games, parse_document};
 use hockey_stats::model::TeamPrefix;
 use hockey_stats::server::{self, RunningInstance};
 use hockey_stats::store::{self, Store};
+use hockey_stats::update;
 use hockey_stats::web;
 
 const USAGE: &str = "\
@@ -47,7 +50,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         data_dir: store::default_dir(),
         port: 0,
         open_browser: true,
-        foreground: !cfg!(target_os = "macos"),
+        foreground: !cfg!(any(target_os = "macos", windows)),
     };
     let mut inputs = Vec::new();
     let mut output = None;
@@ -119,7 +122,8 @@ fn write_report(inputs: &[PathBuf], output: &PathBuf, team: &TeamPrefix) -> Resu
 ///
 /// macOS sends a launched app an "open" Apple Event and reports error -1712 if nothing
 /// answers it; this binary has no event loop, so the launched process must exit promptly
-/// while the server carries on in a child process.
+/// while the server carries on in a child process. On Windows the app has no console, so
+/// the child's log file is the only place its messages can go.
 fn spawn_background_server(options: &Options) -> Result<(), Error> {
     let log_path = options.data_dir.join("hockey-stats.log");
     let log = std::fs::File::create(&log_path)?;
@@ -143,6 +147,7 @@ fn spawn_background_server(options: &Options) -> Result<(), Error> {
 
 fn run_app(options: &Options) -> Result<(), Error> {
     std::fs::create_dir_all(&options.data_dir)?;
+    update::remove_replaced_copy();
     let build = server::build_id()?;
     match server::running_instance(&options.data_dir, &build) {
         Some(RunningInstance::Current(url)) => {
