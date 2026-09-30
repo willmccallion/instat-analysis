@@ -119,7 +119,6 @@ const state = {
   gameTab: "overview",
   goalieTab: "overview",
   shotPeriod: "all",
-  replayGoal: 0,
   heatWeight: "attempts",
   goalie: null,
   unitTab: "defence_pairs",
@@ -947,7 +946,7 @@ function viewRankings() {
 
 // ---------- Single game ----------
 
-const GAME_TABS = [["overview", "Overview"], ["goals", "Goal replay"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
+const GAME_TABS = [["overview", "Overview"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
 
 function viewGame() {
   const a = state.analysis;
@@ -961,7 +960,7 @@ function viewGame() {
     queueMicrotask(refresh);
   }
   const [tabs, current] = pageTabs("gameTab", GAME_TABS);
-  const body = { overview: gameOverview, goals: gameGoals, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
+  const body = { overview: gameOverview, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
   return page("Single game", "Pick a game to see its shifts, goals and how each player compared with their usual.",
     el("div", { style: "margin-bottom:14px" }, [select]), tabs, ...[].concat(body));
 }
@@ -2484,138 +2483,6 @@ function viewXgModel() {
     el("p", { class: "small" }, [holdout]), el("div", { class: "grid two" }, [curve, fit]));
 }
 
-const REPLAY_SECONDS = 60;
-/** How many seconds of game time pass per second of animation. */
-const REPLAY_SPEED = 6;
-/** A power play ends with the goal scored on it, so the moment of the goal reads the band just before. */
-const GOAL_SETTLE = 0.5;
-
-function goalLabel(goal) {
-  return `${gameClock(goal.time)} ${goal.scored_by === "Us" ? "Goal for" : "Goal against"} (${goal.score[0]}–${goal.score[1]})`;
-}
-
-/** Our manpower at time t from the timeline's advantage bands. */
-function manpowerAt(timeline, t) {
-  const band = timeline.advantages.find(([start, end]) => start < t && t <= end);
-  if (!band) return "Even strength";
-  return band[2] === "Us" ? "Our power play" : "We're short-handed";
-}
-
-/**
- * The minute before a goal, replayed: our skaters' shifts fill in as the clock runs, each
- * on-ice player's time into the shift counts up, and the shot appears on the rink at the end.
- */
-function goalReplay(timeline, goal) {
-  const from = Math.max(Math.floor((goal.time - 0.001) / 1200) * 1200, goal.time - REPLAY_SECONDS);
-  const span = goal.time - from;
-  const rows = timeline.players
-    .map((p) => ({ ...p, shifts: p.shifts.filter(([a, b]) => Math.min(b, goal.time) - Math.max(a, from) >= 0.5) }))
-    .filter((p) => p.shifts.length)
-    .sort((x, y) => Number(goal.on_ice.includes(y.player.id)) - Number(goal.on_ice.includes(x.player.id)) || x.player.name.localeCompare(y.player.name));
-  const width = 640;
-  const labelWidth = 150;
-  const counterWidth = 70;
-  const rowHeight = 20;
-  const top = 26;
-  const height = top + rows.length * rowHeight + 24;
-  const x = (t) => labelWidth + ((t - from) / span) * (width - labelWidth - counterWidth);
-  const root = window.Charts.svg("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, width: "100%", role: "img", "aria-label": "goal replay" });
-  const svgEl = window.Charts.svg;
-  for (let s = 0; s <= span; s += 10) {
-    const t = goal.time - s;
-    root.append(svgEl("line", { class: "grid-line", x1: x(t), x2: x(t), y1: top - 6, y2: height - 20 }));
-    root.append(svgEl("text", { x: x(t), y: height - 6, "text-anchor": "middle", class: "axis-label", text: s === 0 ? "goal" : `−${s}s` }));
-  }
-  const fills = [];
-  const counters = [];
-  rows.forEach((row, i) => {
-    const y = top + i * rowHeight;
-    const onForGoal = goal.on_ice.includes(row.player.id);
-    root.append(svgEl("text", { x: labelWidth - 8, y: y + 13, "text-anchor": "end", class: onForGoal ? "value-label" : "", text: `${row.player.jersey ?? ""} ${row.player.name}` }));
-    for (const [a, b] of row.shifts) {
-      const [s0, s1] = [Math.max(a, from), Math.min(b, goal.time)];
-      root.append(svgEl("rect", { x: x(s0), y: y + 4, width: Math.max(1, x(s1) - x(s0)), height: 11, rx: 3, fill: css("--surface-2"), stroke: css("--axis"), "stroke-width": 0.5 }));
-      const fill = svgEl("rect", { x: x(s0), y: y + 4, width: 0, height: 11, rx: 3, fill: css(onForGoal ? (goal.scored_by === "Us" ? "--good" : "--critical") : "--series-1") });
-      root.append(fill);
-      fills.push({ fill, a: s0, b: s1 });
-    }
-    const counter = svgEl("text", { x: width - counterWidth + 8, y: y + 13, class: "axis-label", text: "" });
-    root.append(counter);
-    counters.push({ counter, shifts: row.shifts });
-  });
-  const playhead = svgEl("line", { x1: x(from), x2: x(from), y1: top - 8, y2: height - 20, stroke: css("--text-primary"), "stroke-width": 1.5 });
-  root.append(playhead);
-  const clockText = el("div", { class: "replay-clock", style: "font-weight:600;font-variant-numeric:tabular-nums" });
-  const manpower = el("div", { class: "small muted" });
-  const rink = el("div", { style: "transition:opacity .4s;opacity:0.15" });
-  const shot = goal.shot;
-  const shotNote = el("p", { class: "small", style: "margin:6px 0 0" }, [shot
-    ? `${goal.scored_by === "Us" ? (shot.shooter ? shot.shooter.name : "Our shot") : `Their #${shot.jersey ?? "?"}`} from ${fmt(shotDistance(shot.at), 0)} ft${shot.xg !== null && shot.xg !== undefined ? `, a ${pct(100 * shot.xg, 0)} chance (xG ${fmt(shot.xg, 2)})` : ""}.`
-    : "The shooting chart can't place this goal: the team scored more than once that period and InStat's chart doesn't say which marker came first."]);
-  requestAnimationFrame(() => {
-    if (shot) shotPlot(rink, [{ at: shot.at, goal: true, xg: shot.xg }], { goalColor: goal.scored_by === "Us" ? "--good" : "--critical", sizeByXg: true, maxWidth: 300, tip: () => ({ title: "Goal", rows: [] }) });
-  });
-  const slider = el("input", { type: "range", min: 0, max: span, step: 0.1, value: 0, style: "width:100%" });
-  let now = from;
-  let playing = false;
-  let last = null;
-  const draw = () => {
-    playhead.setAttribute("x1", x(now));
-    playhead.setAttribute("x2", x(now));
-    for (const { fill, a, b } of fills) fill.setAttribute("width", Math.max(0, x(Math.min(b, now)) - x(a)) * (now > a ? 1 : 0));
-    for (const { counter, shifts } of counters) {
-      const current = shifts.find(([a, b]) => a <= now && now <= b);
-      counter.textContent = current ? `${Math.round(now - current[0])}s on` : "";
-    }
-    clockText.textContent = `${gameClock(now)} · ${Math.round(goal.time - now)}s to the goal`;
-    manpower.textContent = manpowerAt(timeline, Math.min(now, goal.time - GOAL_SETTLE));
-    rink.style.opacity = now >= goal.time - GOAL_SETTLE ? "1" : "0.15";
-    slider.value = String(now - from);
-  };
-  const button = el("button", { class: "primary", text: "▶ Play" });
-  const tick = (stamp) => {
-    if (!playing) return;
-    if (last !== null) now = Math.min(goal.time, now + ((stamp - last) / 1000) * REPLAY_SPEED);
-    last = stamp;
-    draw();
-    if (now >= goal.time) { playing = false; button.textContent = "↺ Replay"; return; }
-    requestAnimationFrame(tick);
-  };
-  button.addEventListener("click", () => {
-    if (playing) { playing = false; button.textContent = "▶ Play"; return; }
-    if (now >= goal.time) now = from;
-    playing = true;
-    last = null;
-    button.textContent = "❚❚ Pause";
-    requestAnimationFrame(tick);
-  });
-  slider.addEventListener("input", () => { playing = false; button.textContent = "▶ Play"; now = Math.min(goal.time, from + Number(slider.value) + (Number(slider.value) >= span - 0.1 ? 0.1 : 0)); draw(); });
-  draw();
-  const onIce = rows.filter((r) => goal.on_ice.includes(r.player.id)).map((r) => {
-    const shift = r.shifts.find(([a, b]) => a <= goal.time && goal.time <= b + 0.5);
-    return { name: r.player.name, into: shift ? goal.time - shift[0] : null };
-  });
-  const table = el("div");
-  dataTable(table, [{ key: "name", label: "On the ice for the goal", left: true }, { key: "into", label: "Seconds into their shift", format: (v) => fmt(v, 0) }], onIce, { sortKey: "into" });
-  return el("div", { class: "grid two" }, [
-    el("div", { class: "card" }, [
-      el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px" }, [button, clockText, manpower]),
-      slider, root,
-      el("p", { class: "small muted", text: `Our skaters in the ${Math.round(span)} seconds before the goal; the players on the ice for it are listed first and coloured. The counter shows how long each has been out. InStat's reports have shifts and goal times, not the plays in between, so passes and the opponent's skaters can't be shown.` }),
-    ]),
-    el("div", { class: "card" }, [cardTitle("Where it went in from"), rink, shotNote, el("div", { style: "margin-top:12px" }, [table])]),
-  ]);
-}
-
-function gameGoals(a, timeline) {
-  if (!timeline.goals.length) return emptyNote("No goals in this game.");
-  const index = Math.min(state.replayGoal, timeline.goals.length - 1);
-  const pick = el("div", { class: "segmented", style: "margin-bottom:14px;flex-wrap:wrap" }, timeline.goals.map((g, i) => el("button", {
-    class: i === index ? "on" : "", text: goalLabel(g), onclick: () => { state.replayGoal = i; render(); },
-  })));
-  return [pick, goalReplay(timeline, timeline.goals[index])];
-}
-
 function recordText(r) {
   const extra = r.overtime_losses || r.ties ? `-${r.overtime_losses}${r.ties ? `-${r.ties}` : ""}` : "";
   return `${r.wins}-${r.losses}${extra}`;
@@ -2717,7 +2584,6 @@ function viewHelp() {
     ["Rating breakdown", "On each player card, the rating is built up like a SHAP plot from machine learning: start at the average skater (50), then each stat adds or takes away rating points, biggest first. Blue bars push the rating up, red pull it down; stats worth under half a point are grouped. Because the rating is a weighted sum, these points add up exactly to the rating."],
     ["Goal timing", "Goals by five-minute stretch, records after scoring or conceding first and from each score after a period, comebacks, and whether goals come in bunches: goals in the two minutes after each goal against the rest of the game (tested with an exact conditional Poisson test on the Statistical tests page)."],
     ["Ice time & fatigue", "From the shift chart: shift and rest lengths, each skater's share of the team's time when leading, tied, trailing, late in close games (last five minutes of the third, within a goal) and on special teams, and the average rating of their linemates. Fatigue splits even-strength time by how long our skaters had been out on average and compares goal rates."],
-    ["Goal replay", "The minute before each goal, replayed from the shift chart: who was on, how long they had been out, the manpower, and where the shot came from when the shooting chart shows it. InStat's reports have no play-by-play, so passes and the opponent's skaters can't be shown."],
     ["Shot map", "Where shots came from, using InStat's seven zones: slot, high slot, left and right sides, and three spots along the blue line. Each zone shows shots / on goal; darker = more shots."],
     ["Puck battles by area", "InStat splits every one-on-one puck battle by where it happened: in front of each net, behind each net, the corners, along each blue line, and the neutral zone. The map shows the share we won in each area; corners are one area drawn top and bottom."],
     ["Faceoffs at every dot", "From the faceoff rink on InStat's team stats page: our wins and losses at each of the nine dots (two in each end, four in the neutral zone, centre ice). The app checks the dots against the zone totals in InStat's faceoff table and leaves them out, with a warning, if they don't match."],

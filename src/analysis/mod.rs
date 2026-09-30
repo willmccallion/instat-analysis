@@ -30,7 +30,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Date, Game, GameId, Goal, PlayerId, RinkPoint, Seconds, Strength, Team, TeamStatRow, UnitKind, UnitStats};
+use crate::model::{Date, Game, GameId, PlayerId, Seconds, Strength, Team, TeamStatRow, UnitKind, UnitStats};
 use common::{PlayerRef, TestRow, adjust_families};
 use impact::Ratings;
 use pairs::PairRow;
@@ -108,55 +108,6 @@ pub struct TimelineGoal {
     pub strength: Strength,
     pub score: (u32, u32),
     pub on_ice: Vec<PlayerId>,
-    /// Where it was shot from, when the shooting chart shows it unambiguously.
-    pub shot: Option<GoalShot>,
-}
-
-/// A goal's spot on the shooting chart; `at` is measured toward the net it went into.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct GoalShot {
-    pub at: RinkPoint,
-    pub xg: Option<f64>,
-    pub shooter: Option<PlayerRef>,
-    pub jersey: Option<u16>,
-}
-
-/// The chart's goal marker for `goal`, when it is the team's only goal of the period (the
-/// charts don't order markers, so two goals in a period can't be told apart).
-fn goal_shot(context: &Context<'_>, game: &Game, goal: &Goal) -> Option<GoalShot> {
-    let period = goal.period();
-    let team_goals_in_period = game.goals.iter().filter(|g| g.scored_by == goal.scored_by && g.period() == period).count();
-    if team_goals_in_period != 1 {
-        return None;
-    }
-    let (index, shot) = match goal.scored_by {
-        Team::Us => {
-            let mut markers = game.charted_shots.iter().enumerate().filter(|(_, s)| s.goal && s.period == period);
-            let (i, s) = markers.next()?;
-            if markers.next().is_some() {
-                return None;
-            }
-            (i, GoalShot {
-                at: s.at,
-                xg: None,
-                shooter: s.shooter.as_ref().and_then(|id| context.roster.get(id).cloned()),
-                jersey: None,
-            })
-        }
-        Team::Them => {
-            let mut markers = game.charted_shots_against.iter().enumerate().filter(|(_, s)| s.goal && s.period == period);
-            let (i, s) = markers.next()?;
-            if markers.next().is_some() {
-                return None;
-            }
-            (i, GoalShot { at: s.at, xg: None, shooter: None, jersey: s.jersey.map(|j| j.0) })
-        }
-    };
-    let xg = match goal.scored_by {
-        Team::Us => context.shot_xg.ours(&game.id, index),
-        Team::Them => context.shot_xg.theirs(&game.id, index),
-    };
-    Some(GoalShot { xg, ..shot })
 }
 
 /// Shift chart data for one game.
@@ -237,7 +188,6 @@ fn timeline(context: &Context<'_>, game: &Game) -> GameTimeline {
                 strength: g.strength,
                 score: g.score_after,
                 on_ice: g.on_ice.clone(),
-                shot: goal_shot(context, game, g),
             })
             .collect(),
         advantages: game
