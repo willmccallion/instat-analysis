@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::analysis::Context;
 use crate::analysis::common::{BetaPrior, Estimate, PlayerRef, Shrunk, per_60, share_pct, shrink};
+use crate::analysis::luck::goals_from_shots;
 use crate::analysis::matchups::{PlayerMatchup, player_matchups};
 use crate::analysis::shots::{ShotDot, shot_dots};
 use crate::analysis::stints::Stint;
@@ -181,6 +182,32 @@ pub struct Comparison {
     pub higher_is_better: bool,
 }
 
+/// Goals against the chances a player's charted shots were worth.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Finishing {
+    pub attempts: usize,
+    pub goals: u32,
+    pub xg: f64,
+    /// Chance an average finisher scores at least this many from the same shots.
+    pub chance_at_least: f64,
+    /// Chance an average finisher scores no more than this many.
+    pub chance_at_most: f64,
+}
+
+fn finishing(shots: &[ShotDot]) -> Option<Finishing> {
+    let chances: Option<Vec<f64>> = shots.iter().map(|s| s.xg).collect();
+    let chances = chances.filter(|c| !c.is_empty())?;
+    let goals = shots.iter().filter(|s| s.goal).count();
+    let distribution = goals_from_shots(&chances);
+    Some(Finishing {
+        attempts: chances.len(),
+        goals: u32::try_from(goals).ok()?,
+        xg: chances.iter().sum(),
+        chance_at_least: distribution.iter().skip(goals).sum(),
+        chance_at_most: distribution.iter().take(goals + 1).sum(),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlayerSeason {
     pub player: PlayerRef,
@@ -201,6 +228,7 @@ pub struct PlayerSeason {
     pub matchups: Vec<PlayerMatchup>,
     /// Their shots where the shooting chart drew them.
     pub charted_shots: Vec<ShotDot>,
+    pub finishing: Option<Finishing>,
 }
 
 fn game_row(game: &Game, stats: &SkaterStats) -> PlayerGameRow {
@@ -450,6 +478,7 @@ pub fn player_seasons(context: &Context<'_>, corsi_prior: Option<BetaPrior>) -> 
                 .unwrap_or_default();
             let group = appearances.last().and_then(|(_, p)| p.group.clone());
             let team_ev = team_ev_corsi(&context.scope, &id);
+            let charted_shots = shot_dots(context, &games_played, |s| s.shooter.as_ref() == Some(&id));
             let shrunk_corsi = corsi_prior.and_then(|prior| {
                 shrink(f64::from(totals.corsi_for), f64::from(totals.corsi_against), prior)
             });
@@ -468,7 +497,8 @@ pub fn player_seasons(context: &Context<'_>, corsi_prior: Option<BetaPrior>) -> 
                 focus_details,
                 qualified: totals.toi.0 >= context.min_toi.0,
                 matchups: player_matchups(&games_played, &id),
-                charted_shots: shot_dots(&games_played, &context.roster, |s| s.shooter.as_ref() == Some(&id)),
+                finishing: finishing(&charted_shots),
+                charted_shots,
                 totals,
             })
         })
@@ -513,4 +543,38 @@ pub fn corsi_prior(context: &Context<'_>) -> Option<BetaPrior> {
         .map(|(cf, n, _)| (*cf, *n))
         .collect();
     crate::analysis::common::fit_beta_prior(&observations)
+}
+
+#[cfg(test)]
+mod finishing_tests {
+    use super::*;
+    use crate::model::{Feet, RinkPoint};
+
+    fn shot(xg: f64, goal: bool) -> ShotDot {
+        ShotDot {
+            game: GameId("g".into()),
+            date: Date { year: 2026, month: 9, day: 1 },
+            period: 1,
+            shooter: None,
+            at: RinkPoint { along: Feet(70.0), across: Feet(0.0) },
+            goal,
+            xg: Some(xg),
+        }
+    }
+
+    #[test]
+    fn two_goals_on_long_shots_is_unusual_finishing() {
+        let result = finishing(&[shot(0.05, true), shot(0.05, true), shot(0.05, false)]).unwrap();
+        assert_eq!(result.goals, 2);
+        assert!((result.xg - 0.15).abs() < 1e-12);
+        assert!(result.chance_at_least < 0.01);
+        assert!((result.chance_at_most - (1.0 - 0.05_f64.powi(3))).abs() < 1e-12);
+    }
+
+    #[test]
+    fn shots_without_values_give_no_verdict() {
+        let mut unknown = shot(0.1, false);
+        unknown.xg = None;
+        assert!(finishing(&[unknown]).is_none());
+    }
 }

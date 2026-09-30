@@ -856,12 +856,10 @@ function shotDistance(at) {
 }
 
 /**
- * Every shot attempt where InStat's shooting chart drew it, on a half rink in feet (net at the top,
- * blue line at the bottom). shots: [{at: {along, across}, goal, ...}];
- * options.tip(shot) -> {title, rows} describes a dot on hover; options.goalColor is a colour
- * token for goals (default --series-2).
+ * An empty half rink in feet (x = across, y = feet out from their goal line; net at the top,
+ * blue line at the bottom). Returns the svg and a clipped layer for density maps under the lines.
  */
-function shotPlot(container, shots, options = {}) {
+function halfRink(container, options = {}) {
   const width = Math.min(measureWidth(container), options.maxWidth ?? 420);
   const [x0, y0, w, h] = [-44, -13, 88, 79];
   const height = Math.round((width * h) / w);
@@ -870,13 +868,14 @@ function shotPlot(container, shots, options = {}) {
   const outline = "M-42.5,64V17A28,28 0 0 1 -14.5,-11H14.5A28,28 0 0 1 42.5,17V64Z";
   const clip = svg("clipPath", { id });
   clip.append(svg("path", { d: outline }));
-  root.append(clip, svg("path", { d: outline, fill: css("--surface-2"), stroke: "none" }));
+  const heat = svg("g", { "clip-path": `url(#${id})` });
+  root.append(clip, svg("path", { d: outline, fill: css("--surface-2"), stroke: "none" }), heat);
   const lines = svg("g", { "clip-path": `url(#${id})`, "pointer-events": "none" });
   const redLine = css("--div-neg");
   const muted = css("--text-muted");
   lines.append(
     svg("line", { x1: -42.5, x2: 42.5, y1: 0, y2: 0, stroke: redLine, "stroke-width": 0.3, opacity: 0.7 }),
-    svg("path", { d: "M-6,0A6,6 0 0 0 6,0Z", fill: css("--accent-wash"), stroke: redLine, "stroke-width": 0.25 }),
+    svg("path", { d: "M-6,0A6,6 0 0 0 6,0Z", fill: options.heat ? "none" : css("--accent-wash"), stroke: redLine, "stroke-width": 0.25 }),
     svg("rect", { x: -3, y: -3.3, width: 6, height: 3.3, fill: "none", stroke: muted, "stroke-width": 0.4 }),
     ...[-22, 22].flatMap((cx) => [
       svg("circle", { cx, cy: 20, r: 15, fill: "none", stroke: redLine, "stroke-width": 0.3, opacity: 0.6 }),
@@ -885,12 +884,23 @@ function shotPlot(container, shots, options = {}) {
     svg("line", { x1: -42.5, x2: 42.5, y1: 63, y2: 63, stroke: css("--series-1"), "stroke-width": 2, opacity: 0.6 }),
   );
   root.append(lines, svg("path", { d: outline, fill: "none", stroke: css("--axis"), "stroke-width": 0.5, "pointer-events": "none" }));
+  return { root, heat };
+}
+
+/**
+ * Every shot attempt where InStat's shooting chart drew it, on a half rink in feet (net at the top,
+ * blue line at the bottom). shots: [{at: {along, across}, goal, xg?, ...}];
+ * options.tip(shot) -> {title, rows} describes a dot on hover; options.goalColor is a colour
+ * token for goals (default --series-2); options.sizeByXg scales dots by each shot's xG.
+ */
+function shotPlot(container, shots, options = {}) {
+  const { root } = halfRink(container, options);
   const ordered = [...shots].sort((a, b) => Number(a.goal) - Number(b.goal));
   for (const shot of ordered) {
     const dot = svg("circle", {
       cx: shot.at.across,
       cy: 89 - shot.at.along,
-      r: shot.goal ? 2.3 : 1.6,
+      r: options.sizeByXg && shot.xg !== null && shot.xg !== undefined ? 1.2 + 3.2 * Math.sqrt(shot.xg) : shot.goal ? 2.3 : 1.6,
       fill: css(shot.goal ? options.goalColor ?? "--series-2" : "--series-1"),
       "fill-opacity": shot.goal ? 1 : 0.7,
       stroke: css("--surface-1"),
@@ -905,8 +915,117 @@ function shotPlot(container, shots, options = {}) {
   container.append(el("div", { class: "legend" }, [
     el("span", {}, [el("span", { class: "key", style: `background:${css("--series-1")}` }), `attempt, no goal (${shots.length - goals})`]),
     el("span", {}, [el("span", { class: "key", style: `background:${css(options.goalColor ?? "--series-2")}` }), `goal (${goals})`]),
-    el("span", { class: "muted", text: "net at the top · blue line at the bottom" }),
+    el("span", { class: "muted", text: options.sizeByXg ? "bigger dot = bigger chance (xG) · net at the top" : "net at the top · blue line at the bottom" }),
   ]));
+}
+
+/**
+ * Gaussian kernel density of weighted points on a grid. points: [{x, y, w}] in feet;
+ * grid: {x0, y0, step, nx, ny}. Returns weight per square foot at each cell centre, row by row.
+ */
+function kernelDensity(points, grid, bandwidth) {
+  const { x0, y0, step, nx, ny } = grid;
+  const values = new Float64Array(nx * ny);
+  const reach = 3 * bandwidth;
+  const norm = 1 / (2 * Math.PI * bandwidth * bandwidth);
+  const spread = 2 * bandwidth * bandwidth;
+  for (const p of points) {
+    const i0 = Math.max(0, Math.floor((p.x - reach - x0) / step));
+    const i1 = Math.min(nx - 1, Math.ceil((p.x + reach - x0) / step));
+    const j0 = Math.max(0, Math.floor((p.y - reach - y0) / step));
+    const j1 = Math.min(ny - 1, Math.ceil((p.y + reach - y0) / step));
+    for (let j = j0; j <= j1; j += 1) {
+      const dy = y0 + (j + 0.5) * step - p.y;
+      for (let i = i0; i <= i1; i += 1) {
+        const dx = x0 + (i + 0.5) * step - p.x;
+        values[j * nx + i] += p.w * norm * Math.exp(-(dx * dx + dy * dy) / spread);
+      }
+    }
+  }
+  return values;
+}
+
+function hexRgb(hex) {
+  const s = hex.replace("#", "");
+  return [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16));
+}
+
+/** Paints grid values as a smoothed image into an svg layer; color(v) -> [r, g, b, alpha 0–1]. */
+function paintGrid(layer, grid, values, color) {
+  const canvas = document.createElement("canvas");
+  canvas.width = grid.nx;
+  canvas.height = grid.ny;
+  const context = canvas.getContext("2d");
+  const image = context.createImageData(grid.nx, grid.ny);
+  values.forEach((v, k) => {
+    const [r, g, b, a] = color(v);
+    image.data.set([r, g, b, Math.round(255 * a)], k * 4);
+  });
+  context.putImageData(image, 0, 0);
+  layer.append(svg("image", {
+    href: canvas.toDataURL(), x: grid.x0, y: grid.y0, width: grid.nx * grid.step, height: grid.ny * grid.step,
+    preserveAspectRatio: "none", style: "image-rendering:auto", "pointer-events": "none",
+  }));
+}
+
+const DENSITY_GRIDS = {
+  half: { x0: -42.5, y0: -11, step: 1, nx: 85, ny: 75 },
+  full: { x0: -100, y0: -42.5, step: 1.5, nx: 134, ny: 57 },
+};
+/** Density is shown per 10 × 10 ft square, a size a coach can picture on the ice. */
+const DENSITY_AREA = 100;
+
+/**
+ * Smoothed map of where things happened. options.rink: "half" (net at the top; at.along
+ * toward that net) or "full" (our net on the left). points / against: [{at, w}] where w is
+ * each event's weight (e.g. 1 / games, or xG / games); with `against`, the map shows
+ * points minus against (blue = more of ours, red = more of theirs). options.bandwidth in
+ * feet; options.valueName labels the hover value; options.format formats it.
+ */
+function densityMap(container, points, options = {}) {
+  const half = options.rink !== "full";
+  const { root, heat } = half ? halfRink(container, { ...options, heat: true }) : fullRink(container, options);
+  const grid = DENSITY_GRIDS[half ? "half" : "full"];
+  const place = (e) => (half ? { x: e.at.across, y: 89 - e.at.along, w: e.w } : { x: e.at.along, y: e.at.across, w: e.w });
+  const bandwidth = options.bandwidth ?? (half ? 7 : 10);
+  const ours = kernelDensity(points.map(place), grid, bandwidth);
+  const theirs = options.against ? kernelDensity(options.against.map(place), grid, bandwidth) : null;
+  const values = theirs ? ours.map((v, k) => (v - theirs[k]) * DENSITY_AREA) : ours.map((v) => v * DENSITY_AREA);
+  const peak = Math.max(1e-9, ...values.map(Math.abs));
+  const format = options.format || ((v) => fmt(v, 2));
+  if (theirs) {
+    const [neg, pos] = [hexRgb(css("--div-neg")), hexRgb(css("--div-pos"))];
+    paintGrid(heat, grid, values, (v) => {
+      const t = v / peak;
+      return [...(t < 0 ? neg : pos), Math.min(1, Math.abs(t) * 1.15)];
+    });
+  } else {
+    paintGrid(heat, grid, values, (v) => {
+      const t = v / peak;
+      return t < 0.03 ? [0, 0, 0, 0] : [...hexRgb(sequentialColor(t)), Math.min(1, 0.2 + 0.9 * t)];
+    });
+  }
+  const valueAt = (event) => {
+    const matrix = root.getScreenCTM();
+    if (!matrix) return null;
+    const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+    const i = Math.floor((point.x - grid.x0) / grid.step);
+    const j = Math.floor((point.y - grid.y0) / grid.step);
+    return i < 0 || j < 0 || i >= grid.nx || j >= grid.ny ? null : values[j * grid.nx + i];
+  };
+  const overlay = svg("rect", { x: grid.x0, y: grid.y0, width: grid.nx * grid.step, height: grid.ny * grid.step, fill: "transparent" });
+  const hover = (event) => {
+    const v = valueAt(event);
+    if (v === null) { Tooltip.hide(); return; }
+    Tooltip.show(event, options.title || "Here", [{ value: format(v), name: options.valueName || "" }]);
+  };
+  overlay.addEventListener("pointermove", hover);
+  overlay.addEventListener("pointerleave", () => Tooltip.hide());
+  root.append(overlay);
+  container.replaceChildren(root);
+  const scale = theirs ? { kind: "diverging", min: -peak, max: peak, center: 0 } : { kind: "sequential", min: 0, max: peak };
+  container.append(scaleLegend(scale, { scaleFormat: format, scaleName: "" }));
+  container.append(el("div", { class: "legend" }, [el("span", { class: "muted", text: `${options.valueName || ""}${half ? " · net at the top" : " · our net on the left"}` })]));
 }
 
 /** Our zone, the neutral zone or theirs, by where a rink point lies against the blue lines. */
@@ -924,7 +1043,8 @@ function fullRink(container, options = {}) {
   const id = `rink${Math.random().toString(36).slice(2)}`;
   const clip = svg("clipPath", { id });
   clip.append(svg("path", { d: outline }));
-  root.append(clip, svg("path", { d: outline, fill: css("--surface-2"), stroke: "none" }));
+  const heat = svg("g", { "clip-path": `url(#${id})` });
+  root.append(clip, svg("path", { d: outline, fill: css("--surface-2"), stroke: "none" }), heat);
   const red = css("--div-neg");
   const blue = css("--series-1");
   const lines = svg("g", { "clip-path": `url(#${id})`, "pointer-events": "none" });
@@ -937,7 +1057,7 @@ function fullRink(container, options = {}) {
     ...[-1, 1].map((side) => svg("rect", { x: side < 0 ? -92.3 : 89, y: -3, width: 3.3, height: 6, fill: "none", stroke: css("--text-muted"), "stroke-width": 0.5 })),
   );
   root.append(lines, svg("path", { d: outline, fill: "none", stroke: css("--axis"), "stroke-width": 0.6, "pointer-events": "none" }));
-  return { root, width };
+  return { root, width, heat };
 }
 
 /** Where each faceoff dot sits in rink feet; "Left" is the top of the drawing (our left
@@ -1226,6 +1346,6 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
   hBarChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
-  zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
+  zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
 };
 })();

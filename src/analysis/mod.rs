@@ -3,6 +3,7 @@
 pub mod common;
 pub mod goalies;
 pub mod impact;
+pub mod luck;
 pub mod matchups;
 pub mod models;
 pub mod pairs;
@@ -17,6 +18,7 @@ pub mod stints;
 pub mod style;
 pub mod team;
 pub mod units;
+pub mod xg;
 
 use std::collections::HashMap;
 
@@ -71,6 +73,7 @@ pub struct Context<'a> {
     pub stints: Vec<stints::Stint>,
     pub min_toi: Seconds,
     pub min_unit_toi: Seconds,
+    pub shot_xg: xg::ShotXg,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -127,6 +130,7 @@ pub struct Analysis {
     pub focus: Option<GameId>,
     pub request: Request,
     pub team: team::TeamReport,
+    pub luck: luck::LuckReport,
     pub style: style::StyleReport,
     pub players: Vec<players::PlayerSeason>,
     pub rankings: rankings::RankingsReport,
@@ -139,11 +143,13 @@ pub struct Analysis {
     pub power: Vec<significance::PowerRow>,
     pub models: models::ModelsReport,
     pub profiles: profiles::ProfilesReport,
+    pub xg_model: xg::XgReport,
     pub timelines: Vec<GameTimeline>,
     pub rating_options: RatingOptions,
 }
 
-fn timeline(game: &Game, roster: &HashMap<PlayerId, PlayerRef>) -> GameTimeline {
+fn timeline(context: &Context<'_>, game: &Game) -> GameTimeline {
+    let roster = &context.roster;
     GameTimeline {
         game: game.id.clone(),
         date: game.date,
@@ -181,8 +187,8 @@ fn timeline(game: &Game, roster: &HashMap<PlayerId, PlayerRef>) -> GameTimeline 
         goals_against: game.goals_against,
         team_stats: game.team_stats.clone(),
         matchups: matchups::game_matchups(game, roster),
-        shots: shots::shot_dots(&[game], roster, |_| true),
-        shots_against: shots::shots_against(&[game]),
+        shots: shots::shot_dots(context, &[game], |_| true),
+        shots_against: shots::shots_against(context, &[game]),
     }
 }
 
@@ -230,6 +236,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         .as_ref()
         .and_then(|id| scope.iter().copied().find(|g| &g.id == id));
     let roster = common::roster(&sorted);
+    let (shot_xg, xg_model) = xg::shot_xg(&sorted, &roster);
     let context = Context {
         stints: scope.iter().flat_map(|g| stints::stints(g)).collect(),
         scope,
@@ -237,6 +244,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         roster,
         min_toi: Seconds(request.min_minutes * 60.0),
         min_unit_toi: Seconds(request.min_unit_minutes * 60.0),
+        shot_xg,
     };
 
     let team_report = team::team(&context);
@@ -281,6 +289,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         focus: focus_id,
         request: request.clone(),
         style: style::style(&context, &team_report),
+        luck: luck::luck(&context),
         team: team_report,
         rankings: rankings::rankings(&context, &player_seasons, &request.weights),
         players: player_seasons,
@@ -293,7 +302,8 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         power,
         models: models_report,
         profiles: profiles_report,
-        timelines: context.scope.iter().map(|g| timeline(g, &context.roster)).collect(),
+        xg_model,
+        timelines: context.scope.iter().map(|g| timeline(&context, g)).collect(),
         rating_options: RatingOptions {
             stats: rating_setup::catalogue(),
             presets: rating_setup::presets(),

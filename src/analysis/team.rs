@@ -17,16 +17,29 @@ pub enum Outcome {
     Win,
     Loss,
     OvertimeLoss,
+    /// Level after overtime too.
+    Tie,
+}
+
+impl Outcome {
+    /// Standings points: 2 for any win, 1 for an overtime loss or a tie.
+    #[must_use]
+    pub const fn points(self) -> u32 {
+        match self {
+            Self::Win => 2,
+            Self::OvertimeLoss | Self::Tie => 1,
+            Self::Loss => 0,
+        }
+    }
 }
 
 #[must_use]
 pub fn outcome(game: &Game) -> Outcome {
-    if game.goals_for > game.goals_against {
-        Outcome::Win
-    } else if game.length.0 > 3.0 * PERIOD_SECONDS + 1.0 {
-        Outcome::OvertimeLoss
-    } else {
-        Outcome::Loss
+    match game.goals_for.cmp(&game.goals_against) {
+        std::cmp::Ordering::Greater => Outcome::Win,
+        std::cmp::Ordering::Equal => Outcome::Tie,
+        std::cmp::Ordering::Less if game.length.0 > 3.0 * PERIOD_SECONDS + 1.0 => Outcome::OvertimeLoss,
+        std::cmp::Ordering::Less => Outcome::Loss,
     }
 }
 
@@ -101,6 +114,7 @@ pub struct TeamReport {
     pub wins: u32,
     pub losses: u32,
     pub overtime_losses: u32,
+    pub ties: u32,
     pub goals_for: u32,
     pub goals_against: u32,
     pub attempts_for: u32,
@@ -340,11 +354,7 @@ fn cumulative(log: &[GameLogRow]) -> Vec<Cumulative> {
     let mut goals_against = 0;
     log.iter()
         .map(|row| {
-            points += match row.outcome {
-                Outcome::Win => 2,
-                Outcome::OvertimeLoss => 1,
-                Outcome::Loss => 0,
-            };
+            points += row.outcome.points();
             goals_for += row.goals_for;
             goals_against += row.goals_against;
             Cumulative {
@@ -411,6 +421,7 @@ pub fn team(context: &Context<'_>) -> TeamReport {
         wins: count(Outcome::Win),
         losses: count(Outcome::Loss),
         overtime_losses: count(Outcome::OvertimeLoss),
+        ties: count(Outcome::Tie),
         goals_for,
         goals_against,
         attempts_for,
@@ -442,8 +453,8 @@ pub fn team(context: &Context<'_>) -> TeamReport {
         shot_zones: shot_zones(games),
         shot_zones_against: shot_zones_against(games),
         battle_areas: battle_areas(games),
-        charted_shots: shot_dots(games, &context.roster, |_| true),
-        charted_shots_against: shots_against(games),
+        charted_shots: shot_dots(context, games, |_| true),
+        charted_shots_against: shots_against(context, games),
         faceoff_spots: games.iter().fold(Vec::new(), |mut totals, g| {
             add_spot_faceoffs(&mut totals, &g.faceoff_spots);
             totals

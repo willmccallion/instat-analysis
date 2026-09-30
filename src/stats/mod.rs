@@ -1,5 +1,6 @@
 //! Statistical analysis over parsed games.
 
+pub mod aggregate;
 pub mod cluster;
 pub mod describe;
 pub mod dist;
