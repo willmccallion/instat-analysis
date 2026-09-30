@@ -149,9 +149,9 @@ const VIEWS = [
 ];
 
 const SUBVIEWS = {
-  lines: [["units", "Lines"], ["chemistry", "Pair chemistry"], ["passing", "Passing"]],
+  lines: [["units", "Lines"], ["builder", "Line builder"], ["chemistry", "Pair chemistry"], ["passing", "Passing"]],
   team: [["team", "Team"], ["luck", "Luck & results"], ["timing", "Goal timing"], ["usage", "Ice time & fatigue"], ["play", "Possession & shots"], ["focus", "Practice focus"], ["goalies", "Goalies"]],
-  deep: [["impact", "Individual impact"], ["profiles", "Player styles"], ["xg", "Shot quality model"], ["advanced", "Statistical tests"]],
+  deep: [["impact", "Individual impact"], ["profiles", "Player styles"], ["instat", "What InStat rewards"], ["unusual", "Unusual games"], ["xg", "Shot quality model"], ["advanced", "Statistical tests"]],
 };
 
 const OUTCOME_SHORT = { Win: "W", Loss: "L", OvertimeLoss: "OTL", Tie: "T" };
@@ -932,6 +932,7 @@ function viewRankings() {
         tabs, teamAverageNote(rows, state.rankingTab === "defence" ? "defence" : "forwards"), rankingList(rows),
       ]),
       weightsEditor(a),
+      formChangesCard(a),
       el("div", { class: "card", style: "margin-top:16px" }, [
         cardTitle("Form: last few games vs their usual", historyChip()),
         el("p", { class: "desc", text: `Compares each player's last ${r.recent_window} games with the rest of their games, using ${formSource}.` }),
@@ -1372,9 +1373,15 @@ function viewPassing() {
   const p = a.passing;
   if (!p.players.length) return page("Passing network", "No passing data in scope.");
   const label = (id) => p.players.find((x) => x.id === id)?.name || id;
-  const nodes = p.players.map((player, i) => ({ id: player.id, label: player.name, size: p.made[i] }));
+  const groupSizes = p.group.reduce((counts, g) => { counts[g] = (counts[g] || 0) + 1; return counts; }, {});
+  const groupOrder = Object.keys(groupSizes).map(Number).sort((x, y) => groupSizes[y] - groupSizes[x] || x - y);
+  const groupLetter = (g) => String.fromCharCode(65 + groupOrder.indexOf(g));
+  const groupColor = (g) => css(SERIES[groupOrder.indexOf(g)] || "--deemphasis");
+  const nodes = p.players
+    .map((player, i) => ({ id: player.id, label: player.name, size: p.made[i], color: groupColor(p.group[i]), tag: groupLetter(p.group[i]), tip: [{ value: groupLetter(p.group[i]), name: "passing group" }, { value: pct(100 * p.pagerank[i], 1), name: "PageRank" }], order: groupOrder.indexOf(p.group[i]) }))
+    .sort((x, y) => x.order - y.order);
   const edges = p.edges.map((e) => ({ from: e.from, to: e.to, value: e.passes, lift: e.lift, fromLabel: label(e.from), toLabel: label(e.to) }));
-  const network = chartCard("Who passes to whom", "Line thickness = passes. Orange = a connection at least 1.5× what their overall passing volume predicts. Hover a player to isolate their links.", (c) => networkChart(c, nodes, edges), (c) => dataTable(c, [
+  const network = chartCard("Who passes to whom", `Line thickness = passes. Orange = a connection at least 1.5× what their overall passing volume predicts. Players are grouped and lettered by passing group (community detection: players who pass among themselves more than their volume predicts; the three biggest groups are coloured). Hover a player to isolate their links.`, (c) => networkChart(c, nodes, edges), (c) => dataTable(c, [
     { key: "from", label: "From", left: true, value: (e) => label(e.from) },
     { key: "to", label: "To", left: true, value: (e) => label(e.to) },
     { key: "passes", label: "Passes" },
@@ -1389,7 +1396,17 @@ function viewPassing() {
     { label: "Reciprocity", value: p.reciprocity === null ? "—" : `${Math.round(p.reciprocity * 100)}%`, note: "share of passes returned the other way" },
     { label: "Are the links real?", value: qi ? (qi[2] < 0.05 ? "Yes" : "Not yet") : "—", note: qi ? `G² = ${fmt(qi[0], 0)}, df ${qi[1]}, p = ${fmt(qi[2], 3)}` : "needs 20+ passes" },
   ]);
-  return page("Passing network", "InStat's pass-distribution tables, pooled over the games in scope.", summary, network, el("div", { style: "height:16px" }), matrix);
+  const roles = p.players.map((player, i) => ({ player, made: p.made[i], received: p.received[i], pagerank: p.pagerank[i], betweenness: p.betweenness[i], group: groupLetter(p.group[i]) }));
+  const hubs = chartCard("Hubs and connectors", "PageRank (bars): where the puck ends up flowing, counting passes from busy passers more. Connector score: the share of the quickest passing routes between two teammates that run through this player; high = the link between groups.", (c) => hBarChart(c, [...roles].sort((x, y) => y.pagerank - x.pagerank).map((r) => ({
+    label: r.player.name, value: 100 * r.pagerank, note: `connector ${pct(100 * r.betweenness, 0)} · group ${r.group} · ${r.made} made, ${r.received} received`,
+  })), { min: 0, valueFormat: (v) => pct(v, 1), labelWidth: 160, valueName: "PageRank" }), (c) => dataTable(c, [
+    { key: "name", label: "Player", left: true, value: (r) => r.player.name },
+    { key: "group", label: "Group" }, { key: "made", label: "Made" }, { key: "received", label: "Received" },
+    { key: "pagerank", label: "PageRank", value: (r) => 100 * r.pagerank, format: (v) => pct(v, 1), tone: "higher" },
+    { key: "betweenness", label: "Connector", value: (r) => 100 * r.betweenness, format: (v) => pct(v, 0), tone: "higher" },
+  ], roles, { sortKey: "pagerank", onRow: (r) => goToPlayer(r.player.id) }));
+  const groupNote = el("p", { class: "small muted", text: `Passing groups: modularity ${fmt(p.modularity, 2)} (${p.modularity >= 0.3 ? "clear groups" : "loose groups, most players pass across them"}). Modularity measures how much more players pass within their group than their passing volume predicts: 0 = no structure, above 0.3 = clear cliques.` });
+  return page("Passing network", "InStat's pass-distribution tables, pooled over the games in scope.", summary, network, groupNote, el("div", { class: "grid two", style: "margin-top:16px" }, [hubs, matrix]));
 }
 
 // ---------- Players ----------
@@ -2255,6 +2272,133 @@ function viewAdvanced() {
 
 // ---------- Help ----------
 
+/** Players whose InStat Index level really shifted, from the changepoint test. */
+function formChangesCard(a) {
+  const shown = a.form_changes.filter((c) => c.p < 0.1);
+  if (!a.form_changes.length) return null;
+  const reason = (c) => (c.after_break ? "across the off-season" : c.team_wide ? "others changed within two weeks: likely the schedule" : "");
+  const shared = shown.filter((c) => c.team_wide).length;
+  const body = el("div");
+  dataTable(body, [
+    { key: "name", label: "Player", left: true, value: (c) => c.player.name },
+    { key: "from", label: "From", left: true },
+    { key: "before", label: "Before", value: (c) => c.before_mean, format: (v) => fmt(v, 0), render: (c) => `${fmt(c.before_mean, 0)} (${c.before_games} games)` },
+    { key: "after", label: "After", value: (c) => c.after_mean, format: (v) => fmt(v, 0), render: (c) => `${fmt(c.after_mean, 0)} (${c.after_games} games)` },
+    { key: "change", label: "Change", value: (c) => c.after_mean - c.before_mean, format: (v) => signed(v, 0) },
+    { key: "p", label: "p", format: (v) => fmt(v, 3) },
+    { key: "why", label: "Note", left: true, value: reason, wrap: true },
+  ], shown, { sortKey: "p", descending: false, onRow: (c) => goToPlayer(c.player.id) });
+  return el("div", { class: "card", style: "margin-top:16px" }, [
+    cardTitle("Real changes in level", historyChip()),
+    el("p", { class: "desc", text: "For each player's InStat Index history, the one point where their level shifted most, tested by shuffling the games 999 times: p is how often a random order shows a split this clear. Only p < 0.10 is listed. When several players change at the same time the cause is usually the opponents or the season, not the player." }),
+    shared >= 3 ? el("p", { class: "small", text: `${shared} of these ${shown.length} changes happened within two weeks of each other, so the team as a whole changed level then (tougher opponents, a new level or a team slump), not just these players.` }) : null,
+    shown.length ? body : el("p", { class: "muted small", text: "No clear changes yet." }),
+  ]);
+}
+
+function comboRow(c) {
+  return {
+    ...c,
+    names: c.players.map((p) => p.name).join(" · "),
+    tried: c.minutes_together > 0 ? `${fmt(c.minutes_together, 0)} min together` : "never together",
+  };
+}
+
+function lineGroupCard(title, group, size, note) {
+  if (!group) return chartCard(title, "Needs the individual impact model for this position (it appears once the line tables have data).", (c) => c.replaceChildren(emptyNote("Not enough data yet.")), null);
+  const rows = group.best.map(comboRow);
+  return chartCard(title, `Predicted share of even-strength shot attempts for every possible ${size === 3 ? "line" : "pair"}, best first. Greyed bars have never played together, so their prediction is an extrapolation. ${note}`, (c) => hBarChart(c, rows.map((r) => ({
+    label: r.names, value: r.expected_pct, color: r.minutes_together > 0 ? css("--series-1") : css("--deemphasis"),
+    note: `${r.tried}${r.observed_pct !== null ? ` · actual ${pct(r.observed_pct, 0)}` : ""}`,
+  })), { min: 0, max: 100, reference: 50, valueFormat: (v) => pct(v, 0), labelWidth: 280, valueName: "predicted CF%" }), (c) => dataTable(c, [
+    { key: "names", label: size === 3 ? "Line" : "Pair", left: true, wrap: true },
+    { key: "expected_pct", label: "Predicted CF%", format: (v) => pct(v, 1), tone: "higher" },
+    { key: "minutes_together", label: "Min together", format: (v) => fmt(v, 1) },
+    { key: "observed_pct", label: "Actual CF%", format: (v) => pct(v, 0) },
+  ], rows, { sortKey: "expected_pct" }));
+}
+
+function lineupCard(title, group, unitName) {
+  const lineup = group?.lineup;
+  if (!lineup) return null;
+  const rows = lineup.units.map((u, i) => ({ ...comboRow(u), slot: `${unitName} ${i + 1}`, share: lineup.minute_shares[i] }));
+  const table = el("div");
+  dataTable(table, [
+    { key: "slot", label: "", left: true },
+    { key: "names", label: "Players", left: true, wrap: true },
+    { key: "expected_pct", label: "Predicted CF%", format: (v) => pct(v, 1) },
+    { key: "share", label: "Ice time", value: (r) => 100 * r.share, format: (v) => pct(v, 0) },
+    { key: "tried", label: "", left: true },
+  ], rows);
+  const gain = lineup.current_pct === null ? null : lineup.expected_pct - lineup.current_pct;
+  return el("div", { class: "card" }, [
+    cardTitle(title),
+    el("p", { class: "desc", text: `The set of ${unitName.toLowerCase()}s with the best predicted shot share when they split the ice time the way the current top ${rows.length} do (best unit plays most)${group.needs_centre ? ", each line with a player who takes faceoffs" : ""}.` }),
+    tiles([
+      { label: "Predicted CF%", value: pct(lineup.expected_pct, 1), note: "this set of units" },
+      { label: "Current units", value: pct(lineup.current_pct, 1), note: "same model, current combinations" },
+      { label: "Difference", value: gain === null ? "—" : signed(gain, 1), note: "percentage points of shot share" },
+    ]),
+    table,
+  ]);
+}
+
+function viewLineBuilder() {
+  const a = state.analysis;
+  const L = a.lineup;
+  const model = a.impact.corsi_forwards;
+  const early = !model || !model.lambda_from_cv;
+  const warning = early ? el("div", { class: "warning-box", text: `Early days: with ${L.games} game${L.games === 1 ? "" : "s"} the individual ratings behind these predictions aren't cross-validated yet (that starts at 3 games), so treat this as a sketch. Predictions add up each player's own effect; they can't see chemistry, and lines that never played together are extrapolations.` }) : el("p", { class: "small muted", text: "Predictions add up each player's own effect from the individual impact model; they can't see chemistry, and lines that never played together are extrapolations. Pair chemistry shows where combinations beat or miss their prediction." });
+  const defenceNote = L.defence && !L.defence.lineup ? " A full set of 3 pairs needs 6 defencemen with ratings." : "";
+  return page("Line builder", "Every possible forward line and defence pair ranked by the shot share the individual impact ratings predict, and the best full set of lines.",
+    warning,
+    el("div", { class: "grid two" }, [lineupCard("Best forward lines", L.forwards, "Line"), lineupCard("Best defence pairs", L.defence, "Pair")].filter(Boolean)),
+    el("div", { class: "grid two", style: "margin-top:16px" }, [
+      lineGroupCard("Forward lines", L.forwards, 3, ""),
+      lineGroupCard("Defence pairs", L.defence, 2, defenceNote),
+    ]));
+}
+
+function viewInstat() {
+  const a = state.analysis;
+  const r = a.instat;
+  if (!r.ready) return page("What InStat rewards", `Needs ${r.needs} player-games with an InStat Index (${r.observations} so far).`);
+  const weights = chartCard("What moves the InStat Index", `Index points for one typical game-to-game step more of each stat, holding the others equal; biggest effect at the top, right = raises the index. From a ridge regression over ${r.observations} player-games, both teams. Stats that go together (goals and shots, say) share the credit, so a small or negative bar can mean "already counted by another stat".`, (c) => hBarChart(c, r.weights.map((w) => ({
+    label: w.stat, value: w.per_sd, color: w.per_sd >= 0 ? css("--div-pos") : css("--div-neg"), note: `${signed(w.per_unit, 2)} per one more`,
+  })), { valueFormat: (v) => signed(v, 1), labelWidth: 200, valueName: "index points per typical step" }), (c) => dataTable(c, [
+    { key: "stat", label: "Stat", left: true },
+    { key: "per_sd", label: "Per typical step", format: (v) => signed(v, 2), tone: "higher" },
+    { key: "per_unit", label: "Per one more", format: (v) => signed(v, 2) },
+  ], r.weights));
+  const gaps = chartCard("Who InStat rates above or below their numbers", "Average InStat Index minus what the player's own numbers predict. Positive = InStat sees something extra (passes, positioning, the plays it grades); negative = their numbers look better than InStat rates them.", (c) => hBarChart(c, r.gaps.map((g) => ({
+    label: g.player.name, value: g.gap, color: g.gap >= 0 ? css("--div-pos") : css("--div-neg"), note: `InStat ${fmt(g.actual, 0)} vs ${fmt(g.predicted, 0)} predicted · ${g.games} game${g.games === 1 ? "" : "s"}`,
+  })), { valueFormat: (v) => signed(v, 0), labelWidth: 160, valueName: "index points" }), (c) => dataTable(c, [
+    { key: "name", label: "Player", left: true, value: (g) => g.player.name },
+    { key: "games", label: "GP" }, { key: "actual", label: "InStat Index", format: (v) => fmt(v, 0) },
+    { key: "predicted", label: "Predicted", format: (v) => fmt(v, 0) }, { key: "gap", label: "Gap", format: (v) => signed(v, 0), tone: "higher" },
+  ], r.gaps, { sortKey: "gap", onRow: (g) => goToPlayer(g.player.id) }));
+  return page("What InStat rewards", `InStat doesn't publish how its Index is built. Learning it from the numbers: they explain ${pct(100 * (r.cv_r_squared ?? 0), 0)} of the differences in the Index on player-games the model didn't see (ridge penalty ${fmt(r.lambda, 1)}, chosen by 5-fold cross-validation).`, el("div", { class: "grid two" }, [weights, gaps]));
+}
+
+function viewUnusual() {
+  const a = state.analysis;
+  const s = a.similarity;
+  if (!s.ready) return page("Unusual games", `Switches on at ${s.needs} games: with fewer there's no 'usual' to compare against (${a.games.filter((g) => g.in_scope).length} so far). It will flag games whose team stats stand out (${s.stats.join(", ").toLowerCase()}) and, for each game, the earlier games it most resembles and how those ended.`);
+  const games = [...s.games].sort((x, y) => y.unusualness - x.unusualness);
+  const chart = chartCard("How unusual each game was", "Average squared standard score over the team stats: about 1 for a typical game, higher = further from our usual. Hover for the stats that stood out.", (c) => hBarChart(c, games.map((g) => ({
+    label: `${g.date.slice(5)} ${g.opponent}`, value: g.unusualness, color: g.p !== null && g.p < 0.05 ? css("--series-2") : css("--series-1"),
+    note: g.standouts.map((x) => `${x.stat} ${signed(x.z, 1)} SD`).join(" · ") || "nothing stood out",
+  })), { min: 0, reference: 1, referenceLabel: "typical", valueFormat: (v) => fmt(v, 1), labelWidth: 220, valueName: "unusualness" }), null);
+  const cards = games.map((g) => el("div", { class: "card" }, [
+    cardTitle(`${g.date} vs ${g.opponent} (${OUTCOME_SHORT[g.outcome]})`),
+    el("div", { class: "group-label", text: "Stood out" }),
+    g.standouts.length ? el("ul", { class: "small" }, g.standouts.map((x) => el("li", { text: `${x.stat}: ${fmt(x.value, 1)} vs usual ${fmt(x.usual, 1)} (${signed(x.z, 1)} SD)` }))) : el("p", { class: "small muted", text: "Nothing unusual." }),
+    el("div", { class: "group-label", text: "Most like" }),
+    g.look_alikes.length ? el("ul", { class: "small" }, g.look_alikes.map((x) => el("li", { text: `${x.date} vs ${x.opponent}: ${x.goals_for}–${x.goals_against} ${OUTCOME_SHORT[x.outcome]} (distance ${fmt(x.distance, 2)})` }))) : el("p", { class: "small muted", text: "No earlier games." }),
+  ]));
+  return page("Unusual games", "Each game's team stats compared with our usual, and the earlier games it looked most like. Look-alikes that ended differently point to what swung the result.", chart, el("div", { class: "grid two", style: "margin-top:16px" }, cards));
+}
+
 function luckWords(L) {
   if (L.chance_of_at_most_actual !== null && L.chance_of_at_most_actual < 0.1) return `unlucky: chances like ours earn more points ${pct(100 * (1 - L.chance_of_at_most_actual), 0)} of the time`;
   if (L.chance_of_at_least_actual !== null && L.chance_of_at_least_actual < 0.1) return `lucky: chances like ours earn this many only ${pct(100 * L.chance_of_at_least_actual, 0)} of the time`;
@@ -2565,6 +2709,11 @@ function viewHelp() {
     ["Luck & results", "Each shot's xG is its chance of scoring; combining every shot in a game gives the exact chance of each final score, so how often the game is won, lost, tied or goes to overtime. Overtime is 5 minutes of sudden death at each team's regulation scoring rate. Expected points add those up (2 for a win, 1 for an overtime loss or tie). The goal differential splits exactly into shot volume, chance quality, our finishing and our goaltending."],
     ["Goals saved above expected (GSAx)", "The xG of every attempt a goalie faced minus the goals allowed. Attempts include ones that missed or were blocked, so it also reflects the defence. When two goalies shared a game, each gets the team's xG in proportion to the shots on goal they faced. Weak spots on the net pull each area's save % toward the goalie's own average in proportion to how few shots it has."],
     ["Density maps", "Dots smoothed into a heat map (a Gaussian kernel about 7 ft wide on the half rink, 10 ft on the full rink) and shown per game, per 10 × 10 ft square, so seasons with different numbers of games compare fairly. Difference maps subtract one map from another: blue where the first is higher, red where the second is."],
+    ["Passing network measures", "PageRank: where the puck ends up flowing, counting passes from busy passers more (the scores add to 100%). Connector score (betweenness): the share of the quickest passing routes between two teammates that run through a player, where a link with more passes is quicker. Passing groups come from Louvain community detection: groups who pass among themselves more than their volume predicts; modularity above about 0.3 means clear cliques."],
+    ["Line builder", "Uses the individual impact ratings (ridge Poisson models of shot attempts for and against) to predict every possible line and pair's shot share, then searches every way of splitting the roster into lines for the best set, with the current ice-time split and a faceoff taker on each line when there are enough. Predictions can't see chemistry, and combinations that never played together are extrapolations."],
+    ["What InStat rewards", "A ridge regression of each player-game's InStat Index on that game's numbers (goals, assists, shots, +/-, ice time, shot attempts on ice, battles, recoveries, losses, entries, faceoffs, hits, blocks, penalties, position) over every skater in the games, both teams, with the penalty chosen by 5-fold cross-validation. Gaps compare each of our players' Index with what their own numbers predict."],
+    ["Real changes in level", "For each player's InStat Index history (loaded games plus InStat's recent-games table), the single split into before and after that separates the levels most, and a permutation test: shuffle the games 999 times and see how often a split that clear appears by chance."],
+    ["Unusual games", "Once there are 5 games, each game's team stats (shot, xG and scoring-chance shares, faceoffs, battles, possession, hits, power plays) become standard scores against the games in scope. Unusualness is their average square (about 1 is typical); look-alikes are the earlier games with the closest profile."],
     ["Rating breakdown", "On each player card, the rating is built up like a SHAP plot from machine learning: start at the average skater (50), then each stat adds or takes away rating points, biggest first. Blue bars push the rating up, red pull it down; stats worth under half a point are grouped. Because the rating is a weighted sum, these points add up exactly to the rating."],
     ["Goal timing", "Goals by five-minute stretch, records after scoring or conceding first and from each score after a period, comebacks, and whether goals come in bunches: goals in the two minutes after each goal against the rest of the game (tested with an exact conditional Poisson test on the Statistical tests page)."],
     ["Ice time & fatigue", "From the shift chart: shift and rest lengths, each skater's share of the team's time when leading, tied, trailing, late in close games (last five minutes of the third, within a goal) and on special teams, and the average rating of their linemates. Fatigue splits even-strength time by how long our skaters had been out on average and compares goal rates."],
@@ -2600,9 +2749,9 @@ function render() {
     return;
   }
   const sections = {
-    lines: { title: "Lines & pairs", views: { units: viewLines, chemistry: viewChemistry, passing: viewPassing } },
+    lines: { title: "Lines & pairs", views: { units: viewLines, builder: viewLineBuilder, chemistry: viewChemistry, passing: viewPassing } },
     team: { title: "Team & goalies", views: { team: viewTeam, luck: viewLuck, timing: viewTiming, usage: viewUsage, play: viewPlay, focus: viewFocus, goalies: viewGoalies } },
-    deep: { title: "Deep dive", views: { impact: viewImpact, profiles: viewProfiles, xg: viewXgModel, advanced: viewAdvanced } },
+    deep: { title: "Deep dive", views: { impact: viewImpact, profiles: viewProfiles, instat: viewInstat, unusual: viewUnusual, xg: viewXgModel, advanced: viewAdvanced } },
   };
   const views = { games: viewGames, summary: viewSummary, rankings: viewRankings, players: viewPlayers, game: viewGame, help: viewHelp };
   if (a.games.length === 0 && !["games", "help"].includes(state.view)) state.view = "games";

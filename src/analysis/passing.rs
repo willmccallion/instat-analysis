@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::analysis::Context;
 use crate::analysis::common::PlayerRef;
 use crate::model::PlayerId;
-use crate::stats::dist;
+use crate::stats::{dist, network};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PassEdge {
@@ -34,6 +34,15 @@ pub struct PassingReport {
     /// G² statistic, degrees of freedom and p for "passing partners are not random".
     pub quasi_independence: Option<(f64, f64, f64)>,
     pub total: u32,
+    /// Indexed like `players`: who the puck flows to (sums to 1).
+    pub pagerank: Vec<f64>,
+    /// Indexed like `players`: share of the shortest passing routes between teammates that
+    /// run through the player (0–1).
+    pub betweenness: Vec<f64>,
+    /// Indexed like `players`: passing group from community detection (0, 1, …).
+    pub group: Vec<usize>,
+    /// How much more the groups pass among themselves than chance (Newman's modularity).
+    pub modularity: f64,
 }
 
 /// Lookup helper for other modules.
@@ -171,7 +180,13 @@ pub fn passing(context: &Context<'_>) -> (PassingReport, PassTotals) {
         let g = g_squared(&matrix, &expected);
         (g, df, dist::chi_square_sf(g, df).unwrap_or(f64::NAN))
     });
+    let weights: Vec<Vec<f64>> = matrix.iter().map(|row| row.iter().map(|&v| f64::from(v)).collect()).collect();
+    let (group, modularity) = network::communities(&weights);
     let report = PassingReport {
+        pagerank: network::pagerank(&weights),
+        betweenness: network::betweenness(&weights),
+        group,
+        modularity,
         players: ids.iter().filter_map(|id| context.roster.get(id).cloned()).collect(),
         made: matrix.iter().map(|r| r.iter().sum()).collect(),
         received: (0..n).map(|j| matrix.iter().map(|r| r[j]).sum()).collect(),

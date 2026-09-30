@@ -43,7 +43,12 @@ function fmt(value, digits = 1, suffix = "") {
   return `${Number(value).toFixed(digits)}${suffix}`;
 }
 const pct = (v, d = 1) => fmt(v, d, "%");
-const signed = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v) ? "—" : `${v > 0 ? "+" : ""}${Number(v).toFixed(d)}`);
+function signed(v, d = 1) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  const text = Number(v).toFixed(d);
+  if (Number(text) === 0) return (0).toFixed(d);
+  return `${v > 0 ? "+" : ""}${text}`;
+}
 function clock(seconds) {
   if (seconds === null || seconds === undefined) return "—";
   const s = Math.round(seconds);
@@ -669,7 +674,9 @@ function shiftChart(container, timeline, options = {}) {
 }
 
 /**
- * Passing network on a circle. nodes: [{id, label, size}], edges: [{from, to, value, lift}]
+ * Passing network on a circle, nodes in the order given. nodes: [{id, label, size, color?,
+ * tag?, tip?}] (tag: a short label drawn inside the node; tip: extra tooltip rows);
+ * edges: [{from, to, value, lift}]
  */
 function networkChart(container, nodes, edges, options = {}) {
   const width = Math.min(measureWidth(container), 900);
@@ -716,12 +723,14 @@ function networkChart(container, nodes, edges, options = {}) {
     const p = position.get(n.id);
     const r = 6 + 10 * Math.sqrt(n.size / maxNode);
     const g = svg("g", { class: "mark" });
-    g.append(svg("circle", { cx: p.x, cy: p.y, r, fill: css("--series-1"), stroke: css("--surface-1"), "stroke-width": 2 }));
+    const fill = n.color || css("--series-1");
+    g.append(svg("circle", { cx: p.x, cy: p.y, r, fill, stroke: css("--surface-1"), "stroke-width": 2 }));
+    if (n.tag && r >= 8) g.append(svg("text", { x: p.x, y: p.y + 4, "text-anchor": "middle", style: `fill:${inkOn(fill)};font-size:10px;font-weight:700`, "pointer-events": "none", text: n.tag }));
     const out = Math.cos(p.angle) >= 0;
     const anchor = Math.abs(Math.cos(p.angle)) < 0.05 ? "middle" : out ? "start" : "end";
     g.append(svg("text", { x: p.x + (r + 6) * Math.cos(p.angle), y: p.y + (r + 6) * Math.sin(p.angle) + 4 + (Math.sin(p.angle) > 0.95 ? 8 : 0), "text-anchor": anchor, text: n.label }));
     g.append(svg("circle", { class: "hit", cx: p.x, cy: p.y, r: Math.max(12, r + 4) }));
-    attachTooltip(g, n.label, [{ value: String(n.size), name: "passes made" }]);
+    attachTooltip(g, n.label, [{ value: String(n.size), name: "passes made" }, ...(n.tip || [])]);
     g.addEventListener("pointerenter", () => {
       for (const { g: eg, e } of edgeNodes) eg.style.opacity = e.from === n.id || e.to === n.id ? "1" : "0.08";
     });

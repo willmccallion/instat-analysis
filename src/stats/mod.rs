@@ -6,4 +6,5 @@ pub mod describe;
 pub mod dist;
 pub mod glm;
 pub mod hypothesis;
+pub mod network;
 pub mod random;

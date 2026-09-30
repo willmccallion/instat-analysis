@@ -192,6 +192,23 @@ pub fn fit_ols(x: &DMatrix<f64>, y: &DVector<f64>) -> Option<OlsFit> {
     })
 }
 
+/// Ridge regression on already standardised columns (no intercept column): minimises
+/// ‖y − ȳ − Xβ‖² + λ‖β‖². Returns (intercept, β).
+#[must_use]
+pub fn fit_ridge(x: &DMatrix<f64>, y: &DVector<f64>, lambda: f64) -> Option<(f64, DVector<f64>)> {
+    if x.nrows() != y.len() || x.nrows() == 0 {
+        return None;
+    }
+    let intercept = y.mean();
+    let centred = y.map(|v| v - intercept);
+    let mut gram = x.transpose() * x;
+    for j in 0..gram.ncols() {
+        gram[(j, j)] += lambda;
+    }
+    let beta = gram.cholesky()?.solve(&(x.transpose() * centred));
+    Some((intercept, beta))
+}
+
 #[derive(Debug, Clone)]
 pub struct LogisticFit {
     pub coefficients: DVector<f64>,
@@ -374,6 +391,16 @@ mod tests {
         let tight = fit_poisson(&PoissonProblem { x, y, offset, penalty: DVector::from_vec(vec![0.0, 50.0, 50.0]) }).unwrap();
         assert!(tight.coefficients[1].abs() < loose.coefficients[1].abs());
         assert!(tight.coefficients[2].abs() < loose.coefficients[2].abs());
+    }
+
+    #[test]
+    fn ridge_with_no_penalty_matches_least_squares() {
+        let x = DMatrix::from_row_slice(5, 1, &[-2.0, -1.0, 0.0, 1.0, 2.0]);
+        let y = DVector::from_vec(vec![1.0, 3.0, 5.0, 7.0, 9.0]);
+        let (intercept, beta) = fit_ridge(&x, &y, 0.0).unwrap();
+        assert!(close(intercept, 5.0, 1e-12) && close(beta[0], 2.0, 1e-12));
+        let (_, shrunk) = fit_ridge(&x, &y, 10.0).unwrap();
+        assert!(close(shrunk[0], 1.0, 1e-12), "20 / (10 + 10)");
     }
 
     #[test]

@@ -1,8 +1,11 @@
 //! Hockey analysis over a chosen set of games: builds the full report the UI renders.
 
+pub mod changes;
 pub mod common;
 pub mod goalies;
 pub mod impact;
+pub mod instat;
+pub mod lineup;
 pub mod luck;
 pub mod matchups;
 pub mod models;
@@ -13,6 +16,7 @@ pub mod profiles;
 pub mod rankings;
 pub mod rating_setup;
 pub mod shots;
+pub mod similarity;
 pub mod significance;
 pub mod stints;
 pub mod style;
@@ -184,6 +188,10 @@ pub struct Analysis {
     pub luck: luck::LuckReport,
     pub timing: timing::TimingReport,
     pub usage: usage::UsageReport,
+    pub lineup: lineup::LineupReport,
+    pub instat: instat::InstatReport,
+    pub form_changes: Vec<changes::FormChange>,
+    pub similarity: similarity::SimilarityReport,
     pub style: style::StyleReport,
     pub players: Vec<players::PlayerSeason>,
     pub rankings: rankings::RankingsReport,
@@ -317,6 +325,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
     .filter_map(|(k, r)| Some((k, r?)))
     .collect();
     fill_pair_expectations(&context, &mut pair_rows, &ratings);
+    let lineup_report = lineup::lineup(&context, &ratings, &units_report);
 
     let significance::Significance { mut tests, power } =
         significance::significance(&context, &units_report, &pair_rows, &passing_report, &team_report);
@@ -330,6 +339,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         .map(|r| (r.player.id.clone(), r.rating))
         .collect();
     let usage_report = usage::usage(&context, &ratings_by_player, &mut tests);
+    let form_changes = changes::changes(&player_seasons, &mut tests);
     let profiles_report = profiles::profiles(&player_seasons, &mut tests);
     adjust_families(&mut tests);
 
@@ -355,6 +365,10 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         luck: luck::luck(&context),
         timing: timing_report,
         usage: usage_report,
+        lineup: lineup_report,
+        instat: instat::instat(&context),
+        form_changes,
+        similarity: similarity::similarity(&context),
         team: team_report,
         rankings: rankings_report,
         players: player_seasons,
