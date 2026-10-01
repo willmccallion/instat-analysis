@@ -9,15 +9,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::error::Error;
 use crate::model::{
-    Advantage, AreaBattles, BattleArea, CellValue, ChartedShot, EntryTypes, EvenStrengthUnitStats, FaceoffSpot, Feet, Game, Goal,
-    GoalieStats, Interval, LeagueGame, LeagueSide, Matchup, Opponent, OpponentShot, OpponentSkater, PERIOD_SECONDS, Player, PlayerId,
-    PlayerMatrix, Position, RinkEvent, RinkEventKind, RinkPoint, SaveSplits, Seconds, ShotSources, ShotZone, SkaterStats,
-    SpecialTeamsUnitStats, SpotFaceoffs, Strength, Tally, Team, TeamName, TeamPrefix, TeamStatRow, TeamSummary, Unit, UnitKind,
-    UnitStats, ZoneShots, add_area_battles, add_spot_faceoffs, add_zone_shots,
+    Advantage, AreaBattles, BattleArea, CellValue, ChartedShot, EntryTypes, EvenStrengthUnitStats, FaceoffSpot, Feet, Game, GameId,
+    Goal, GoalieStats, Interval, LeagueGame, LeagueSide, Matchup, Opponent, OpponentShot, OpponentSkater, PERIOD_SECONDS, Player,
+    PlayerId, PlayerMatrix, Position, RinkEvent, RinkEventKind, RinkPoint, SaveSplits, Seconds, ShotSources, ShotZone, SkaterStats,
+    SpecialTeamsUnitStats, SpotFaceoffs, Strength, Tally, Team, TeamName, TeamPlay, TeamPrefix, TeamStatRow, TeamSummary, Unit,
+    UnitKind, UnitStats, ZoneShots, add_area_battles, add_spot_faceoffs, add_zone_shots,
 };
 use crate::parse::events::{Action, EventFile, EventFileKind, Span, VideoTime};
 use crate::parse::match_report::{Title, our_index};
-use crate::reconcile::{game_id, league_game_id};
 
 const SECTION: &str = "event export";
 const METRES_PER_FOOT: f64 = 0.3048;
@@ -219,6 +218,12 @@ impl<'a> TeamRows<'a> {
 
     fn count(&self, name: &str) -> u32 {
         count(&self.actions, name)
+    }
+
+    /// Like [`Self::count`], but from the team file when it is loaded; it also lists
+    /// actions no single player is credited with.
+    fn team_count(&self, name: &str) -> u32 {
+        if self.file_actions.is_empty() { self.count(name) } else { count(&self.file_actions, name) }
     }
 
     /// Moments at which this team has an action called `name`.
@@ -691,8 +696,6 @@ fn matchups(side: &Side<'_>, ids: &HashMap<String, PlayerId>) -> Vec<Matchup> {
             opponent: Opponent { jersey: None, surname: display_name(opponent) },
             battles_won: 0,
             battles_lost: 0,
-            hits: 0,
-            hits_against: 0,
         });
         if won { entry.battles_won += 1 } else { entry.battles_lost += 1 }
     }
@@ -737,6 +740,25 @@ fn summary(side: &Side<'_>, clock: &Clock) -> TeamSummary {
         possession_pct: None,
         possession_pct_by_period: Vec::new(),
         hits: team.count("Hits"),
+        play: team_play(team),
+    }
+}
+
+fn team_play(team: &TeamRows<'_>) -> TeamPlay {
+    TeamPlay {
+        entries: EntryTypes {
+            pass: team.count("Entries via pass"),
+            carry: team.count("Entries via stickhandling"),
+            dump_in: team.count("Entries via dump in"),
+        },
+        breakouts: team.count("Breakouts"),
+        controlled_breakouts: u32::try_from(team.file_spans.iter().filter(|s| s.name == "Controlled breakouts").count()).unwrap_or(u32::MAX),
+        dump_outs: team.count("Dump outs"),
+        passes_to_slot: team.count("Passes to the slot"),
+        puck_losses: team.count("Puck losses"),
+        puck_losses_defensive_zone: team.count("Puck losses in DZ"),
+        puck_recoveries: team.team_count("Puck recoveries"),
+        puck_recoveries_offensive_zone: team.team_count("Puck recoveries in OZ"),
     }
 }
 
@@ -786,9 +808,14 @@ fn stat_rows(ours: &TeamSummary, theirs: &TeamSummary) -> Vec<TeamStatRow> {
         both("Shot attempts", |s| s.shots),
         both("Shots on goal", |s| s.shots_on_goal),
         both("Scoring chances", |s| s.scoring_chances.0),
+        both("Passes to the slot", |s| s.play.passes_to_slot),
         both("Shots blocked", |s| s.blocked_shots),
         both("Faceoffs won", |s| s.faceoffs_won),
         both("Puck battles won", |s| s.puck_battles_won),
+        both("Zone entries", |s| s.play.entries.total()),
+        both("Breakouts", |s| s.play.breakouts),
+        both("Puck recoveries", |s| s.play.puck_recoveries),
+        both("Puck losses", |s| s.play.puck_losses),
         both("Hits", |s| s.hits),
         both("Penalties", |s| s.penalties),
         row("Power plays / goals", &power_plays(ours), &power_plays(theirs)),
@@ -836,6 +863,16 @@ fn opponent_shots(side: &Side<'_>) -> Vec<OpponentShot> {
     placed_shots(side).into_iter().map(|s| OpponentShot { period: s.period, jersey: None, at: s.at, goal: s.goal }).collect()
 }
 
+/// Our game's id: the date, the opponent and the score from our side.
+fn game_id(title: &Title, ours: usize) -> GameId {
+    let (goals_for, goals_against) = if ours == 0 { title.score } else { (title.score.1, title.score.0) };
+    GameId(format!("{}_{}_{goals_for}-{goals_against}", title.date, title.teams[1 - ours].slug()))
+}
+
+fn league_game_id(title: &Title) -> GameId {
+    GameId(format!("league_{}_{}_{}-{}_{}", title.date, title.teams[0].slug(), title.score.0, title.score.1, title.teams[1].slug()))
+}
+
 /// Both files of one game: the players file, and the team file if it was loaded.
 pub struct EventGame<'a> {
     pub players: &'a EventFile,
@@ -879,7 +916,6 @@ fn player(name: &str, id: PlayerId, position: Position) -> Player {
         surname: surname(name),
         jersey: None,
         position,
-        group: None,
         skater: None,
         goalie: None,
         shifts: Vec::new(),

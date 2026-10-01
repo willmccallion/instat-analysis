@@ -1161,7 +1161,7 @@ function shotsAgainstCard(title, description, shots, multiGame) {
 }
 
 function gameShots(a, timeline) {
-  if (!timeline.shots.length && !timeline.shots_against.length) return emptyNote("This game's match report has no shooting chart.");
+  if (!timeline.shots.length && !timeline.shots_against.length) return emptyNote("No positioned shots in this game's export.");
   const periods = [...new Set([...timeline.shots, ...timeline.shots_against].map((x) => x.period))].sort();
   const chosen = periods.includes(Number(state.shotPeriod)) ? Number(state.shotPeriod) : "all";
   const inPeriod = (x) => chosen === "all" || x.period === chosen;
@@ -1172,8 +1172,8 @@ function gameShots(a, timeline) {
     el("button", { class: chosen === "all" ? "on" : "", text: "Whole game", onclick: () => pick("all") }),
     ...periods.map((p) => el("button", { class: chosen === p ? "on" : "", text: periodName(p), onclick: () => pick(p) })),
   ]);
-  const plot = chartCard("Where we shot from", "Every shot attempt on InStat's shooting chart, placed on a standard rink. Hover a dot for the shooter and distance. InStat's chart marks goals but not which other attempts were on net, missed or blocked; the zone maps have on-net totals.", (c) => shotPlot(c, shots, { sizeByXg: true, tip: (x) => shotTip(x) }), (c) => distanceTable(c, shots));
-  const againstPlot = shotsAgainstCard("Where they shot on our net", "Every shot attempt the opponent took, from their shooting chart; our net at the top. Goals against are red. InStat's chart marks goals but not which other attempts were on net, missed or blocked; the zone maps have on-net totals.", against, false);
+  const plot = chartCard("Where we shot from", "Every shot attempt (on net, missed or blocked) where InStat's event export places it. Hover a dot for the shooter and distance; goals are marked.", (c) => shotPlot(c, shots, { sizeByXg: true, tip: (x) => shotTip(x) }), (c) => distanceTable(c, shots));
+  const againstPlot = shotsAgainstCard("Where they shot on our net", "Every shot attempt the opponent took, where the event export places it; our net at the top. Goals against are red.", against, false);
   const table = el("div", { class: "card" }, [cardTitle("Our shooters"), el("div")]);
   shootersTable(table.lastChild, shots);
   return [filter, el("div", { class: "grid two" }, [plot, againstPlot]), el("div", { style: "margin-top:16px" }, [table])];
@@ -1188,7 +1188,7 @@ function deservedCard(g) {
     { label: "Tie", value: 100 * d.tie, color: css("--deemphasis") },
     { label: "Loss", value: 100 * d.loss, color: css("--critical") },
   ];
-  const source = g.source === "Shots" ? "every charted shot's xG" : "the two teams' xG totals (no shooting chart)";
+  const source = g.source === "Shots" ? "every charted shot's xG" : "the two teams' xG totals (no positioned shots)";
   return chartCard(`Deserved result: ${fmt(d.expected_points, 1)} points (got ${g.points})`, `How this game would usually end given the chances both teams created, from ${source}. xG ${fmt(g.xg_for, 2)}–${fmt(g.xg_against, 2)}.`, (c) => hBarChart(c, rows, { min: 0, max: 100, valueFormat: (v) => pct(v, 0), labelWidth: 110, valueName: "chance" }), null);
 }
 
@@ -1216,11 +1216,10 @@ function battleBalanceChart(container, rows) {
 }
 
 const hadBattles = (x) => x.battles.won + x.battles.lost > 0;
-const hadHits = (x) => x.hits.given + x.hits.taken > 0;
 
 function gameMatchups(a, timeline) {
   const m = timeline.matchups;
-  if (!m.opponents.length) return emptyNote("This game's match report has no challenge or hits distribution page.");
+  if (!m.opponents.length) return emptyNote("No head-to-head puck battles in this game.");
   const battlers = m.opponents.filter(hadBattles);
   const opponentsCard = battlers.length ? chartCard("Their skaters in puck battles", "Each opponent skater's one-on-one battles against us, most battles first. Bars show battles we won minus battles they won (right = we came out ahead); labels are won–lost from our side.", (c) => battleBalanceChart(c, battlers.map((o) => ({
     label: opponentName(o.opponent),
@@ -1232,8 +1231,6 @@ function gameMatchups(a, timeline) {
     { key: "won", label: "We won", value: (o) => o.battles.won },
     { key: "lost", label: "They won", value: (o) => o.battles.lost },
     { key: "pct", label: "Our win %", value: (o) => battleWinPct(o.battles), format: (v) => pct(v, 0), tone: "higher" },
-    { key: "given", label: "Hits by us", value: (o) => o.hits.given },
-    { key: "taken", label: "Hits by them", value: (o) => o.hits.taken },
   ], m.opponents, { sortKey: "total" })) : null;
   const cellAt = new Map(m.cells.map((cell) => [`${cell.player}:${cell.opponent}`, cell]));
   const gridCard = battlers.length ? chartCard("Who battled whom", "Our skaters down the side, theirs across the top; each square is won–lost from our side. Click a square to open our player's card.", (c) => heatmap(c, { rows: m.players.map((p) => p.name), columns: m.opponents.map((o) => opponentName(o.opponent)) }, (i, j) => {
@@ -1246,25 +1243,11 @@ function gameMatchups(a, timeline) {
       tip: [
         { value: String(cell.battles.won), name: "we won" },
         { value: String(cell.battles.lost), name: "they won" },
-        ...(hadHits(cell) ? [{ value: `${cell.hits.given}–${cell.hits.taken}`, name: "hits given–taken" }] : []),
       ],
       onClick: () => goToPlayer(m.players[i].id),
     };
   }, { kind: "diverging", min: 0, max: 100, center: 50 }, { valueName: "our win %", labelWidth: 150 }), null) : null;
-  const hits = m.cells.filter(hadHits).map((cell) => ({ player: m.players[cell.player], opponent: m.opponents[cell.opponent].opponent, hits: cell.hits }));
-  const hitsCard = el("div", { class: "card" }, [cardTitle("Hits between skaters"), hits.length ? el("div") : emptyNote("No hits recorded in this game.")]);
-  if (hits.length) {
-    dataTable(hitsCard.lastChild, [
-      { key: "ours", label: "Our skater", left: true, value: (h) => h.player.name },
-      { key: "theirs", label: "Their skater", left: true, value: (h) => opponentName(h.opponent) },
-      { key: "given", label: "Hits given", value: (h) => h.hits.given },
-      { key: "taken", label: "Hits taken", value: (h) => h.hits.taken },
-    ], hits, { sortKey: "given", onRow: (h) => goToPlayer(h.player.id) });
-  }
-  return [
-    ...[opponentsCard, gridCard].filter(Boolean).map((card) => el("div", { style: "margin-bottom:16px" }, [card])),
-    hitsCard,
-  ];
+  return [opponentsCard, gridCard].filter(Boolean).map((card) => el("div", { style: "margin-bottom:16px" }, [card]));
 }
 
 function gameTeamStats(a, timeline) {
@@ -1619,7 +1602,7 @@ function playerDetail(a, s) {
   const head = el("div", { class: "player-head" }, [
     el("span", { class: "jersey", text: s.player.jersey ?? "" }),
     el("h1", { text: s.player.name }),
-    el("span", { class: "muted", text: `${s.player.position}${s.group ? ` · ${s.group.toLowerCase()}` : ""} · ${t.games} GP` }),
+    el("span", { class: "muted", text: `${s.player.position} · ${t.games} GP` }),
   ]);
   const kpis = tiles([
     { label: "Points", value: `${t.points}`, note: `${t.goals} G, ${t.assists} A · ${fmt(s.rates.points, 1)}/60` },
@@ -1700,7 +1683,7 @@ function playerShooting(a, s) {
   const several = new Set(s.charted_shots.map((x) => x.game)).size > 1;
   const cards = [
     finishingCard(s),
-    s.charted_shots.length ? chartCard("Every shot attempt they took", `Where InStat's shooting chart drew each attempt${several ? " over the games in scope" : ""}; bigger dots were bigger chances. Hover a dot for the period, distance and xG.`, (c) => shotPlot(c, s.charted_shots, { sizeByXg: true, tip: (x) => shotTip(x, { shooter: false, game: several }) }), null) : null,
+    s.charted_shots.length ? chartCard("Every shot attempt they took", `Where the event export places each attempt${several ? " over the games in scope" : ""}; bigger dots were bigger chances. Hover a dot for the period, distance and xG.`, (c) => shotPlot(c, s.charted_shots, { sizeByXg: true, tip: (x) => shotTip(x, { shooter: false, game: several }) }), null) : null,
     s.charted_shots.length >= 5 ? chartCard("Where their chances come from", "Their attempts smoothed into a map and weighted by xG, so dangerous spots stand out over long-range volume.", (c) => densityMap(c, s.charted_shots.map((x) => ({ at: x.at, w: x.xg ?? 0 })), { rink: "half", valueName: "xG in a 10×10 ft square", title: "Their chances here", format: (v) => fmt(v, 3) }), null) : null,
     t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Where they shoot from", "Shots by zone over the games in scope.", t.shot_zones) : null,
     netShotsCard(t.net_shots),
@@ -1798,7 +1781,7 @@ function entryTypesCard(t) {
 const RINK_STYLES = {
   turnovers: () => ({ Recovery: { label: "Recoveries", color: css("--series-1"), mark: "dot" }, Loss: { label: "Losses", color: css("--critical"), mark: "cross" } }),
   battles: () => ({ BattleWon: { label: "Won", color: css("--series-1"), mark: "dot" }, BattleLost: { label: "Lost", color: css("--critical"), mark: "cross" } }),
-  hits: () => ({ Hit: { label: "Hits given", color: css("--text-primary"), mark: "dot" }, HitTaken: { label: "Hits taken", color: css("--text-primary"), mark: "ring" } }),
+  hits: () => ({ Hit: { label: "Hits given", color: css("--text-primary"), mark: "dot" } }),
 };
 
 /** A rink map of the events whose kinds `styles` covers, or null when there are none. */
@@ -1810,10 +1793,10 @@ function rinkCard(title, description, events, styles) {
 function playerPuckPlay(a, s) {
   const t = s.totals;
   const cards = [
-    rinkCard("Where they win and lose the puck", "Every puck recovery and loss where InStat's map drew it. Losses near our net are the costly ones.", t.rink_events, RINK_STYLES.turnovers()),
+    rinkCard("Where they win and lose the puck", "Every puck recovery and loss where the event export places it. Losses near our net are the costly ones.", t.rink_events, RINK_STYLES.turnovers()),
     puckControlCard("Where they win the puck back more than they lose it", "Recoveries minus losses, smoothed (our net on the left). Blue = more recoveries, red = more losses.", t.rink_events, t.games),
-    rinkCard("Where their puck battles were", "Every one-on-one battle where InStat's map drew it. InStat's map shows a few battles its totals leave out, so these can run slightly higher than the battle counts.", t.rink_events, RINK_STYLES.battles()),
-    rinkCard("Hits", "Hits given and taken where InStat's map drew them.", t.rink_events, RINK_STYLES.hits()),
+    rinkCard("Where their puck battles were", "Every one-on-one battle where the event export places it.", t.rink_events, RINK_STYLES.battles()),
+    rinkCard("Hits", "Hits given where the event export places them (it doesn't say who was hit).", t.rink_events, RINK_STYLES.hits()),
     t.battle_areas.some((x) => x.battles > 0) ? battleMapCard("Puck battles by area", "Where they win and lose battles (our net on the left).", t.battle_areas) : null,
     entryTypesCard(t),
     faceoffZonesCard(t),
@@ -1822,7 +1805,7 @@ function playerPuckPlay(a, s) {
 }
 
 function playerMatchups(a, s) {
-  if (!s.matchups.length) return emptyNote("No head-to-head battles or hits recorded in the games in scope.");
+  if (!s.matchups.length) return emptyNote("No head-to-head battles recorded in the games in scope.");
   const severalGames = new Set(s.matchups.map((m) => m.game)).size > 1;
   const label = (m) => (severalGames ? `${opponentName(m.opponent)} (${m.date.slice(5)})` : opponentName(m.opponent));
   const battled = s.matchups.filter(hadBattles).sort((x, y) => (y.battles.won + y.battles.lost) - (x.battles.won + x.battles.lost));
@@ -1834,18 +1817,16 @@ function playerMatchups(a, s) {
     { key: "won", label: "Won", value: (m) => m.battles.won },
     { key: "lost", label: "Lost", value: (m) => m.battles.lost },
     { key: "pct", label: "Win %", value: (m) => battleWinPct(m.battles), format: (v) => pct(v, 0), tone: "higher" },
-    { key: "given", label: "Hits given", value: (m) => m.hits.given },
-    { key: "taken", label: "Hits taken", value: (m) => m.hits.taken },
   ], s.matchups, { sortKey: "date" });
   if (!battled.length) {
     const card = el("div", { class: "card" }, [cardTitle("Opponents they met", scopeChip()), el("div")]);
     table(card.lastChild);
     return card;
   }
-  return chartCard("Opponents they met", "One-on-one puck battles against each opponent skater, most battles first. Bars show battles won minus battles lost (right = came out ahead); labels are won–lost. The table adds hits given and taken.", (c) => battleBalanceChart(c, battled.map((m) => ({
+  return chartCard("Opponents they met", "One-on-one puck battles against each opponent skater, most battles first. Bars show battles won minus battles lost (right = came out ahead); labels are won–lost.", (c) => battleBalanceChart(c, battled.map((m) => ({
     label: label(m),
     battles: m.battles,
-    note: `won ${m.battles.won}, lost ${m.battles.lost}${hadHits(m) ? ` · hits ${m.hits.given}–${m.hits.taken}` : ""}${severalGames ? ` · vs ${m.opponent_team}` : ""}`,
+    note: `won ${m.battles.won}, lost ${m.battles.lost}${severalGames ? ` · vs ${m.opponent_team}` : ""}`,
   }))), table, { source: scopeChip() });
 }
 
@@ -1973,7 +1954,7 @@ function goalieSaved(g) {
     { label: "GSAx per 60", value: signed(s.per_60, 2), note: "per 60 minutes played" },
   ]);
   const periods = s.by_period.filter((p) => p.attempts > 0);
-  const periodCard = periods.length ? chartCard("Goals saved above expected by period", "From the opponent's shooting charts, games this goalie played alone. Watch for fades late in games.", (c) => hBarChart(c, periods.map((p) => ({
+  const periodCard = periods.length ? chartCard("Goals saved above expected by period", "From the opponent's positioned shots, games this goalie played alone. Watch for fades late in games.", (c) => hBarChart(c, periods.map((p) => ({
     label: periodName(p.period), value: p.saved_above_expected, color: p.saved_above_expected >= 0 ? css("--div-pos") : css("--div-neg"),
     note: `${p.goals} goals on ${p.attempts} attempts worth ${fmt(p.xg_against, 2)} xG`,
   })), { valueFormat: (v) => signed(v, 2), labelWidth: 100, valueName: "GSAx" }), (c) => dataTable(c, [
@@ -2133,7 +2114,7 @@ function comparisonCard(group) {
     })), { min: 0, max: 100, reference: 50, referenceLabel: "even", valueFormat: (v) => pct(v, 0), labelWidth: 230, valueName: "our share" });
     if (notes.length) c.append(el("ul", { class: "small muted notes" }, notes.map((n) => el("li", { text: n }))));
   };
-  return chartCard(group.title, "Our share of the total, us vs them. Green = in our favour, red = in theirs (for icings, offsides and giveaways, fewer is better).", draw, (c) => dataTable(c, [
+  return chartCard(group.title, "Our share of the total, us vs them. Green = in our favour, red = in theirs (for dump-outs and puck losses, fewer is better).", draw, (c) => dataTable(c, [
     { key: "label", label: "", left: true },
     { key: "ours", label: "Us", value: (item) => value(item, item.ours) },
     { key: "theirs", label: "Them", value: (item) => value(item, item.theirs) },
@@ -2228,16 +2209,16 @@ function shotDensitySection(t, games) {
 function viewPlay() {
   const a = state.analysis;
   const t = a.team;
-  const note = el("p", { class: "small muted", text: "InStat's PDFs give totals per game, not the play-by-play feed, so sequences between whistles (e.g. every neutral-zone regroup) can't be rebuilt. Positional attacks vs counter-attacks and entry types are the closest categories InStat provides." });
-  const turnovers = rinkCard("Where we win and lose the puck", "Every skater's puck recoveries and losses where InStat's player maps drew them, over the games in scope.", a.players.flatMap((p) => p.totals.rink_events), RINK_STYLES.turnovers());
+  const note = el("p", { class: "small muted", text: "Counts from InStat's event export for both teams, pooled over the games in scope. Time with the puck needs the optional Match report." });
+  const turnovers = rinkCard("Where we win and lose the puck", "Every skater's puck recoveries and losses where the event export places them, over the games in scope.", a.players.flatMap((p) => p.totals.rink_events), RINK_STYLES.turnovers());
   const games = Math.max(1, a.games.filter((g) => g.in_scope).length);
   const events = a.players.flatMap((p) => p.totals.rink_events);
   return page("Possession & shots", "How we attack, enter the zone and manage the puck, compared with our opponents.",
     el("div", { class: "grid two" }, [
-      t.charted_shots.length ? chartCard("Every shot attempt we took", "Where InStat's shooting charts drew each attempt, over the games in scope. Hover a dot for the shooter. InStat's chart marks goals but not which other attempts were on net, missed or blocked; the zone maps have on-net totals.", (c) => shotPlot(c, t.charted_shots, { sizeByXg: true, tip: (x) => shotTip(x, { game: a.games.filter((g) => g.in_scope).length > 1 }) }), (c) => shootersTable(c, t.charted_shots)) : null,
-      t.charted_shots_against.length ? shotsAgainstCard("Every shot attempt against us", "Where opponents shot on our net, from their shooting charts, over the games in scope; our net at the top. Goals against are red. The table splits attempts by distance. InStat's chart marks goals but not which other attempts were on net, missed or blocked; the zone maps have on-net totals.", t.charted_shots_against, a.games.filter((g) => g.in_scope).length > 1) : null,
+      t.charted_shots.length ? chartCard("Every shot attempt we took", "Where the event export places each attempt (on net, missed or blocked), over the games in scope. Hover a dot for the shooter; goals are marked.", (c) => shotPlot(c, t.charted_shots, { sizeByXg: true, tip: (x) => shotTip(x, { game: a.games.filter((g) => g.in_scope).length > 1 }) }), (c) => shootersTable(c, t.charted_shots)) : null,
+      t.charted_shots_against.length ? shotsAgainstCard("Every shot attempt against us", "Where opponents shot on our net, over the games in scope; our net at the top. Goals against are red. The table splits attempts by distance.", t.charted_shots_against, a.games.filter((g) => g.in_scope).length > 1) : null,
       t.shot_zones.some((z) => z.shots > 0) ? shotMapCard("Our shots", "Where our shots came from (all skaters, all strengths). Hover a zone for details.", t.shot_zones) : null,
-      t.shot_zones_against.some((z) => z.shots > 0) ? shotMapCard("Shots against", "Where opponents shot on our net, from their shots table. Same layout: our net at the top.", t.shot_zones_against) : null,
+      t.shot_zones_against.some((z) => z.shots > 0) ? shotMapCard("Shots against", "Where opponents shot on our net, by InStat's zones. Same layout: our net at the top.", t.shot_zones_against) : null,
     ].filter(Boolean)),
     shotDensitySection(t, games),
     turnovers ? el("div", { style: "margin-top:16px" }, [turnovers]) : null,
@@ -2681,7 +2662,7 @@ function viewLeaguePlayers() {
 function viewLeagueStandings() {
   const a = state.analysis;
   const L = a.league;
-  const card = el("div", { class: "card" }, [el("p", { class: "desc", text: "From every loaded game only (ours and league match reports), so teams with fewer games loaded have fewer points; points per game is the fairer column. Click a team to compare with them." }), el("div")]);
+  const card = el("div", { class: "card" }, [el("p", { class: "desc", text: "From every loaded game only (ours and other teams' CSV exports), so teams with fewer games loaded have fewer points; points per game is the fairer column. Click a team to compare with them." }), el("div")]);
   dataTable(card.lastChild, [
     { key: "team", label: "Team", left: true, render: (r) => (r.ours ? el("strong", { text: r.team }) : r.team) },
     { key: "games", label: "GP" }, { key: "wins", label: "W" }, { key: "losses", label: "L" }, { key: "overtime_losses", label: "OTL" }, { key: "ties", label: "T" },
@@ -2757,7 +2738,7 @@ function viewLuck() {
 function viewXgModel() {
   const a = state.analysis;
   const x = a.xg_model;
-  if (!x.ready) return page("Shot quality model", "Needs a game with InStat xG and a shooting chart.");
+  if (!x.ready) return page("Shot quality model", "Needs a game with its Player report (for InStat's xG).");
   const holdout = x.holdout
     ? `Tested on games it hadn't seen (leave one game out, ${x.holdout.games} games): off by ${fmt(x.holdout.model_error, 3)} xG per shooter per game, against ${fmt(x.holdout.flat_error, 3)} when every shot counts the same.`
     : "The out-of-sample check starts with 2 games.";
@@ -2867,7 +2848,7 @@ function viewHelp() {
     ["Power analysis", "How many more games at the current usage would give an 80% chance of confirming a difference of the size currently estimated."],
     ["Passing lift", "Passes between two players divided by what their overall passing and receiving volumes predict (quasi-independence). Above 1 = a real connection."],
     ["Rink maps", "Puck recoveries, losses, battles and hits where InStat's event export places them, on a standard rink (our net on the left). The legend counts each kind in our zone, the neutral zone and theirs."],
-    ["Shot locations", "Every shot attempt (on net, missed or blocked) from InStat's shooting charts (ours and the opponent's). The charts mark goals but not which other attempts were on net, so on-net totals come from the zone maps. Attempts are placed on a standard rink using the chart's own faceoff circles. Distances are measured to the middle of the net; InStat's drawing is approximate, so treat them as a few feet either way."],
+    ["Shot locations", "Every shot attempt (on net, missed or blocked) for both teams where InStat's event export places it, on a standard rink. Distances are measured to the middle of the net; InStat's tagging is by hand, so treat them as a few feet either way. Zones follow InStat's own shot zones (they agree with its reports for about 95% of shots)."],
     ["xG per shot", "InStat prints expected goals per player and team, not per shot. The app fits a distance-and-angle model so each player's charted attempts add up to their InStat xG in each game (and the opponent's to their team xG), then scales each shot so the totals match InStat exactly. Deep dive → Shot quality model shows the fit and a leave-one-game-out check."],
     ["Luck & results", "Each shot's xG is its chance of scoring; combining every shot in a game gives the exact chance of each final score, so how often the game is won, lost, tied or goes to overtime. Overtime is 5 minutes of sudden death at each team's regulation scoring rate. Expected points add those up (2 for a win, 1 for an overtime loss or tie). The goal differential splits exactly into shot volume, chance quality, our finishing and our goaltending."],
     ["Goals saved above expected (GSAx)", "The xG of every attempt a goalie faced minus the goals allowed. Attempts include ones that missed or were blocked, so it also reflects the defence. When two goalies shared a game, each gets the team's xG in proportion to the shots on goal they faced. Weak spots on the net pull each area's save % toward the goalie's own average in proportion to how few shots it has."],
@@ -2888,12 +2869,12 @@ function viewHelp() {
     ["Puck battles by area", "InStat splits every one-on-one puck battle by where it happened: in front of each net, behind each net, the corners, along each blue line, and the neutral zone. The map shows the share we won in each area; corners are one area drawn top and bottom."],
     ["Faceoffs at every dot", "From the faceoff rink on InStat's team stats page: our wins and losses at each of the nine dots (two in each end, four in the neutral zone, centre ice). The app checks the dots against the zone totals in InStat's faceoff table and leaves them out, with a warning, if they don't match."],
     ["Player ratings", "Each stat is compared with every skater at the same position in the games in scope, ours and the opponents' (in standard deviations, after pulling low-ice-time players toward the average). 50 is the average skater in those games, so the team's own average shows how it stacks up. xG (from the optional Player report) and passes are compared among our players only. Stats are grouped into Offence, Defence and Puck play; within each part a stat counts by its weight, and the parts are combined by their weights. The Recommended weights favour stats most tied to goals for and against; coaches can pick a preset or set any weight from 0 (left out) to 3 under Rankings → Customise the ranking, and reset to the recommended weights at any time."],
-    ["Matchups", "InStat's challenge and hits distributions list every one-on-one puck battle and every hit between each of our skaters and each of theirs. Opponents are shown as InStat labels them (number and surname); bars show battles won minus lost, so one battle never looks like a 100% record."],
+    ["Matchups", "Every one-on-one puck battle between one of our skaters and one of theirs, paired by the moment InStat logged it for both. Opponents are shown by name; bars show battles won minus lost, so one battle never looks like a 100% record."],
     ["Goalie breakdowns", "From the goalie's Player-report page: save % by distance, zone, shot type, screened or clear view, where on the net the shot was headed (seen from the shooter), and where the puck met the goalie (the goalie's own left and right). Colours compare each part with the goalie's overall save %. Rebound control splits every save by what happened to the puck next."],
     ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],
     ["Practice focus", "Each area compares us with our opponents (50% = even; power play against 20%, penalty kill against 80%). An area is flagged only when it's 8+ points off and backed by at least 10 events; the drill ideas are starting points, not prescriptions."],
     ["Shift data", "Rebuilt from InStat's time-distribution chart. The reader checks itself: every player's +/- rebuilt from shifts must match InStat's own column, or the game shows a warning."],
-    ["Where the numbers come from", "InStat's event export: two CSV files with every action (time, spot on the ice, player) and every shift for both teams. Lines, +/-, attempts on and off the ice, power plays and passing partners are rebuilt from it; a pass's receiver is taken as the next teammate to touch the puck, which agrees with InStat's own passing table about 70% of the time, and penalties are counted as 2-minute minors since the export gives no lengths. Forward or defence is guessed from faceoffs, depth and linemates. The optional PDF reports add what only InStat computes: its xG, InStat Index, goalie save splits, shot types, possession, jersey numbers and each player's recent-games history. A game with only PDF reports is read from the Match report's tables and shift chart."],
+    ["Where the numbers come from", "InStat's event export: two CSV files with every action (time, spot on the ice, player) and every shift for both teams. Lines, +/-, attempts on and off the ice, power plays and passing partners are rebuilt from it; a pass's receiver is taken as the next teammate to touch the puck, which agrees with InStat's own passing table about 70% of the time, and penalties are counted as 2-minute minors since the export gives no lengths. Forward or defence is guessed from faceoffs, depth and linemates. The optional PDF reports add what only InStat computes: its xG, InStat Index, goalie save splits, shot types, possession, jersey numbers and each player's recent-games history."],
   ];
   return page("How to read this", "Short explanations of every number in the report. Anywhere in the app, a stat name with a dotted underline explains itself: hover over it, tap it, or tab to it.", el("dl", { class: "explain" }, terms.flatMap(([t, d]) => [el("dt", { text: t }), el("dd", { text: d })])));
 }

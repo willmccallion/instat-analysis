@@ -1265,7 +1265,7 @@ function halfRink(container, options = {}) {
 }
 
 /**
- * Every shot attempt where InStat's shooting chart drew it, on a half rink in feet (net at the top,
+ * Every shot attempt where the event export places it, on a half rink in feet (net at the top,
  * blue line at the bottom). shots: [{at: {along, across}, goal, xg?, ...}];
  * options.tip(shot) -> {title, rows} describes a dot on hover; options.goalColor is a colour
  * token for goals (default --series-2); options.sizeByXg scales dots by each shot's xG.

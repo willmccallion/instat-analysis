@@ -115,6 +115,12 @@ impl TeamName {
     pub fn new(raw: &str) -> Self {
         Self(normalise_name(raw))
     }
+
+    /// Lower-case letters and digits, everything else a dash: safe in ids and file names.
+    #[must_use]
+    pub fn slug(&self) -> String {
+        self.0.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect()
+    }
 }
 
 /// Deterministic identifier for a game (date + teams + score).
@@ -423,20 +429,6 @@ impl ShotZone {
         Self::BlueLineCenter,
         Self::BlueLineLeft,
     ];
-
-    /// Column header in InStat's shots table.
-    #[must_use]
-    pub const fn instat_label(self) -> &'static str {
-        match self {
-            Self::Slot => "Slot",
-            Self::Center => "Center",
-            Self::RightFlank => "Right flank",
-            Self::LeftFlank => "Left flank",
-            Self::BlueLineRight => "Blue line right",
-            Self::BlueLineCenter => "Blue line center",
-            Self::BlueLineLeft => "Blue line left",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,7 +443,6 @@ pub enum RinkEventKind {
     Recovery,
     Loss,
     Hit,
-    HitTaken,
     BattleWon,
     BattleLost,
 }
@@ -874,6 +865,11 @@ pub struct EntryTypes {
 }
 
 impl EntryTypes {
+    #[must_use]
+    pub const fn total(self) -> u32 {
+        self.pass + self.carry + self.dump_in
+    }
+
     pub const fn add(&mut self, other: Self) {
         self.pass += other.pass;
         self.carry += other.carry;
@@ -1008,8 +1004,6 @@ pub struct Player {
     pub surname: String,
     pub jersey: Option<Jersey>,
     pub position: Position,
-    /// InStat's grouping on the time-distribution page, e.g. "FIRST LINE".
-    pub group: Option<String>,
     pub skater: Option<SkaterStats>,
     pub goalie: Option<GoalieStats>,
     pub shifts: Vec<Interval>,
@@ -1032,12 +1026,6 @@ pub struct Matchup {
     pub opponent: Opponent,
     pub battles_won: u32,
     pub battles_lost: u32,
-    /// Hits our player gave this opponent.
-    #[serde(default)]
-    pub hits: u32,
-    /// Hits our player took from this opponent.
-    #[serde(default)]
-    pub hits_against: u32,
 }
 
 /// An opponent skater's numbers from their pages of our match report, so our players can
@@ -1077,7 +1065,37 @@ pub struct PlayerMatrix {
     pub values: Vec<Vec<u32>>,
 }
 
-/// The team-level numbers the analysis relies on (from the TEAMS STATS page).
+/// How a team moved the puck, counted over a game.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamPlay {
+    pub entries: EntryTypes,
+    pub breakouts: u32,
+    /// Breakouts carried or passed out under control, start to finish.
+    pub controlled_breakouts: u32,
+    pub dump_outs: u32,
+    pub passes_to_slot: u32,
+    pub puck_losses: u32,
+    pub puck_losses_defensive_zone: u32,
+    pub puck_recoveries: u32,
+    pub puck_recoveries_offensive_zone: u32,
+}
+
+impl TeamPlay {
+    pub const fn add(&mut self, other: Self) {
+        self.entries.add(other.entries);
+        self.breakouts += other.breakouts;
+        self.controlled_breakouts += other.controlled_breakouts;
+        self.dump_outs += other.dump_outs;
+        self.passes_to_slot += other.passes_to_slot;
+        self.puck_losses += other.puck_losses;
+        self.puck_losses_defensive_zone += other.puck_losses_defensive_zone;
+        self.puck_recoveries += other.puck_recoveries;
+        self.puck_recoveries_offensive_zone += other.puck_recoveries_offensive_zone;
+    }
+}
+
+/// The team-level numbers the analysis relies on. Possession and xG come only from
+/// InStat's match report, when it is loaded.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TeamSummary {
     pub shots: u32,
@@ -1101,6 +1119,7 @@ pub struct TeamSummary {
     pub possession_pct: Option<f64>,
     pub possession_pct_by_period: Vec<f64>,
     pub hits: u32,
+    pub play: TeamPlay,
 }
 
 /// One game from our point of view.

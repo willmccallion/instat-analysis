@@ -2,8 +2,7 @@
 //!
 //! Every file is kept so games can be rebuilt when the reader improves; each game is also
 //! cached as JSON (tagged with [`PARSER_VERSION`]) so start-up does not re-read every file.
-//! A game is built from its event export when that is loaded, with any PDF reports adding
-//! InStat's own numbers; otherwise from its PDF match report alone.
+//! A game is built from its event export, with any PDF reports adding InStat's own numbers.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,7 +18,6 @@ use crate::ingest::{Document, describe, parse_upload, same_game};
 use crate::model::{Game, GameId, LeagueGame, TeamPrefix};
 use crate::parse::events::{EventFile, EventFileKind};
 use crate::parse::match_report::{Title, our_index};
-use crate::reconcile::{reconcile, reconcile_league};
 
 /// Bump when parsing or reconciliation changes, to rebuild cached games.
 pub const PARSER_VERSION: u32 = 16;
@@ -47,7 +45,7 @@ impl FileKind {
         match document {
             Document::Events(file) if matches!(file.kind, EventFileKind::Players) => Self::PlayersExport,
             Document::Events(_) => Self::TeamExport,
-            Document::Match(_) | Document::League(_) => Self::MatchReport,
+            Document::Match(_) => Self::MatchReport,
             Document::Players(_) => Self::PlayersReport,
         }
     }
@@ -159,14 +157,8 @@ pub struct Store {
     pub problems: Vec<String>,
 }
 
-fn slug(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
-        .collect()
-}
-
 fn title_key(title: &Title) -> String {
-    format!("{}_{}_{}-{}_{}", title.date, slug(&title.teams[0].0), title.score.0, title.score.1, slug(&title.teams[1].0))
+    format!("{}_{}_{}-{}_{}", title.date, title.teams[0].slug(), title.score.0, title.score.1, title.teams[1].slug())
 }
 
 /// The name a file is kept under. Event exports keep InStat's naming, since their date and
@@ -194,16 +186,8 @@ fn game_label(game: &Game) -> String {
     format!("{} vs {} {}-{}", game.date, game.opponent.0, game.goals_for, game.goals_against)
 }
 
-fn waiting_for(files: &GameFiles, ours: bool) -> String {
-    match (files.has(FileKind::TeamExport), files.has(FileKind::PlayersReport)) {
-        (true, _) => "add its players CSV (the one with shifts)".to_owned(),
-        (false, true) if ours => "add its players CSV, or its match report".to_owned(),
-        _ => "add its players CSV".to_owned(),
-    }
-}
-
 /// The game `documents` make up for `team`.
-fn build(team: &TeamPrefix, title: &Title, files: &GameFiles, documents: &Documents) -> Result<Built, Error> {
+fn build(team: &TeamPrefix, title: &Title, documents: &Documents) -> Result<Built, Error> {
     let ours = match our_index(title, team) {
         Ok(_) => true,
         Err(Error::WrongTeam { both: false, .. }) => false,
@@ -218,18 +202,14 @@ fn build(team: &TeamPrefix, title: &Title, files: &GameFiles, documents: &Docume
         _ => None,
     };
     let Some(players) = &documents.players_export else {
-        return Ok(match (&documents.match_report, ours) {
-            (Some(Document::Match(report)), true) => Built::Ours(Box::new(reconcile(report, players_report)?)),
-            (Some(Document::League(report)), false) => Built::League(Box::new(reconcile_league(report)?)),
-            _ => Built::Waiting(waiting_for(files, ours)),
-        });
+        return Ok(Built::Waiting("add its players CSV (the one with shifts)".to_owned()));
     };
     let export = EventGame { players, team: documents.team_export.as_ref() };
     if !ours {
         return Ok(Built::League(Box::new(build_league_game(&export)?)));
     }
     let mut game = build_game(&export, team)?;
-    add_reports(&mut game, match_report, players_report)?;
+    add_reports(&mut game, match_report, players_report);
     Ok(Built::Ours(Box::new(game)))
 }
 
@@ -490,7 +470,7 @@ impl Store {
         fs::write(&path, bytes)?;
         let built = self
             .read_documents(&team, &files)
-            .and_then(|documents| build(&team, &title, &files, &documents))
+            .and_then(|documents| build(&team, &title, &documents))
             .inspect_err(|_| {
                 if let Err(e) = fs::remove_file(&path) {
                     eprintln!("could not remove {name}: {e}");

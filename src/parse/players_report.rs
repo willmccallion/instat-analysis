@@ -3,10 +3,9 @@
 use crate::cell::Cell;
 use crate::error::Error;
 use crate::layout::{self, Line};
-use crate::model::{Date, Jersey, NetArea, RinkEvent, ShotZone, TeamPrefix};
+use crate::model::{Date, Jersey, NetArea, ShotZone, TeamPrefix};
 use crate::parse::common::LINE_TOLERANCE;
 use crate::parse::diagrams;
-use crate::parse::rink;
 use crate::parse::match_report::{Title, our_index, parse_cover};
 use crate::pdf::{Page, Rect, Word};
 
@@ -64,8 +63,6 @@ pub struct PlayerPage {
     pub net: Vec<(NetArea, (u32, u32))>,
     /// Goalie pages: shots / saves from each of InStat's seven zones, this game.
     pub zones: Vec<(ShotZone, (u32, u32))>,
-    /// Skater pages: recoveries, losses, hits and battles where the rink maps drew them.
-    pub events: Vec<RinkEvent>,
 }
 
 impl PlayerPage {
@@ -177,12 +174,11 @@ fn parse_player_page(page: &Page) -> Result<PlayerPage, Error> {
         PageKind::Skater
     };
     let history = history(&page.words, kind)?;
-    let (net, zones, events) = match kind {
+    let (net, zones) = match kind {
         PageKind::Goalie => goalie_diagrams(&page.words).map_or_else(Default::default, |regions| {
             (
                 diagrams::net_grid(&page.words, &regions.net).unwrap_or_default(),
                 diagrams::zone_grid(&page.words, &regions.rink).unwrap_or_default(),
-                Vec::new(),
             )
         }),
         PageKind::Skater => (
@@ -190,7 +186,6 @@ fn parse_player_page(page: &Page) -> Result<PlayerPage, Error> {
                 .and_then(|region| diagrams::net_grid(&page.words, &region))
                 .unwrap_or_default(),
             Vec::new(),
-            rink::rink_maps(page),
         ),
     };
     Ok(PlayerPage {
@@ -201,7 +196,6 @@ fn parse_player_page(page: &Page) -> Result<PlayerPage, Error> {
         history,
         net,
         zones,
-        events,
     })
 }
 

@@ -106,7 +106,6 @@ pub struct GameListing {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TimelinePlayer {
     pub player: PlayerRef,
-    pub group: Option<String>,
     pub shifts: Vec<(f64, f64)>,
 }
 
@@ -185,7 +184,6 @@ fn timeline(context: &Context<'_>, game: &Game) -> GameTimeline {
             .filter_map(|p| {
                 Some(TimelinePlayer {
                     player: roster.get(&p.id)?.clone(),
-                    group: p.group.clone(),
                     shifts: p.shifts.iter().map(|s| (s.start.0, s.end.0)).collect(),
                 })
             })

@@ -1,5 +1,4 @@
-//! Head-to-head puck battles and hits between our skaters and the opponent's, per game and
-//! per player.
+//! Head-to-head puck battles between our skaters and the opponent's, per game and per player.
 
 use std::collections::HashMap;
 
@@ -15,18 +14,10 @@ pub struct Battles {
     pub lost: u32,
 }
 
-/// Hits from our side.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub struct Hits {
-    pub given: u32,
-    pub taken: u32,
-}
-
-/// Battles and hits between skaters, from our side.
+/// Battles between skaters, from our side.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct Encounters {
     pub battles: Battles,
-    pub hits: Hits,
 }
 
 impl Encounters {
@@ -36,26 +27,20 @@ impl Encounters {
                 won: matchup.battles_won,
                 lost: matchup.battles_lost,
             },
-            hits: Hits {
-                given: matchup.hits,
-                taken: matchup.hits_against,
-            },
         }
     }
 
     const fn add(&mut self, other: Self) {
         self.battles.won += other.battles.won;
         self.battles.lost += other.battles.lost;
-        self.hits.given += other.hits.given;
-        self.hits.taken += other.hits.taken;
     }
 
     const fn total(self) -> u32 {
-        self.battles.won + self.battles.lost + self.hits.given + self.hits.taken
+        self.battles.won + self.battles.lost
     }
 }
 
-/// One opponent skater's battles and hits against us in a game.
+/// One opponent skater's battles against us in a game.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OpponentTotals {
     pub opponent: Opponent,
@@ -91,7 +76,7 @@ pub struct PlayerMatchup {
     pub encounters: Encounters,
 }
 
-/// Keys ordered by their summed battles and hits, most first; ties keep first appearance.
+/// Keys ordered by their battles, most first; ties keep first appearance.
 fn busiest_first<K: Clone + PartialEq>(matchups: &[Matchup], key: impl Fn(&Matchup) -> K) -> Vec<(K, Encounters)> {
     let mut totals: Vec<(K, Encounters)> = Vec::new();
     for matchup in matchups {
@@ -160,7 +145,7 @@ pub(crate) fn player_matchups(games: &[&Game], id: &PlayerId) -> Vec<PlayerMatch
 
 #[cfg(test)]
 mod tests {
-    use super::{Battles, Hits, arrange};
+    use super::{Battles, arrange};
     use crate::analysis::common::PlayerRef;
     use crate::model::{Jersey, Matchup, Opponent, PlayerId, Position};
 
@@ -177,8 +162,6 @@ mod tests {
             opponent: opponent(against),
             battles_won: won,
             battles_lost: lost,
-            hits: 0,
-            hits_against: 0,
         }
     }
 
@@ -208,21 +191,6 @@ mod tests {
         assert_eq!(opponents, [("Stone", Battles { won: 3, lost: 1 }), ("Reed", Battles { won: 0, lost: 4 })]);
         let cell = arranged.cells.iter().find(|c| c.player == 0 && c.opponent == 1).unwrap();
         assert_eq!(cell.encounters.battles, Battles { won: 0, lost: 4 });
-    }
-
-    #[test]
-    fn hits_count_towards_how_busy_a_matchup_was() {
-        let hit = Matchup {
-            hits: 2,
-            hits_against: 1,
-            ..matchup("A", "Reed", 0, 0)
-        };
-        let matchups = [matchup("B", "Stone", 1, 0), hit];
-
-        let arranged = arrange(&matchups, |id| Some(player_ref(id)));
-
-        assert_eq!(arranged.players[0].name, "A");
-        assert_eq!(arranged.opponents[0].encounters.hits, Hits { given: 2, taken: 1 });
     }
 
     #[test]

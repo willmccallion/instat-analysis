@@ -211,7 +211,6 @@ fn finishing(shots: &[ShotDot]) -> Option<Finishing> {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlayerSeason {
     pub player: PlayerRef,
-    pub group: Option<String>,
     pub totals: SkaterTotals,
     pub rates: Rates,
     pub shares: Shares,
@@ -476,7 +475,6 @@ pub fn player_seasons(context: &Context<'_>, corsi_prior: Option<BetaPrior>) -> 
                 .or_else(|| appearances.last())
                 .map(|(_, p)| p.details.clone())
                 .unwrap_or_default();
-            let group = appearances.last().and_then(|(_, p)| p.group.clone());
             let team_ev = team_ev_corsi(&context.scope, &id);
             let charted_shots = shot_dots(context, &games_played, |s| s.shooter.as_ref() == Some(&id));
             let shrunk_corsi = corsi_prior.and_then(|prior| {
@@ -484,7 +482,6 @@ pub fn player_seasons(context: &Context<'_>, corsi_prior: Option<BetaPrior>) -> 
             });
             Some(PlayerSeason {
                 player: player_ref,
-                group,
                 rates: rates(&totals),
                 shares: shares(&totals, team_ev),
                 shrunk_corsi,

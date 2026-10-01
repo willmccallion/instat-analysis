@@ -8,7 +8,6 @@ pub mod layout;
 pub mod model;
 pub mod parse;
 pub mod pdf;
-pub mod reconcile;
 pub mod stats;
 pub mod server;
 pub mod store;

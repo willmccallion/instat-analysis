@@ -1,16 +1,11 @@
-//! The InStat "Match report": one team-stats page plus eight pages per team.
+//! The InStat "Match report", read only for what the event export lacks: both teams' xG and
+//! possession, and our players' hits against, shot types and kinds of attack.
 
 use crate::error::Error;
 use crate::layout;
 use crate::model::{Date, TeamName, TeamPrefix};
-use crate::parse::common::{
-    LINE_TOLERANCE, PAGE_RIGHT, PlayerRow, page_heading, player_table, require_phrase,
-};
-use crate::parse::lines::{self, RawUnit};
-use crate::parse::matrix::{self, RawMatrix};
-use crate::parse::rink::{self, RawShot};
+use crate::parse::common::{LINE_TOLERANCE, PAGE_RIGHT, PlayerRow, page_heading, player_table, require_phrase};
 use crate::parse::team_stats::{self, TeamStatsPage};
-use crate::parse::timeline::{self, Timeline};
 use crate::pdf::Page;
 
 const SECTION: &str = "match report";
@@ -22,43 +17,17 @@ pub struct Title {
     pub date: Date,
 }
 
-/// Per-player tables for one team; each list is in the report's row order.
-#[derive(Debug, Clone, Default)]
-pub struct PlayerTables {
-    pub main: Vec<PlayerRow>,
-    pub challenges: Vec<PlayerRow>,
-    pub turnovers: Vec<PlayerRow>,
-    pub entries: Vec<PlayerRow>,
-    pub shots: Vec<PlayerRow>,
-    pub challenges_by_zone: Vec<PlayerRow>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TeamPages {
-    pub tables: PlayerTables,
-    pub units: Vec<RawUnit>,
-    pub timeline: Option<Timeline>,
-    pub passes: Option<RawMatrix>,
-    /// Puck battles won—lost against each opponent skater.
-    pub battles: Option<RawMatrix>,
-    /// Hits given—taken against each opponent skater.
-    pub hits: Option<RawMatrix>,
-    /// Our shots as the shooting chart draws them.
-    pub shot_chart: Vec<RawShot>,
-}
-
-/// Our team's pages in full; of the opponent's, their player tables, lines and shots.
+/// Both teams' stats page and our players' tables.
 #[derive(Debug, Clone)]
 pub struct MatchReport {
     pub title: Title,
     /// Index of our team in `title.teams`.
     pub our_index: usize,
     pub team_stats: TeamStatsPage,
-    pub ours: TeamPages,
-    /// Their shooting chart draws their shots on our net.
-    pub theirs: TeamPages,
-    /// Opponent pages that could not be read; the game still loads without them.
-    pub opponent_problems: Vec<String>,
+    /// Our players' main statistics table.
+    pub players: Vec<PlayerRow>,
+    /// Our players' shots table.
+    pub shots: Vec<PlayerRow>,
 }
 
 /// Index of our team in the title (0 = listed first).
@@ -110,150 +79,38 @@ pub fn parse_cover(page: &Page) -> Result<Title, Error> {
 }
 
 pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
-    let cover = pages
-        .first()
-        .ok_or_else(|| Error::parse(SECTION, "empty document"))?;
+    let cover = pages.first().ok_or_else(|| Error::parse(SECTION, "empty document"))?;
     let title = parse_cover(cover)?;
     let our_index = our_index(&title, team)?;
     let our_name = &title.teams[our_index];
-    let mut team_stats = None;
-    let mut ours = TeamPages::default();
-    let mut theirs = TeamPages::default();
-    let mut opponent_problems = Vec::new();
+    let (mut team_stats, mut players, mut shots) = (None, None, None);
     for page in &pages[1..] {
         let Some(heading) = page_heading(page) else {
             continue;
         };
         if heading.title == "TEAMS STATS" {
             team_stats = Some(team_stats::parse(page)?);
-            continue;
-        }
-        if heading.team.as_ref() == Some(our_name) {
-            parse_team_page(page, &heading.title, &mut ours)?;
-        } else {
-            parse_listed_side_page(page, &heading.title, &mut theirs, &mut opponent_problems, "opponent")?;
+        } else if heading.team.as_ref() == Some(our_name) {
+            match heading.title.as_str() {
+                "PLAYERS' STATS" => players = Some(table_under(page, "Main statistics", "players' stats")?),
+                "SHOTS" => shots = Some(table_under(page, "Shots stats", "shots")?),
+                _ => {}
+            }
         }
     }
-    let team_stats = team_stats.ok_or_else(|| Error::parse(SECTION, "no TEAMS STATS page"))?;
+    let missing = |what: &str| Error::parse(SECTION, format!("no {what} page"));
     Ok(MatchReport {
         title,
         our_index,
-        team_stats,
-        ours,
-        theirs,
-        opponent_problems,
+        team_stats: team_stats.ok_or_else(|| missing("TEAMS STATS"))?,
+        players: players.ok_or_else(|| missing("PLAYERS' STATS"))?,
+        shots: shots.ok_or_else(|| missing("SHOTS"))?,
     })
 }
 
-/// Opponent pages read beyond their shots: enough to rate their skaters alongside ours.
-const OPPONENT_PAGES: [&str; 3] = ["PLAYERS' STATS", "LINES STATS", "CHALLENGES"];
-
-/// A page of a team that isn't ours: their shots page must read; their player, line and
-/// challenge pages are read when they can be, and a failure is noted instead of stopping.
-fn parse_listed_side_page(page: &Page, title: &str, side: &mut TeamPages, problems: &mut Vec<String>, who: &str) -> Result<(), Error> {
-    if title == "SHOTS" {
-        side.tables.shots = shots_table(page)?;
-        side.shot_chart = rink::shooting_chart(page);
-    } else if OPPONENT_PAGES.contains(&title)
-        && let Err(e) = parse_team_page(page, title, side)
-    {
-        problems.push(format!("{who} {}: {e}", title.to_lowercase()));
-    }
-    Ok(())
-}
-
-/// A match report between two other teams in the league: both teams' stats, skaters and shots.
-#[derive(Debug, Clone)]
-pub struct LeagueReport {
-    pub title: Title,
-    pub team_stats: TeamStatsPage,
-    /// Indexed like `title.teams`.
-    pub sides: [TeamPages; 2],
-    /// Pages that could not be read; the game still loads without them.
-    pub problems: Vec<String>,
-}
-
-pub fn parse_league(pages: &[Page]) -> Result<LeagueReport, Error> {
-    let cover = pages.first().ok_or_else(|| Error::parse(SECTION, "empty document"))?;
-    let title = parse_cover(cover)?;
-    let mut team_stats = None;
-    let mut sides = [TeamPages::default(), TeamPages::default()];
-    let mut problems = Vec::new();
-    for page in &pages[1..] {
-        let Some(heading) = page_heading(page) else {
-            continue;
-        };
-        if heading.title == "TEAMS STATS" {
-            team_stats = Some(team_stats::parse(page)?);
-            continue;
-        }
-        let Some(index) = title.teams.iter().position(|t| heading.team.as_ref() == Some(t)) else {
-            continue;
-        };
-        let who = title.teams[index].0.clone();
-        parse_listed_side_page(page, &heading.title, &mut sides[index], &mut problems, &who)?;
-    }
-    let team_stats = team_stats.ok_or_else(|| Error::parse(SECTION, "no TEAMS STATS page"))?;
-    Ok(LeagueReport { title, team_stats, sides, problems })
-}
-
-fn parse_team_page(page: &Page, title: &str, team: &mut TeamPages) -> Result<(), Error> {
-    match title {
-        "PLAYERS' STATS" => parse_players_stats(page, &mut team.tables)?,
-        "LINES STATS" => team.units = lines::parse(page)?,
-        "GAME TIME DISTRIBUTION" => team.timeline = Some(timeline::parse(page)?),
-        "SHOTS" => {
-            team.tables.shots = shots_table(page)?;
-            team.shot_chart = rink::shooting_chart(page);
-        }
-        "CHALLENGES" => {
-            let lines = layout::lines(&page.words, LINE_TOLERANCE);
-            let (y, x) = require_phrase(&lines, "Challenges", "challenges")?;
-            team.tables.challenges_by_zone =
-                player_table(&page.words, x, PAGE_RIGHT, y, "challenges")?;
-        }
-        "PASSES DISTRIBUTION" => team.passes = Some(matrix::parse(page)?),
-        "CHALLENGE DISTRIBUTION" => team.battles = Some(matrix::parse(page)?),
-        "HITS DISTRIBUTION" => team.hits = Some(matrix::parse(page)?),
-        _ => {}
-    }
-    Ok(())
-}
-
-fn shots_table(page: &Page) -> Result<Vec<PlayerRow>, Error> {
+/// The per-player table under the heading `phrase`.
+fn table_under(page: &Page, phrase: &str, section: &'static str) -> Result<Vec<PlayerRow>, Error> {
     let lines = layout::lines(&page.words, LINE_TOLERANCE);
-    let (y, x) = require_phrase(&lines, "Shots stats", "shots")?;
-    player_table(&page.words, x, PAGE_RIGHT, y, "shots")
-}
-
-fn parse_players_stats(page: &Page, tables: &mut PlayerTables) -> Result<(), Error> {
-    let lines = layout::lines(&page.words, LINE_TOLERANCE);
-    let (main_y, main_x) = require_phrase(&lines, "Main statistics", "players' stats")?;
-    tables.main = player_table(&page.words, main_x, PAGE_RIGHT, main_y, "players' stats")?;
-    let (sub_y, challenges_x) = require_phrase(&lines, "Challenges", "players' stats")?;
-    let (_, turnovers_x) = require_phrase(&lines, "Turnovers and takeaways", "players' stats")?;
-    let (_, entries_x) = require_phrase(&lines, "Entries", "players' stats")?;
-    let label_offset = 1.0;
-    tables.challenges = player_table(
-        &page.words,
-        challenges_x,
-        turnovers_x - label_offset,
-        sub_y,
-        "challenges table",
-    )?;
-    tables.turnovers = player_table(
-        &page.words,
-        turnovers_x - label_offset,
-        entries_x - label_offset,
-        sub_y,
-        "turnovers table",
-    )?;
-    tables.entries = player_table(
-        &page.words,
-        entries_x - label_offset,
-        PAGE_RIGHT,
-        sub_y,
-        "entries table",
-    )?;
-    Ok(())
+    let (y, x) = require_phrase(&lines, phrase, section)?;
+    player_table(&page.words, x, PAGE_RIGHT, y, section)
 }

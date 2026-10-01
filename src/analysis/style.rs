@@ -1,90 +1,51 @@
-//! How the team plays with and without the puck, from InStat's possession, entry, attack and
-//! turnover counts pooled over games, and the practice focus areas those counts point to.
-//!
-//! The PDFs give counts per game, not event sequences, so whistle-to-whistle chains cannot be
-//! rebuilt; attack types (positional vs counter-attack) and entry types are the closest
-//! categories available.
-
-use std::collections::BTreeMap;
+//! How the team plays with and without the puck, from the team counts in the event export
+//! pooled over games, and the practice focus areas those counts point to.
 
 use serde::Serialize;
 
 use crate::analysis::Context;
 use crate::analysis::common::share_pct;
 use crate::analysis::team::TeamReport;
-use crate::cell::Cell;
-use crate::model::{BattleArea, CellValue};
+use crate::model::{BattleArea, TeamPlay};
 
-const ATTACKS: &str = "OZ possession";
-const LOSSES: &str = "Puck losses";
-const RECOVERIES: &str = "Puck recoveries";
-const POSSESSION: &str = "Puck possessions at even";
-const SHOTS: &str = "Shots and goals";
-
-/// A team stat's primary number for (us, them), summed over games in scope.
-#[derive(Debug, Clone, PartialEq)]
-struct PooledStat {
-    group: String,
-    label: String,
-    ours: f64,
-    theirs: f64,
+/// Team counts for us and them, summed over the games in scope.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Pooled {
+    ours: TeamPlay,
+    theirs: TeamPlay,
+    scoring_chances: (u32, u32),
+    /// Seconds with the puck, from InStat's match reports, for the games that have one.
+    possession: (f64, f64),
 }
 
-impl PooledStat {
-    const fn values(&self) -> (f64, f64) {
-        (self.ours, self.theirs)
-    }
-}
-
-/// The number InStat leads a cell with; percentages are skipped since they don't sum.
-fn count(value: &CellValue) -> Option<f64> {
-    if value.text == "—" {
-        return Some(0.0);
-    }
-    match Cell::parse(&value.text) {
-        Cell::Empty => Some(0.0),
-        Cell::Int(n) => Some(n as f64),
-        Cell::CountShare(n, _) | Cell::Ratio(n, _) | Cell::Triple(n, _, _) => Some(f64::from(n)),
-        Cell::Clock(s) | Cell::ClockShare(s, _) => Some(f64::from(s)),
-        Cell::Decimal(d) => Some(d),
-        Cell::Percent(_) | Cell::Pair(..) | Cell::Text(_) => None,
-    }
-}
-
-/// Keyed by (group, label, occurrence in group) because InStat repeats labels like
-/// "With shot, %" within one group.
-fn pool(context: &Context<'_>) -> Vec<PooledStat> {
-    let mut sums: BTreeMap<(String, String, usize), (usize, f64, f64)> = BTreeMap::new();
+fn pool(context: &Context<'_>) -> Pooled {
+    let mut pooled = Pooled::default();
     for game in &context.scope {
-        let mut seen: BTreeMap<(&str, &str), usize> = BTreeMap::new();
-        for row in &game.team_stats {
-            let occurrence = seen.entry((&row.group, &row.label)).or_default();
-            let key = (row.group.clone(), row.label.clone(), *occurrence);
-            *occurrence += 1;
-            let (Some(ours), Some(theirs)) = (count(&row.ours), count(&row.theirs)) else {
-                continue;
-            };
-            let first_seen = sums.len();
-            let entry = sums.entry(key).or_insert((first_seen, 0.0, 0.0));
-            entry.1 += ours;
-            entry.2 += theirs;
-        }
+        pooled.ours.add(game.summary.play);
+        pooled.theirs.add(game.opponent_summary.play);
+        pooled.scoring_chances.0 += game.summary.scoring_chances.0;
+        pooled.scoring_chances.1 += game.opponent_summary.scoring_chances.0;
+        pooled.possession.0 += game.summary.possession_time.0;
+        pooled.possession.1 += game.opponent_summary.possession_time.0;
     }
-    let mut pooled: Vec<(usize, PooledStat)> = sums
-        .into_iter()
-        .map(|((group, label, _), (order, ours, theirs))| {
-            (order, PooledStat { group, label, ours, theirs })
-        })
-        .collect();
-    pooled.sort_by_key(|(order, _)| *order);
-    pooled.into_iter().map(|(_, stat)| stat).collect()
+    pooled
 }
 
-fn find<'a>(stats: &'a [PooledStat], group_prefix: &str, label: &str, nth: usize) -> Option<&'a PooledStat> {
-    stats
-        .iter()
-        .filter(|s| s.group.starts_with(group_prefix) && s.label == label)
-        .nth(nth)
+fn pair(ours: u32, theirs: u32) -> (f64, f64) {
+    (f64::from(ours), f64::from(theirs))
+}
+
+/// One team count, picked out of [`TeamPlay`].
+type Pick = fn(&TeamPlay) -> u32;
+
+impl Pooled {
+    fn of(&self, pick: Pick) -> (f64, f64) {
+        pair(pick(&self.ours), pick(&self.theirs))
+    }
+}
+
+const fn entries(play: &TeamPlay) -> u32 {
+    play.entries.total()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -145,13 +106,13 @@ pub struct StyleReport {
     pub focus: Vec<FocusArea>,
 }
 
-fn comparison(label: &str, stat: Option<&PooledStat>, better: Better, measure: Measure) -> Option<Comparison> {
-    let stat = stat?;
-    Some(Comparison {
+/// A comparison, unless neither team has any (the count isn't in the games' files).
+fn comparison(label: &str, (ours, theirs): (f64, f64), better: Better, measure: Measure) -> Option<Comparison> {
+    (ours + theirs > 0.0).then(|| Comparison {
         label: label.to_owned(),
-        ours: stat.ours,
-        theirs: stat.theirs,
-        share: share_pct(stat.ours, stat.theirs),
+        ours,
+        theirs,
+        share: share_pct(ours, theirs),
         better,
         measure,
         note: None,
@@ -162,30 +123,24 @@ fn rate(part: f64, whole: f64) -> Option<f64> {
     (whole > 0.0).then(|| 100.0 * part / whole)
 }
 
-/// "57% vs 86% …" from (part, whole) counts for each team.
-fn rate_note(part: Option<&PooledStat>, whole: Option<&PooledStat>, what: &str) -> Option<String> {
-    let (part, whole) = (part?, whole?);
-    let ours = rate(part.ours, whole.ours)?;
-    let theirs = rate(part.theirs, whole.theirs)?;
-    Some(format!("{ours:.0}% vs {theirs:.0}% {what}"))
+/// "57% vs 86% …" from each team's (part, whole) counts.
+fn rate_note(part: (f64, f64), whole: (f64, f64), what: &str) -> Option<String> {
+    Some(format!("{:.0}% vs {:.0}% {what}", rate(part.0, whole.0)?, rate(part.1, whole.1)?))
 }
 
 fn with_note(item: Comparison, note: Option<String>) -> Comparison {
     Comparison { note, ..item }
 }
 
-fn attack_groups(stats: &[PooledStat]) -> ComparisonGroup {
-    let positional = find(stats, ATTACKS, "Positional attacks", 0);
-    let counters = find(stats, ATTACKS, "Counterattacks", 0);
+fn attack_group(pooled: &Pooled) -> ComparisonGroup {
+    let chances = pair(pooled.scoring_chances.0, pooled.scoring_chances.1);
     ComparisonGroup {
         title: "How we attack".to_owned(),
         items: [
-            comparison("Positional attacks (set up in their zone)", positional, Better::Higher, Measure::Count)
-                .map(|c| with_note(c, rate_note(find(stats, ATTACKS, "With shot, %", 0), positional, "got a shot"))),
-            comparison("Counter-attacks (quick transition)", counters, Better::Higher, Measure::Count)
-                .map(|c| with_note(c, rate_note(find(stats, ATTACKS, "With shot, %", 1), counters, "got a shot"))),
-            comparison("Possessions in their zone", find(stats, ATTACKS, "Possessions in offensive zone", 0), Better::Higher, Measure::Count),
-            comparison("Shots from scoring-chance areas", find(stats, SHOTS, "Shots from a scoring chance area", 0), Better::Higher, Measure::Count),
+            comparison("Scoring chances", chances, Better::Higher, Measure::Count),
+            comparison("Passes into the slot", pooled.of(|p| p.passes_to_slot), Better::Higher, Measure::Count),
+            comparison("Zone entries", pooled.of(entries), Better::Higher, Measure::Count)
+                .map(|c| with_note(c, rate_note(chances, pooled.of(entries), "of entries led to a scoring chance"))),
         ]
         .into_iter()
         .flatten()
@@ -193,44 +148,47 @@ fn attack_groups(stats: &[PooledStat]) -> ComparisonGroup {
     }
 }
 
-fn entry_group(stats: &[PooledStat]) -> ComparisonGroup {
-    let entries: Vec<Option<&PooledStat>> = ["Entries by stickhandling", "Entries by pass", "Entries by dump in"]
-        .iter()
-        .map(|label| find(stats, ATTACKS, label, 0))
-        .collect();
-    let total = |pick: fn(&PooledStat) -> f64| entries.iter().flatten().map(|s| pick(s)).sum::<f64>();
-    let (ours_total, theirs_total) = (total(|s| s.ours), total(|s| s.theirs));
-    let share_note = |stat: Option<&PooledStat>| {
-        let stat = stat?;
-        Some(format!(
-            "{:.0}% vs {:.0}% of entries",
-            rate(stat.ours, ours_total)?,
-            rate(stat.theirs, theirs_total)?
-        ))
-    };
-    let labels = ["Carried in", "Passed in", "Dumped in"];
+fn entry_group(pooled: &Pooled) -> ComparisonGroup {
+    let total = pooled.of(entries);
+    let kinds: [(&str, Pick); 3] =
+        [("Carried in", |p| p.entries.carry), ("Passed in", |p| p.entries.pass), ("Dumped in", |p| p.entries.dump_in)];
     ComparisonGroup {
         title: "How we enter their zone".to_owned(),
-        items: labels
+        items: kinds
             .iter()
-            .zip(&entries)
-            .filter_map(|(label, stat)| {
-                comparison(label, *stat, Better::Higher, Measure::Count).map(|c| with_note(c, share_note(*stat)))
+            .filter_map(|(label, pick)| {
+                let counts = pooled.of(*pick);
+                comparison(label, counts, Better::Higher, Measure::Count).map(|c| with_note(c, rate_note(counts, total, "of entries")))
             })
             .collect(),
     }
 }
 
-fn puck_group(stats: &[PooledStat]) -> ComparisonGroup {
+fn breakout_group(pooled: &Pooled) -> ComparisonGroup {
+    let breakouts = pooled.of(|p| p.breakouts);
+    ComparisonGroup {
+        title: "How we break out".to_owned(),
+        items: [
+            comparison("Breakouts", breakouts, Better::Higher, Measure::Count),
+            comparison("Controlled breakouts", pooled.of(|p| p.controlled_breakouts), Better::Higher, Measure::Count)
+                .map(|c| with_note(c, rate_note(pooled.of(|p| p.controlled_breakouts), breakouts, "of breakouts"))),
+            comparison("Dumped out", pooled.of(|p| p.dump_outs), Better::Lower, Measure::Count),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
+    }
+}
+
+fn puck_group(pooled: &Pooled) -> ComparisonGroup {
     ComparisonGroup {
         title: "Puck management".to_owned(),
         items: [
-            comparison("Time with the puck", find(stats, POSSESSION, "Puck possessions", 0), Better::Higher, Measure::Seconds),
-            comparison("Takeaways", find(stats, RECOVERIES, "After takeaways", 0), Better::Higher, Measure::Count),
-            comparison("Puck losses in own zone", find(stats, LOSSES, "Defensive zone", 0), Better::Lower, Measure::Count),
-            comparison("Giveaways that flipped possession", find(stats, LOSSES, "Giveaways -> transition of possession", 0), Better::Lower, Measure::Count),
-            comparison("Icings", find(stats, LOSSES, "Icings", 0), Better::Lower, Measure::Count),
-            comparison("Offsides", find(stats, LOSSES, "Offsides", 0), Better::Lower, Measure::Count),
+            comparison("Time with the puck", pooled.possession, Better::Higher, Measure::Seconds),
+            comparison("Puck recoveries", pooled.of(|p| p.puck_recoveries), Better::Higher, Measure::Count),
+            comparison("Recoveries in their zone", pooled.of(|p| p.puck_recoveries_offensive_zone), Better::Higher, Measure::Count),
+            comparison("Puck losses", pooled.of(|p| p.puck_losses), Better::Lower, Measure::Count),
+            comparison("Puck losses in own zone", pooled.of(|p| p.puck_losses_defensive_zone), Better::Lower, Measure::Count),
         ]
         .into_iter()
         .flatten()
@@ -323,7 +281,7 @@ fn battle_candidates(team: &TeamReport) -> impl Iterator<Item = Candidate> + '_ 
     })
 }
 
-fn candidates(stats: &[PooledStat], team: &TeamReport) -> Vec<Candidate> {
+fn candidates(pooled: &Pooled, team: &TeamReport) -> Vec<Candidate> {
     let faceoffs = |zone: &str| {
         team.faceoffs
             .iter()
@@ -361,23 +319,23 @@ fn candidates(stats: &[PooledStat], team: &TeamReport) -> Vec<Candidate> {
         even(
             "Getting to the scoring areas",
             "Net drives and slot shooting; low-to-high plays that open the slot.",
-            find(stats, SHOTS, "Shots from a scoring chance area", 0).map(PooledStat::values),
+            Some(pair(pooled.scoring_chances.0, pooled.scoring_chances.1)),
             Better::Higher,
-            |o, t, s| format!("{o:.0} scoring-area shots for, {t:.0} against ({s:.0}%)."),
+            |o, t, s| format!("{o:.0} scoring chances for, {t:.0} against ({s:.0}%)."),
         ),
         even(
             "Breaking out cleanly",
             "Breakouts under pressure: D-to-D, wall support, first pass.",
-            find(stats, LOSSES, "Defensive zone", 0).map(PooledStat::values),
+            Some(pooled.of(|p| p.puck_losses_defensive_zone)),
             Better::Lower,
             |o, t, _| format!("Lost the puck {o:.0} times in our zone; they lost it {t:.0} times in theirs."),
         ),
         even(
-            "Sustained pressure in their zone",
-            "Cycling, puck protection and D activating from the point.",
-            find(stats, ATTACKS, "Possessions in offensive zone", 0).map(PooledStat::values),
+            "Winning pucks back in their zone",
+            "Forecheck pressure and support so the second player wins the loose puck.",
+            Some(pooled.of(|p| p.puck_recoveries_offensive_zone)),
             Better::Higher,
-            |o, t, s| format!("{o:.0} possessions in their zone vs {t:.0} in ours ({s:.0}%)."),
+            |o, t, s| format!("{o:.0} recoveries in their zone vs {t:.0} by them in ours ({s:.0}%)."),
         ),
         Candidate {
             area: "Power play",
@@ -434,8 +392,8 @@ fn assess(candidate: &Candidate) -> Option<FocusArea> {
 }
 
 /// Areas sorted from most to least in need of work.
-fn focus_areas(stats: &[PooledStat], team: &TeamReport) -> Vec<FocusArea> {
-    let mut areas: Vec<FocusArea> = candidates(stats, team).iter().filter_map(assess).collect();
+fn focus_areas(pooled: &Pooled, team: &TeamReport) -> Vec<FocusArea> {
+    let mut areas: Vec<FocusArea> = candidates(pooled, team).iter().filter_map(assess).collect();
     areas.sort_by(|a, b| {
         (a.verdict as u8)
             .cmp(&(b.verdict as u8))
@@ -449,7 +407,7 @@ fn focus_areas(stats: &[PooledStat], team: &TeamReport) -> Vec<FocusArea> {
 pub fn style(context: &Context<'_>, team: &TeamReport) -> StyleReport {
     let pooled = pool(context);
     StyleReport {
-        groups: vec![attack_groups(&pooled), entry_group(&pooled), puck_group(&pooled)],
+        groups: vec![attack_group(&pooled), entry_group(&pooled), breakout_group(&pooled), puck_group(&pooled)],
         focus: focus_areas(&pooled, team),
     }
 }
