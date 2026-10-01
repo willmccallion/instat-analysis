@@ -1,6 +1,6 @@
 "use strict";
 
-const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, contributionChart, beeswarmChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars, zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, inkOn } = window.Charts;
+const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, contributionChart, beeswarmChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, forceNetworkChart, scatterChart, percentileBars, zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, inkOn } = window.Charts;
 
 // Plain-English definitions; any label matching a key explains itself on hover or tap.
 const PER_60 = "per 60 minutes of ice time, so players with different ice time compare fairly";
@@ -120,6 +120,7 @@ const state = {
   goalieTab: "overview",
   shotPeriod: "all",
   heatWeight: "attempts",
+  passingLayout: "force",
   goalie: null,
   unitTab: "defence_pairs",
   chemistryMetric: "toi",
@@ -1433,7 +1434,16 @@ function viewPassing() {
     .map((player, i) => ({ id: player.id, label: player.name, size: p.made[i], color: groupColor(p.group[i]), tag: groupLetter(p.group[i]), tip: [{ value: groupLetter(p.group[i]), name: "passing group" }, { value: pct(100 * p.pagerank[i], 1), name: "PageRank" }], order: groupOrder.indexOf(p.group[i]) }))
     .sort((x, y) => x.order - y.order);
   const edges = p.edges.map((e) => ({ from: e.from, to: e.to, value: e.passes, lift: e.lift, fromLabel: label(e.from), toLabel: label(e.to) }));
-  const network = chartCard("Who passes to whom", `Line thickness = passes. Orange = a connection at least 1.5× what their overall passing volume predicts. Players are grouped and lettered by passing group (community detection: players who pass among themselves more than their volume predicts; the three biggest groups are coloured). Hover a player to isolate their links.`, (c) => networkChart(c, nodes, edges), (c) => dataTable(c, [
+  const force = state.passingLayout !== "circle";
+  const pickLayout = (layout) => { state.passingLayout = layout; render(); };
+  const layoutToggle = el("div", { class: "segmented", style: "margin-bottom:12px" }, [
+    el("button", { class: force ? "on" : "", text: "Pull together", onclick: () => pickLayout("force") }),
+    el("button", { class: force ? "" : "on", text: "Circle", onclick: () => pickLayout("circle") }),
+  ]);
+  const layoutText = force
+    ? "Players who pass to each other a lot are pulled together; everyone else is pushed apart, so passing groups form clusters. Bigger circle = more passes made. Drag a player to move them (double-click to let go)."
+    : "Every player around a circle, ordered by passing group.";
+  const network = chartCard("Who passes to whom", `${layoutText} Line thickness = passes. Orange = a connection at least 1.5× what their overall passing volume predicts. Players are lettered by passing group (community detection: players who pass among themselves more than their volume predicts; the three biggest groups are coloured). Hover a player to isolate their links.`, (c) => (force ? forceNetworkChart(c, nodes, edges) : networkChart(c, nodes, edges)), (c) => dataTable(c, [
     { key: "from", label: "From", left: true, value: (e) => label(e.from) },
     { key: "to", label: "To", left: true, value: (e) => label(e.to) },
     { key: "passes", label: "Passes" },
@@ -1458,7 +1468,7 @@ function viewPassing() {
     { key: "betweenness", label: "Connector", value: (r) => 100 * r.betweenness, format: (v) => pct(v, 0), tone: "higher" },
   ], roles, { sortKey: "pagerank", onRow: (r) => goToPlayer(r.player.id) }));
   const groupNote = el("p", { class: "small muted", text: `Passing groups: modularity ${fmt(p.modularity, 2)} (${p.modularity >= 0.3 ? "clear groups" : "loose groups, most players pass across them"}). Modularity measures how much more players pass within their group than their passing volume predicts: 0 = no structure, above 0.3 = clear cliques.` });
-  return page("Passing network", "InStat's pass-distribution tables, pooled over the games in scope.", summary, network, groupNote, el("div", { class: "grid two", style: "margin-top:16px" }, [hubs, matrix]));
+  return page("Passing network", "InStat's pass-distribution tables, pooled over the games in scope.", summary, layoutToggle, network, groupNote, el("div", { class: "grid two", style: "margin-top:16px" }, [hubs, matrix]));
 }
 
 // ---------- Players ----------
@@ -2694,6 +2704,7 @@ function viewHelp() {
     ["Luck & results", "Each shot's xG is its chance of scoring; combining every shot in a game gives the exact chance of each final score, so how often the game is won, lost, tied or goes to overtime. Overtime is 5 minutes of sudden death at each team's regulation scoring rate. Expected points add those up (2 for a win, 1 for an overtime loss or tie). The goal differential splits exactly into shot volume, chance quality, our finishing and our goaltending."],
     ["Goals saved above expected (GSAx)", "The xG of every attempt a goalie faced minus the goals allowed. Attempts include ones that missed or were blocked, so it also reflects the defence. When two goalies shared a game, each gets the team's xG in proportion to the shots on goal they faced. Weak spots on the net pull each area's save % toward the goalie's own average in proportion to how few shots it has."],
     ["Density maps", "Dots smoothed into a heat map (a Gaussian kernel about 7 ft wide on the half rink, 10 ft on the full rink) and shown per game, per 10 × 10 ft square, so seasons with different numbers of games compare fairly. Difference maps subtract one map from another: blue where the first is higher, red where the second is."],
+    ["Passing network layouts", "Pull together (the default) is a force-directed layout like Obsidian's graph view: every player pushes the others away and each passing link pulls its two players together, harder the more passes they share, so players who pass to each other a lot end up close and passing groups form clusters. Drag a player to move them; double-click to let them go. Circle puts every player around a ring, ordered by passing group."],
     ["Passing network measures", "PageRank: where the puck ends up flowing, counting passes from busy passers more (the scores add to 100%). Connector score (betweenness): the share of the quickest passing routes between two teammates that run through a player, where a link with more passes is quicker. Passing groups come from Louvain community detection: groups who pass among themselves more than their volume predicts; modularity above about 0.3 means clear cliques."],
     ["Line builder", "Uses the individual impact ratings (ridge Poisson models of shot attempts for and against) to predict every possible line and pair's shot share, then searches every way of splitting the roster into lines for the best set, with the current ice-time split and a faceoff taker on each line when there are enough. Predictions can't see chemistry, and combinations that never played together are extrapolations."],
     ["What InStat rewards", "A ridge regression of each player-game's InStat Index on that game's numbers (goals, assists, shots, +/-, ice time, shot attempts on ice, battles, recoveries, losses, entries, faceoffs, hits, blocks, penalties, position) over every skater in the games, both teams, with the penalty chosen by 5-fold cross-validation. Gaps compare each of our players' Index with what their own numbers predict."],

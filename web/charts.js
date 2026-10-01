@@ -804,6 +804,212 @@ function networkChart(container, nodes, edges, options = {}) {
   ]));
 }
 
+/**
+ * A camera that fits the settled layout to the drawing: simulation coordinates stay as they
+ * are (so the springs keep their natural lengths) and only the drawing is scaled and centred.
+ */
+function fitView(bodies, width, height, pad) {
+  const xs = bodies.map((b) => b.x);
+  const ys = bodies.map((b) => b.y);
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const margin = pad + 28;
+  const scale = Math.min((width - 2 * margin) / Math.max(1, maxX - minX), (height - 2 * margin - 12) / Math.max(1, maxY - minY));
+  const [midX, midY] = [(minX + maxX) / 2, (minY + maxY) / 2];
+  return {
+    toScreen: (b) => ({ x: width / 2 + (b.x - midX) * scale, y: (height - 12) / 2 + (b.y - midY) * scale }),
+    toWorld: (p) => ({ x: midX + (p.x - width / 2) / scale, y: midY + (p.y - (height - 12) / 2) / scale }),
+  };
+}
+
+/** How the force-directed passing network settles. */
+const FORCE = {
+  repulsion: 9000,
+  springLength: 170,
+  springStrength: 0.08,
+  /** Share of a link's pull that every link gets, however few passes it carries. */
+  springFloor: 0.04,
+  gravity: 0.012,
+  damping: 0.82,
+  cooling: 0.985,
+  settleTicks: 400,
+  stopBelow: 0.004,
+};
+
+/**
+ * Force-directed passing network (like Obsidian's graph view): every player pushes the others
+ * away and each passing link pulls its two players together, harder the more passes they
+ * share, so frequent partners sit close and passing groups form clusters. Drag a player to
+ * pull the graph around; they stay where they are dropped. Same inputs as networkChart; the
+ * passes both ways between two players are drawn as one link.
+ */
+function forceNetworkChart(container, nodes, edges, options = {}) {
+  const width = Math.min(measureWidth(container), 900);
+  const height = Math.min(Math.max(width * 0.75, 420), 680);
+  const maxNode = Math.max(1, ...nodes.map((n) => n.size));
+  const radiusOf = (n) => 6 + 12 * Math.sqrt(n.size / maxNode);
+  const pairs = new Map();
+  for (const e of edges) {
+    if (e.value <= 0 || e.from === e.to) continue;
+    const key = [e.from, e.to].sort().join("\u0000");
+    const pair = pairs.get(key) || { a: e.from < e.to ? e.from : e.to, b: e.from < e.to ? e.to : e.from, total: 0, strong: false, parts: [] };
+    pair.total += e.value;
+    pair.strong ||= e.lift !== undefined && e.lift >= 1.5 && e.value >= 3;
+    pair.parts.push(e);
+    pairs.set(key, pair);
+  }
+  const links = [...pairs.values()];
+  const maxLink = Math.max(1, ...links.map((l) => l.total));
+  const ring = Math.min(width, height) / 2 - 60;
+  const bodies = nodes.map((n, i) => {
+    const angle = (i / nodes.length) * Math.PI * 2 - Math.PI / 2;
+    return { n, r: radiusOf(n), x: width / 2 + ring * Math.cos(angle), y: height / 2 + ring * Math.sin(angle), vx: 0, vy: 0, pinned: false };
+  });
+  const byId = new Map(bodies.map((b) => [b.n.id, b]));
+  const springs = links.map((l) => ({ link: l, a: byId.get(l.a), b: byId.get(l.b), weight: l.total / maxLink })).filter((s) => s.a && s.b);
+  const pad = 14;
+  let alpha = 1;
+  const tick = () => {
+    for (let i = 0; i < bodies.length; i += 1) {
+      for (let j = i + 1; j < bodies.length; j += 1) {
+        const [p, q] = [bodies[i], bodies[j]];
+        let dx = q.x - p.x;
+        let dy = q.y - p.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 0.01) { dx = 0.1 * (i - j); dy = 0.1; d2 = dx * dx + dy * dy; }
+        const d = Math.sqrt(d2);
+        let push = (FORCE.repulsion * alpha) / d2;
+        const overlap = p.r + q.r + 8 - d;
+        if (overlap > 0) push += overlap * 0.5;
+        const fx = (dx / d) * push;
+        const fy = (dy / d) * push;
+        p.vx -= fx; p.vy -= fy; q.vx += fx; q.vy += fy;
+      }
+    }
+    for (const s of springs) {
+      const dx = s.b.x - s.a.x;
+      const dy = s.b.y - s.a.y;
+      const d = Math.max(0.01, Math.sqrt(dx * dx + dy * dy));
+      const rest = FORCE.springLength * (1.3 - 0.8 * s.weight);
+      const pull = (d - rest) * FORCE.springStrength * (FORCE.springFloor + s.weight * s.weight) * alpha;
+      const fx = (dx / d) * pull;
+      const fy = (dy / d) * pull;
+      s.a.vx += fx; s.a.vy += fy; s.b.vx -= fx; s.b.vy -= fy;
+    }
+    for (const b of bodies) {
+      if (b.pinned) { b.vx = 0; b.vy = 0; continue; }
+      b.vx += (width / 2 - b.x) * FORCE.gravity * alpha;
+      b.vy += (height / 2 - b.y) * FORCE.gravity * alpha;
+      b.vx *= FORCE.damping;
+      b.vy *= FORCE.damping;
+      b.x = Math.max(b.r + pad, Math.min(width - b.r - pad, b.x + b.vx));
+      b.y = Math.max(b.r + pad, Math.min(height - b.r - pad - 12, b.y + b.vy));
+    }
+    alpha *= FORCE.cooling;
+  };
+  for (let t = 0; t < FORCE.settleTicks; t += 1) tick();
+  alpha = 0;
+  const view = fitView(bodies, width, height, pad);
+
+  const root = svg("svg", { class: "chart", viewBox: `0 0 ${width} ${height}`, width, height, role: "img", "aria-label": "passing network", style: "touch-action:none;user-select:none" });
+  const linkLayer = svg("g");
+  const nodeLayer = svg("g");
+  root.append(linkLayer, nodeLayer);
+  const drawnLinks = springs.map((s) => {
+    const color = s.link.strong ? css("--series-2") : css("--series-1");
+    const line = svg("line", { stroke: color, "stroke-opacity": 0.25 + 0.6 * s.weight, "stroke-width": 1 + 6 * s.weight, "stroke-linecap": "round" });
+    const hit = svg("line", { stroke: "transparent", "stroke-width": 12 });
+    const g = svg("g", { class: "mark" }, [line, hit]);
+    const label = (id) => byId.get(id).n.label;
+    attachTooltip(g, `${label(s.link.a)} ↔ ${label(s.link.b)}`, () => [
+      { value: String(s.link.total), name: "passes, both ways" },
+      ...s.link.parts.map((e) => ({ value: `${e.value}${e.lift !== undefined ? ` (${fmt(e.lift, 2)}× expected)` : ""}`, name: `${e.fromLabel} → ${e.toLabel}` })),
+    ]);
+    linkLayer.append(g);
+    return { s, g, line, hit };
+  });
+  const drawnNodes = bodies.map((b) => {
+    const fill = b.n.color || css("--series-1");
+    const circle = svg("circle", { r: b.r, fill, stroke: css("--surface-1"), "stroke-width": 2 });
+    const tag = b.n.tag && b.r >= 8 ? svg("text", { "text-anchor": "middle", style: `fill:${inkOn(fill)};font-size:10px;font-weight:700`, "pointer-events": "none", text: b.n.tag }) : null;
+    const name = svg("text", { "text-anchor": "middle", "pointer-events": "none", text: b.n.label });
+    const g = svg("g", { class: "mark", style: "cursor:grab" }, [circle, tag, name].filter(Boolean));
+    attachTooltip(g, b.n.label, [{ value: String(b.n.size), name: "passes made" }, ...(b.n.tip || [])]);
+    g.addEventListener("pointerenter", () => {
+      for (const { s, g: lg } of drawnLinks) lg.style.opacity = s.a === b || s.b === b ? "1" : "0.08";
+    });
+    g.addEventListener("pointerleave", () => {
+      for (const { g: lg } of drawnLinks) lg.style.opacity = "1";
+    });
+    nodeLayer.append(g);
+    return { b, g, circle, tag, name };
+  });
+  const draw = () => {
+    for (const { s, line, hit } of drawnLinks) {
+      const [a, b] = [view.toScreen(s.a), view.toScreen(s.b)];
+      for (const l of [line, hit]) {
+        l.setAttribute("x1", a.x); l.setAttribute("y1", a.y); l.setAttribute("x2", b.x); l.setAttribute("y2", b.y);
+      }
+    }
+    for (const { b, circle, tag, name } of drawnNodes) {
+      const p = view.toScreen(b);
+      circle.setAttribute("cx", p.x); circle.setAttribute("cy", p.y);
+      if (tag) { tag.setAttribute("x", p.x); tag.setAttribute("y", p.y + 4); }
+      name.setAttribute("x", p.x); name.setAttribute("y", p.y + b.r + 12);
+    }
+  };
+  draw();
+
+  let running = false;
+  const animate = () => {
+    tick();
+    draw();
+    if (alpha > FORCE.stopBelow) requestAnimationFrame(animate);
+    else running = false;
+  };
+  const reheat = (to) => {
+    alpha = Math.max(alpha, to);
+    if (!running) { running = true; requestAnimationFrame(animate); }
+  };
+  const toSvg = (event) => {
+    const matrix = root.getScreenCTM();
+    return matrix ? new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse()) : null;
+  };
+  for (const { b, g } of drawnNodes) {
+    g.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      g.setPointerCapture(event.pointerId);
+      g.style.cursor = "grabbing";
+      b.pinned = true;
+      Tooltip.hide();
+      reheat(0.35);
+      const move = (e) => {
+        const p = toSvg(e);
+        if (!p) return;
+        const world = view.toWorld({ x: Math.max(b.r + pad, Math.min(width - b.r - pad, p.x)), y: Math.max(b.r + pad, Math.min(height - b.r - pad - 12, p.y)) });
+        b.x = world.x;
+        b.y = world.y;
+        reheat(0.25);
+      };
+      const up = () => {
+        g.style.cursor = "grab";
+        g.removeEventListener("pointermove", move);
+        g.removeEventListener("pointerup", up);
+        g.removeEventListener("pointercancel", up);
+      };
+      g.addEventListener("pointermove", move);
+      g.addEventListener("pointerup", up);
+      g.addEventListener("pointercancel", up);
+    });
+    g.addEventListener("dblclick", () => { b.pinned = false; reheat(0.3); });
+  }
+  container.replaceChildren(root);
+  container.append(el("div", { class: "legend" }, [
+    el("span", {}, [el("span", { class: "key line", style: `background:${css("--series-1")}` }), "Passes both ways (thicker and closer = more)"]),
+    el("span", {}, [el("span", { class: "key line", style: `background:${css("--series-2")}` }), "Connection 1.5× or more above expected"]),
+    el("span", { class: "muted", text: "bigger circle = more passes made · drag a player to move them, double-click to let go" }),
+  ]));
+}
+
 /** Scatter with direct labels. points: [{x, y, label, group}] groups: [{name, color}] */
 function scatterChart(container, points, groups, options = {}) {
   const width = measureWidth(container);
@@ -1496,7 +1702,7 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
-  hBarChart, contributionChart, beeswarmChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, scatterChart, percentileBars,
+  hBarChart, contributionChart, beeswarmChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, forceNetworkChart, scatterChart, percentileBars,
   zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
 };
 })();
