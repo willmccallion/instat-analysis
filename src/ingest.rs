@@ -3,7 +3,7 @@
 
 use crate::error::Error;
 use crate::model::{Game, TeamPrefix};
-use crate::parse::match_report::{self, MatchReport, Title};
+use crate::parse::match_report::{self, LeagueReport, MatchReport, Title};
 use crate::parse::players_report::{self, PlayersReport};
 use crate::pdf;
 use crate::reconcile;
@@ -12,6 +12,8 @@ use crate::reconcile;
 pub enum Document {
     Match(Box<MatchReport>),
     Players(Box<PlayersReport>),
+    /// A match report between two other teams in the league.
+    League(Box<LeagueReport>),
 }
 
 impl Document {
@@ -20,6 +22,7 @@ impl Document {
         match self {
             Self::Match(m) => &m.title,
             Self::Players(p) => &p.title,
+            Self::League(l) => &l.title,
         }
     }
 }
@@ -27,7 +30,11 @@ impl Document {
 pub fn parse_document(bytes: &[u8], team: &TeamPrefix) -> Result<Document, Error> {
     let pages = pdf::extract_pages(bytes)?;
     if match_report::is_match_report(&pages) {
-        Ok(Document::Match(Box::new(match_report::parse(&pages, team)?)))
+        match match_report::parse(&pages, team) {
+            Ok(report) => Ok(Document::Match(Box::new(report))),
+            Err(Error::WrongTeam { both: false, .. }) => Ok(Document::League(Box::new(match_report::parse_league(&pages)?))),
+            Err(e) => Err(e),
+        }
     } else if players_report::is_players_report(&pages) {
         Ok(Document::Players(Box::new(players_report::parse(&pages, team)?)))
     } else {

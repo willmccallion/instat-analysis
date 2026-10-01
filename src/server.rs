@@ -216,7 +216,8 @@ impl App {
             return Ok(cached.clone());
         }
         let games = self.store.games();
-        let json = serde_json::to_string(&analyse(&games, request))?;
+        let league = self.store.league_games();
+        let json = serde_json::to_string(&analyse(&games, &league, request))?;
         self.cache.insert(key, json.clone());
         Ok(json)
     }
@@ -297,7 +298,7 @@ impl App {
             }
             (Method::Delete, games_path) if games_path.starts_with("/api/games/") => {
                 let id = GameId(games_path.trim_start_matches("/api/games/").to_owned());
-                match self.store.remove_game(&id) {
+                match self.store.remove_game(&id).and_then(|ours| if ours { Ok(true) } else { self.store.remove_league_game(&id) }) {
                     Ok(true) => {
                         self.cache.clear();
                         respond_json(request, 200, &true);

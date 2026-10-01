@@ -130,13 +130,8 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
         }
         if heading.team.as_ref() == Some(our_name) {
             parse_team_page(page, &heading.title, &mut ours)?;
-        } else if heading.title == "SHOTS" {
-            theirs.tables.shots = shots_table(page)?;
-            theirs.shot_chart = rink::shooting_chart(page);
-        } else if OPPONENT_PAGES.contains(&heading.title.as_str())
-            && let Err(e) = parse_team_page(page, &heading.title, &mut theirs)
-        {
-            opponent_problems.push(format!("opponent {}: {e}", heading.title.to_lowercase()));
+        } else {
+            parse_listed_side_page(page, &heading.title, &mut theirs, &mut opponent_problems, "opponent")?;
         }
     }
     let team_stats = team_stats.ok_or_else(|| Error::parse(SECTION, "no TEAMS STATS page"))?;
@@ -152,6 +147,55 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
 
 /// Opponent pages read beyond their shots: enough to rate their skaters alongside ours.
 const OPPONENT_PAGES: [&str; 3] = ["PLAYERS' STATS", "LINES STATS", "CHALLENGES"];
+
+/// A page of a team that isn't ours: their shots page must read; their player, line and
+/// challenge pages are read when they can be, and a failure is noted instead of stopping.
+fn parse_listed_side_page(page: &Page, title: &str, side: &mut TeamPages, problems: &mut Vec<String>, who: &str) -> Result<(), Error> {
+    if title == "SHOTS" {
+        side.tables.shots = shots_table(page)?;
+        side.shot_chart = rink::shooting_chart(page);
+    } else if OPPONENT_PAGES.contains(&title)
+        && let Err(e) = parse_team_page(page, title, side)
+    {
+        problems.push(format!("{who} {}: {e}", title.to_lowercase()));
+    }
+    Ok(())
+}
+
+/// A match report between two other teams in the league: both teams' stats, skaters and shots.
+#[derive(Debug, Clone)]
+pub struct LeagueReport {
+    pub title: Title,
+    pub team_stats: TeamStatsPage,
+    /// Indexed like `title.teams`.
+    pub sides: [TeamPages; 2],
+    /// Pages that could not be read; the game still loads without them.
+    pub problems: Vec<String>,
+}
+
+pub fn parse_league(pages: &[Page]) -> Result<LeagueReport, Error> {
+    let cover = pages.first().ok_or_else(|| Error::parse(SECTION, "empty document"))?;
+    let title = parse_cover(cover)?;
+    let mut team_stats = None;
+    let mut sides = [TeamPages::default(), TeamPages::default()];
+    let mut problems = Vec::new();
+    for page in &pages[1..] {
+        let Some(heading) = page_heading(page) else {
+            continue;
+        };
+        if heading.title == "TEAMS STATS" {
+            team_stats = Some(team_stats::parse(page)?);
+            continue;
+        }
+        let Some(index) = title.teams.iter().position(|t| heading.team.as_ref() == Some(t)) else {
+            continue;
+        };
+        let who = title.teams[index].0.clone();
+        parse_listed_side_page(page, &heading.title, &mut sides[index], &mut problems, &who)?;
+    }
+    let team_stats = team_stats.ok_or_else(|| Error::parse(SECTION, "no TEAMS STATS page"))?;
+    Ok(LeagueReport { title, team_stats, sides, problems })
+}
 
 fn parse_team_page(page: &Page, title: &str, team: &mut TeamPages) -> Result<(), Error> {
     match title {

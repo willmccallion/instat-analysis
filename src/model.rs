@@ -1032,6 +1032,26 @@ pub struct OpponentSkater {
     pub stats: SkaterStats,
 }
 
+/// One team's side of a league game we only have the match report for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeagueSide {
+    pub team: TeamName,
+    pub goals: u32,
+    pub summary: TeamSummary,
+    pub skaters: Vec<OpponentSkater>,
+    /// Their shots on the other team's net, as their shooting chart draws them.
+    pub shots: Vec<OpponentShot>,
+}
+
+/// A game between two other teams in the league, from its match report alone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LeagueGame {
+    pub id: GameId,
+    pub date: Date,
+    pub sides: [LeagueSide; 2],
+    pub warnings: Vec<String>,
+}
+
 /// Passes from row player to column player.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerMatrix {

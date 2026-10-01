@@ -144,7 +144,7 @@ impl RatingStat {
     }
 
     /// Only our Player report has these; opponents' zeros would mean "unknown", not "none".
-    const fn needs_players_report(self) -> bool {
+    pub(crate) const fn needs_players_report(self) -> bool {
         matches!(self, Self::XgPer60 | Self::XgAgainstPer60 | Self::PassesPer60)
     }
 

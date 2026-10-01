@@ -5,6 +5,7 @@ pub mod common;
 pub mod goalies;
 pub mod impact;
 pub mod instat;
+pub mod league;
 pub mod lineup;
 pub mod luck;
 pub mod matchups;
@@ -31,7 +32,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Date, Game, GameId, PlayerId, Seconds, Strength, Team, TeamStatRow, UnitKind, UnitStats};
+use crate::model::{Date, Game, GameId, LeagueGame, PlayerId, Seconds, Strength, Team, TeamStatRow, UnitKind, UnitStats};
 use common::{PlayerRef, TestRow, adjust_families};
 use impact::Ratings;
 use pairs::PairRow;
@@ -84,6 +85,10 @@ pub struct Context<'a> {
     pub min_toi: Seconds,
     pub min_unit_toi: Seconds,
     pub shot_xg: xg::ShotXg,
+    /// Every loaded game, in scope or not (the league reference doesn't follow the scope).
+    pub all_games: Vec<&'a Game>,
+    /// Every loaded game between two other teams.
+    pub league: Vec<&'a LeagueGame>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -147,6 +152,7 @@ pub struct Analysis {
     pub instat: instat::InstatReport,
     pub form_changes: Vec<changes::FormChange>,
     pub targets: Vec<targets::TargetProgress>,
+    pub league: league::LeagueReport,
     pub similarity: similarity::SimilarityReport,
     pub style: style::StyleReport,
     pub players: Vec<players::PlayerSeason>,
@@ -241,7 +247,7 @@ fn fill_pair_expectations(context: &Context<'_>, pairs: &mut [PairRow], ratings:
 
 /// The games in scope and everything shared about them, plus the shot model (fitted on every
 /// loaded game, `sorted` by date).
-fn build_context<'a>(sorted: &[&'a Game], request: &Request) -> (Context<'a>, xg::XgReport) {
+fn build_context<'a>(sorted: &[&'a Game], league: &'a [LeagueGame], request: &Request) -> (Context<'a>, xg::XgReport) {
     let scope: Vec<&Game> = sorted
         .iter()
         .copied()
@@ -261,6 +267,8 @@ fn build_context<'a>(sorted: &[&'a Game], request: &Request) -> (Context<'a>, xg
         min_toi: Seconds(request.min_minutes * 60.0),
         min_unit_toi: Seconds(request.min_unit_minutes * 60.0),
         shot_xg,
+        all_games: sorted.to_vec(),
+        league: league.iter().collect(),
     };
     (context, xg_model)
 }
@@ -282,10 +290,10 @@ fn listings(sorted: &[&Game], context: &Context<'_>) -> Vec<GameListing> {
 }
 
 #[must_use]
-pub fn analyse(all: &[Game], request: &Request) -> Analysis {
+pub fn analyse(all: &[Game], league: &[LeagueGame], request: &Request) -> Analysis {
     let mut sorted: Vec<&Game> = all.iter().collect();
     sorted.sort_by_key(|g| g.date);
-    let (context, xg_model) = build_context(&sorted, request);
+    let (context, xg_model) = build_context(&sorted, league, request);
 
     let team_report = team::team(&context);
     let corsi_prior = players::corsi_prior(&context);
@@ -335,6 +343,7 @@ pub fn analyse(all: &[Game], request: &Request) -> Analysis {
         instat: instat::instat(&context),
         form_changes,
         targets: targets::targets(&context, &request.targets),
+        league: league::league(&context, &player_seasons, &request.weights),
         similarity: similarity::similarity(&context),
         team: team_report,
         rankings: rankings_report,

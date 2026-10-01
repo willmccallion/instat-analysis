@@ -10,12 +10,12 @@ use crate::error::Error;
 use crate::model::{
     Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, FaceoffSpot, Game, OpponentShot, SpotFaceoffs,
     TeamSummary, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
-    Jersey, Matchup, Opponent, OpponentSkater, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
+    Jersey, LeagueGame, LeagueSide, Matchup, Opponent, OpponentSkater, Player, PlayerId, PlayerMatrix, Position, ReboundControl, SaveSplits, Saves, Seconds, ShotDistance,
     ShotSituation, ShotSources, ShotType, ShotZone, SkaterStats, StatEntry, Tally, TypeShots, EntryTypes, NetArea, NetShots,
     Strength, Team, TeamName, TeamStatRow, Unit, UnitKind, ZoneShots, add_zone_shots,
 };
 use crate::parse::common::{PlayerRow, RowLabel};
-use crate::parse::match_report::MatchReport;
+use crate::parse::match_report::{LeagueReport, MatchReport, TeamPages};
 use crate::parse::matrix::RawMatrix;
 use crate::parse::rink::RawShot;
 use crate::parse::players_report::{
@@ -911,16 +911,22 @@ fn opponent_skaters(report: &MatchReport, warnings: &mut Vec<String>) -> Vec<Opp
     for problem in &report.opponent_problems {
         warnings.push(format!("{problem}; ratings compare with our players only for this game"));
     }
+    listed_skaters(&report.theirs, "opponent", warnings)
+}
+
+/// Skaters of a team we only have match-report pages for, named by surname and the jersey
+/// their line tables print.
+fn listed_skaters(pages: &TeamPages, who: &str, warnings: &mut Vec<String>) -> Vec<OpponentSkater> {
     let mut unmatched = Vec::new();
-    let sources = skater_sources(&report.theirs.tables, &mut unmatched);
+    let sources = skater_sources(&pages.tables, &mut unmatched);
     if !unmatched.is_empty() {
-        warnings.push(format!("{} opponent table rows could not be matched; those players count with fewer stats", unmatched.len()));
+        warnings.push(format!("{} {who} table rows could not be matched; those players count with fewer stats", unmatched.len()));
     }
     sources
         .iter()
         .filter_map(|source| {
             let stats = skater_stats(source.main, &source.extras, None, 0);
-            let lines = opponent_line_members(&report.theirs.units, &source.main.label);
+            let lines = opponent_line_members(&pages.units, &source.main.label);
             let position = opponent_position(&lines, &stats);
             let skates = stats.toi.0 > 0.0 && matches!(position, Position::Forward | Position::Defence);
             skates.then(|| OpponentSkater {
@@ -933,6 +939,48 @@ fn opponent_skaters(report: &MatchReport, warnings: &mut Vec<String>) -> Vec<Opp
             })
         })
         .collect()
+}
+
+/// A game between two other teams in the league, from its match report alone.
+pub fn reconcile_league(report: &LeagueReport) -> Result<LeagueGame, Error> {
+    let mut warnings = report.problems.clone();
+    let title = &report.title;
+    let scores = [title.score.0, title.score.1];
+    let sides: Vec<LeagueSide> = (0..2)
+        .map(|i| {
+            let pages = &report.sides[i];
+            let team = title.teams[i].clone();
+            let skaters = listed_skaters(pages, &team.0, &mut warnings);
+            LeagueSide {
+                summary: team_stats::summary(&report.team_stats.entries[i]),
+                goals: scores[i],
+                shots: pages
+                    .shot_chart
+                    .iter()
+                    .map(|shot| OpponentShot { period: shot.period, jersey: shot.jersey, at: shot.at, goal: shot.goal })
+                    .collect(),
+                skaters,
+                team,
+            }
+        })
+        .collect();
+    if sides.iter().all(|s| s.skaters.is_empty()) {
+        return Err(Error::parse("league game", "no player tables for either team"));
+    }
+    let [first, second]: [LeagueSide; 2] = sides.try_into().map_err(|_| Error::parse("league game", "expected two teams"))?;
+    Ok(LeagueGame {
+        id: GameId(format!(
+            "league_{}_{}_{}-{}_{}",
+            title.date,
+            slug(&title.teams[0].0),
+            title.score.0,
+            title.score.1,
+            slug(&title.teams[1].0)
+        )),
+        date: title.date,
+        sides: [first, second],
+        warnings,
+    })
 }
 
 fn resolve_units(

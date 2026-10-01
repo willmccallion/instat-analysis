@@ -8,8 +8,9 @@ use std::process::ExitCode;
 
 use hockey_stats::analysis::{Request, analyse};
 use hockey_stats::error::Error;
-use hockey_stats::ingest::{build_games, parse_document};
-use hockey_stats::model::TeamPrefix;
+use hockey_stats::ingest::{Document, build_games, describe, parse_document};
+use hockey_stats::model::{LeagueGame, TeamPrefix};
+use hockey_stats::reconcile::reconcile_league;
 use hockey_stats::server::{self, RunningInstance};
 use hockey_stats::store::{self, Store};
 use hockey_stats::update;
@@ -112,7 +113,20 @@ fn write_report(inputs: &[PathBuf], output: &PathBuf, team: &TeamPrefix) -> Resu
             eprintln!("warning ({} vs {}): {warning}", game.date, game.opponent.0);
         }
     }
-    let analysis = analyse(&games, &Request::default());
+    let league: Vec<LeagueGame> = documents
+        .iter()
+        .filter_map(|d| match d {
+            Document::League(report) => match reconcile_league(report) {
+                Ok(game) => Some(game),
+                Err(e) => {
+                    eprintln!("warning: league game {}: {e}", describe(&report.title));
+                    None
+                }
+            },
+            _ => None,
+        })
+        .collect();
+    let analysis = analyse(&games, &league, &Request::default());
     std::fs::write(output, web::snapshot_page(&serde_json::to_string(&analysis)?))?;
     eprintln!("wrote {} ({} game(s))", output.display(), games.len());
     Ok(())

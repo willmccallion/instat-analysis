@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (games, problems) = build_games(&docs);
     eprintln!("problems: {problems:?}");
     let started = std::time::Instant::now();
-    let analysis = analyse(&games, &Request::default());
+    let analysis = analyse(&games, &[], &Request::default());
     eprintln!("analysis took {:?}", started.elapsed());
     println!("{}", serde_json::to_string_pretty(&analysis)?);
     Ok(())

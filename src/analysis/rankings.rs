@@ -16,7 +16,7 @@ use crate::analysis::Context;
 use crate::analysis::common::PlayerRef;
 use crate::analysis::players::{PlayerSeason, SkaterTotals};
 use crate::analysis::rating_setup::{Category, PositionWeights, RatingStat, RatingWeights};
-use crate::model::{Date, Game, GameId, OpponentSkater, PlayerId, Position};
+use crate::model::{Date, Game, GameId, LeagueGame, OpponentSkater, PlayerId, Position, TeamName, TeamSummary};
 use crate::stats::describe::{mean, sample_sd};
 
 /// Ice time that counts as much as the position average when shrinking a player's stats.
@@ -268,26 +268,69 @@ pub fn season_inputs(context: &Context<'_>, seasons: &[PlayerSeason]) -> Vec<Rat
                 }),
             qualified: s.qualified,
         })
-        .chain(opponent_inputs(&context.scope, context.min_toi.0))
+        .chain(listed_inputs(
+            &[opponent_appearances(&context.scope), league_appearances(&context.league)].concat(),
+            context.min_toi.0,
+        ))
         .collect()
 }
 
-/// Opponent skaters in `games`, one input per opponent team, jersey and surname.
-fn opponent_inputs(games: &[&Game], min_toi: f64) -> Vec<RatingInput> {
+/// One game of a skater we only know from match-report tables (an opponent of ours, or
+/// either team in a league game), with their team's and the other team's numbers.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ListedAppearance<'a> {
+    pub team: &'a TeamName,
+    pub skater: &'a OpponentSkater,
+    pub own: &'a TeamSummary,
+    pub other: &'a TeamSummary,
+}
+
+/// Every opponent skater's appearance in `games`.
+pub(crate) fn opponent_appearances<'a>(games: &[&'a Game]) -> Vec<ListedAppearance<'a>> {
+    games
+        .iter()
+        .flat_map(|g| {
+            g.opponent_skaters.iter().map(|skater| ListedAppearance {
+                team: &g.opponent,
+                skater,
+                own: &g.opponent_summary,
+                other: &g.summary,
+            })
+        })
+        .collect()
+}
+
+/// Every skater's appearance in league games, both teams.
+pub(crate) fn league_appearances<'a>(games: &[&'a LeagueGame]) -> Vec<ListedAppearance<'a>> {
+    games
+        .iter()
+        .flat_map(|g| {
+            (0..2).flat_map(move |i| {
+                let (own, other) = (&g.sides[i], &g.sides[1 - i]);
+                own.skaters.iter().map(move |skater| ListedAppearance { team: &own.team, skater, own: &own.summary, other: &other.summary })
+            })
+        })
+        .collect()
+}
+
+/// The identity a listed skater keeps across games: team, jersey and surname.
+pub(crate) fn listed_key(team: &TeamName, skater: &OpponentSkater) -> String {
+    format!(
+        "listed|{}|{}|{}",
+        team.0,
+        skater.opponent.jersey.map_or(String::new(), |j| j.to_string()),
+        skater.opponent.surname.to_uppercase()
+    )
+}
+
+/// One rating input per listed skater, pooling all their appearances.
+pub(crate) fn listed_inputs(appearances: &[ListedAppearance<'_>], min_toi: f64) -> Vec<RatingInput> {
     let mut by_player: BTreeMap<String, (&OpponentSkater, SkaterTotals, (f64, f64))> = BTreeMap::new();
-    for game in games {
-        for skater in &game.opponent_skaters {
-            let key = format!(
-                "opponent|{}|{}|{}",
-                game.opponent.0,
-                skater.opponent.jersey.map_or(String::new(), |j| j.to_string()),
-                skater.opponent.surname.to_uppercase()
-            );
-            let entry = by_player.entry(key).or_insert_with(|| (skater, SkaterTotals::default(), (0.0, 0.0)));
-            entry.1.add(&skater.stats);
-            entry.2.0 += f(game.opponent_summary.even_strength_shots.0);
-            entry.2.1 += f(game.summary.even_strength_shots.0);
-        }
+    for a in appearances {
+        let entry = by_player.entry(listed_key(a.team, a.skater)).or_insert_with(|| (a.skater, SkaterTotals::default(), (0.0, 0.0)));
+        entry.1.add(&a.skater.stats);
+        entry.2.0 += f(a.own.even_strength_shots.0);
+        entry.2.1 += f(a.other.even_strength_shots.0);
     }
     by_player
         .into_iter()
@@ -327,7 +370,7 @@ fn game_ratings(context: &Context<'_>, weights: &RatingWeights) -> BTreeMap<Play
                     qualified: true,
                 })
             })
-            .chain(opponent_inputs(&[game], 0.0))
+            .chain(listed_inputs(&opponent_appearances(&[game]), 0.0))
             .collect();
         for (position, position_weights) in [(Position::Forward, &weights.forwards), (Position::Defence, &weights.defence)] {
             for row in rate(&inputs, position, position_weights) {

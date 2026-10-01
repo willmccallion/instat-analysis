@@ -121,6 +121,8 @@ const state = {
   shotPeriod: "all",
   heatWeight: "attempts",
   passingLayout: "force",
+  leagueCompare: "",
+  leaguePlayer: null,
   goalie: null,
   unitTab: "defence_pairs",
   chemistryMetric: "toi",
@@ -145,10 +147,12 @@ const VIEWS = [
   { id: "game", label: "Game" },
   { id: "team", label: "Team & goalies" },
   { id: "deep", label: "Deep dive" },
+  { id: "league", label: "League" },
   { id: "help", label: "How to read this" },
 ];
 
 const SUBVIEWS = {
+  league: [["team", "Us vs the league"], ["games", "Our games vs the league"], ["players", "Players vs the league"], ["standings", "Standings"]],
   lines: [["units", "Lines"], ["builder", "Line builder"], ["chemistry", "Pair chemistry"], ["passing", "Passing"]],
   team: [["team", "Team"], ["luck", "Luck & results"], ["timing", "Goal timing"], ["usage", "Ice time & fatigue"], ["play", "Possession & shots"], ["focus", "Practice focus"], ["goalies", "Goalies"]],
   deep: [["impact", "Individual impact"], ["profiles", "Player styles"], ["instat", "What InStat rewards"], ["unusual", "Unusual games"], ["xg", "Shot quality model"], ["advanced", "Statistical tests"]],
@@ -277,8 +281,8 @@ function renderSidebar() {
 
 // Pages that pool several games show the scope picker; pages that rank players also show
 // the ice-time minimum. Game, Help and Uploads have no filter bar.
-const SCOPE_VIEWS = new Set(["summary", "rankings", "lines", "players", "team", "deep"]);
-const MIN_MINUTES_VIEWS = new Set(["rankings", "lines", "players", "deep"]);
+const SCOPE_VIEWS = new Set(["summary", "rankings", "lines", "players", "team", "deep", "league"]);
+const MIN_MINUTES_VIEWS = new Set(["rankings", "lines", "players", "deep", "league"]);
 
 function renderFilters() {
   const bar = document.getElementById("filters");
@@ -411,7 +415,7 @@ function viewGames() {
   folder.addEventListener("change", () => uploadFiles([...folder.files].filter((f) => f.name.toLowerCase().endsWith(".pdf"))));
   const zone = el("div", { class: "dropzone" }, [
     el("div", { class: "big", text: "Drop InStat PDFs here" }),
-    el("div", { class: "muted", text: "Both the Match report and the Player report for each game. Whole folders work too. Games are remembered, so next time just add the new one." }),
+    el("div", { class: "muted", text: "For our games, both the Match report and the Player report. For other teams' games (optional, for the League pages), just the Match report. Whole folders work too; games already loaded are skipped." }),
     el("div", { style: "margin-top:14px;display:flex;gap:8px;justify-content:center" }, [
       el("button", { class: "primary", text: "Choose files…", onclick: () => input.click() }),
       el("button", { text: "Choose a folder…", onclick: () => folder.click() }),
@@ -443,7 +447,7 @@ function viewGames() {
   });
   const library = el("div", { class: "card" }, [
     el("div", { class: "card-head" }, [
-      el("div", {}, [el("h3", { text: "Loaded games" }), el("p", { class: "desc", text: "Tick games and press “Analyse selected” for a custom scope. The check column shows the reader's self-checks (e.g. every player's +/- rebuilt from shifts matches InStat)." })]),
+      el("div", {}, [el("h3", { text: `Our games (${rows.length})` }), el("p", { class: "desc", text: "Games with your team. Tick games and press “Analyse selected” for a custom scope. The check column shows the reader's self-checks (e.g. every player's +/- rebuilt from shifts matches InStat)." })]),
       el("div", { class: "actions" }, [
         el("button", { text: "Analyse selected", onclick: () => { state.request = { ...state.request, games: [...custom], focus: null }; state.view = "overview"; refresh(); } }),
         el("button", { text: "Whole season", onclick: () => { state.request = { ...state.request, games: [], focus: null }; state.view = "overview"; refresh(); } }),
@@ -456,11 +460,26 @@ function viewGames() {
     state.pending.length ? el("div", { class: "warning-box", style: "margin-top:12px" }, [`Waiting: ${state.pending.join("; ")}`]) : null,
     state.problems.length ? el("div", { class: "warning-box", style: "margin-top:12px" }, [`Problems: ${state.problems.join("; ")}`]) : null,
   ]);
+  const leagueRows = (a?.league.loaded || []).map((g) => el("tr", {}, [
+    el("td", { class: "left", text: g.date }),
+    el("td", { class: "left", text: `${g.teams[0]} ${g.score[0]}–${g.score[1]} ${g.teams[1]}` }),
+    el("td", { class: "left wrap small" }, [g.warnings.length ? el("span", { class: "err", text: g.warnings.join("; ") }) : el("span", { class: "muted", text: "read fine" })]),
+    el("td", {}, [el("button", { class: "small", text: "Remove", onclick: () => removeGame({ id: g.id, date: g.date, opponent: `${g.teams[0]} vs ${g.teams[1]}` }) })]),
+  ]));
+  const leagueLibrary = el("div", { class: "card", style: "margin-top:16px" }, [
+    el("h3", { text: `League games: other teams (${leagueRows.length})` }),
+    leagueRows.length && !rows.length ? el("div", { class: "warning-box", text: `None of your own games are loaded, only other teams'. If your games ended up here, check your team name (${state.team}) above: games are yours when one team's name starts with it.` }) : null,
+    el("p", { class: "desc", text: "Optional: Match reports from games between other teams in your league. Drop them in the same box; the app recognises they don't involve your team, skips any game that's already loaded, and uses them only for the League pages and to set the league average in player ratings." }),
+    leagueRows.length ? el("div", { class: "table-wrap" }, [el("table", {}, [
+      el("thead", {}, [el("tr", {}, ["Date", "Game", "Checks", ""].map((h) => el("th", { class: "left", text: h })))]),
+      el("tbody", {}, leagueRows),
+    ])]) : el("p", { class: "muted small", text: "None yet." }),
+  ]);
   const team = el("p", { class: "small muted" }, [
     `Your team: ${state.team} `,
     el("button", { class: "link small", text: "change", onclick: () => { state.changingTeam = true; render(); } }),
   ]);
-  return page("Games & uploads", "Everything stays on this computer. Reports are read, checked and stored in the app's library folder.", team, zone, el("div", { style: "height:16px" }), library);
+  return page("Games & uploads", "Everything stays on this computer. Reports are read, checked and stored in the app's library folder.", team, zone, el("div", { style: "height:16px" }), library, leagueLibrary);
 }
 
 /** The preset for the team this app was built for; any other team can be typed in. */
@@ -530,6 +549,8 @@ async function uploadFiles(files) {
         GameAdded: `Added ${outcome.message}`,
         GameUpdated: `Updated ${outcome.message}`,
         WaitingForMatchReport: `Stored player report for ${outcome.message}; add its match report too`,
+        LeagueGameAdded: `Added to League games (neither team is ${state.team}): ${outcome.message}`,
+        AlreadyLoaded: `Already loaded, skipped: ${outcome.message}`,
       }[outcome.status] || JSON.stringify(outcome);
       state.uploadLog[state.uploadLog.length - 1] = { ok: true, text: `✓ ${file.name}: ${text}` };
     } catch (error) {
@@ -1581,7 +1602,7 @@ function playerTargets(a, s) {
   return [form, cards.length ? el("div", { class: "grid two", style: "margin-top:16px" }, cards) : null];
 }
 
-const PLAYER_TABS = [["overview", "Overview"], ["targets", "Targets"], ["shooting", "Shooting"], ["puck", "Puck play"], ["matchups", "Matchups"], ["numbers", "All numbers"]];
+const PLAYER_TABS = [["overview", "Overview"], ["targets", "Targets"], ["league", "vs league"], ["shooting", "Shooting"], ["puck", "Puck play"], ["matchups", "Matchups"], ["numbers", "All numbers"]];
 
 function playerDetail(a, s) {
   const back = el("button", { class: "link", text: "← All players", onclick: () => { state.player = null; render(); } });
@@ -1600,7 +1621,7 @@ function playerDetail(a, s) {
     { label: "InStat Index", value: fmt(s.instat_mean, 0), note: s.instat_sd ? `± ${fmt(s.instat_sd, 0)} game to game` : "" },
   ]);
   const [tabs, current] = pageTabs("playerTab", PLAYER_TABS);
-  const body = { overview: playerOverview, targets: playerTargets, shooting: playerShooting, puck: playerPuckPlay, matchups: playerMatchups, numbers: playerNumbers }[current](a, s);
+  const body = { overview: playerOverview, targets: playerTargets, league: (a, s) => leaguePlayerPanel(a, s.player.id), shooting: playerShooting, puck: playerPuckPlay, matchups: playerMatchups, numbers: playerNumbers }[current](a, s);
   return [back, head, kpis, tabs, ...[].concat(body)];
 }
 
@@ -2526,6 +2547,144 @@ function viewUnusual() {
   return page("Unusual games", "Each game's team stats compared with our usual, and the earlier games it looked most like. Look-alikes that ended differently point to what swung the result.", chart, el("div", { class: "grid two", style: "margin-top:16px" }, cards));
 }
 
+/** Where the league numbers come from, said once at the top of each League page. */
+function leagueBasis(L) {
+  const games = `${L.reference_games} game${L.reference_games === 1 ? "" : "s"} by ${L.teams.length} other team${L.teams.length === 1 ? "" : "s"}`;
+  const source = L.league_games ? `${L.league_games} league match report${L.league_games === 1 ? "" : "s"} plus our opponents' side of our games` : "only our opponents' side of our own games so far; add other teams' Match reports on the Games page for a fuller league picture";
+  return el("p", { class: "small muted" }, [`League average: ${games} (${source}). Our team never counts toward it.`]);
+}
+
+function leagueValue(v, stat) {
+  if (v === null || v === undefined) return "—";
+  return /%|share/i.test(stat) ? pct(v, 1) : fmt(v, 2);
+}
+
+/** Our standing on one team stat, in standard deviations across the other teams (positive = better). */
+function teamStanding(row) {
+  const values = row.by_team.map(([, v]) => v).filter((v) => v !== null);
+  if (row.ours === null || values.length < 2) return null;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  const sd = Math.sqrt(values.reduce((a, b) => a + (b - mean) ** 2, 0) / (values.length - 1));
+  if (!sd) return null;
+  return ((row.ours - mean) / sd) * (row.higher_is_better ? 1 : -1);
+}
+
+function ordinal(n) {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" })[n % 10] || "th";
+  return `${n}${suffix}`;
+}
+
+function viewLeagueTeam() {
+  const a = state.analysis;
+  const L = a.league;
+  if (!L.reference_games) return page("Us vs the league", "No other teams' games yet.");
+  const compareTo = L.teams.includes(state.leagueCompare) ? state.leagueCompare : "";
+  const select = el("select", { onchange: (e) => { state.leagueCompare = e.target.value; render(); } }, [
+    el("option", { value: "", text: "League average", selected: !compareTo }),
+    ...L.teams.map((t) => el("option", { value: t, text: t, selected: t === compareTo })),
+  ]);
+  const theirs = (row) => (compareTo ? row.by_team.find(([t]) => t === compareTo)?.[1] ?? null : row.league);
+  const compareName = compareTo || "League average";
+  const rows = L.stats.map((r) => ({ ...r, theirs: theirs(r), standing: teamStanding(r) }));
+  const better = (r) => (r.ours === null || r.theirs === null ? null : r.higher_is_better ? r.ours > r.theirs : r.ours < r.theirs);
+  const chart = chartCard("Where we stand on every team stat", `Each bar is how far we are from the other teams' average, in standard deviations across teams; right = better than the league, left = worse, biggest gaps at the top. Ranks count every team with games loaded.`, (c) => hBarChart(c, rows.filter((r) => r.standing !== null).sort((x, y) => Math.abs(y.standing) - Math.abs(x.standing)).map((r) => ({
+    label: r.stat, value: r.standing, color: r.standing >= 0 ? css("--div-pos") : css("--div-neg"),
+    note: `us ${leagueValue(r.ours, r.stat)} · league ${leagueValue(r.league, r.stat)} · ${r.rank ? `${ordinal(r.rank)} of ${r.teams_ranked}` : ""}`,
+  })), { valueFormat: (v) => signed(v, 1), labelWidth: 190, valueName: "SDs vs other teams" }), null);
+  const table = el("div", { class: "card" }, [
+    el("div", { style: "display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px" }, [el("h3", { style: "margin:0", text: "Compare with" }), select]),
+    el("div"),
+  ]);
+  dataTable(table.lastChild, [
+    { key: "stat", label: "Stat (per game)", left: true },
+    { key: "ours", label: a.league.team_name || "Us", format: (v, r) => leagueValue(v, r.stat), render: (r) => leagueValue(r.ours, r.stat) },
+    { key: "theirs", label: compareName, render: (r) => leagueValue(r.theirs, r.stat) },
+    { key: "verdict", label: "", left: true, value: (r) => better(r), render: (r) => (better(r) === null ? "" : el("span", { class: `badge ${better(r) ? "tone-good" : "tone-bad"}`, text: better(r) ? "better" : "worse" })) },
+    { key: "rank", label: "League rank", render: (r) => (r.rank ? `${ordinal(r.rank)} of ${r.teams_ranked}` : "—") },
+  ], rows);
+  return page("Us vs the league", "Our team's numbers per game against the rest of the league, or against any one team.", leagueBasis(L), table, el("div", { style: "height:16px" }), chart);
+}
+
+function viewLeagueGames() {
+  const a = state.analysis;
+  const L = a.league;
+  if (!L.reference_games || !L.games.length) return page("Our games vs the league", "Needs games by other teams to compare with.");
+  const stats = L.stats.map((r) => r.stat);
+  const signedZ = (v, j) => (v.z === null ? null : v.z * (L.stats[j].higher_is_better ? 1 : -1));
+  const overall = L.games.map((g) => {
+    const zs = g.values.map((v, j) => signedZ(v, j)).filter((z) => z !== null);
+    return { g, score: zs.length ? zs.reduce((x, y) => x + y, 0) / zs.length : null };
+  });
+  const summary = chartCard("How each game compared with a typical league game", "Average of every team stat's standing against all the other teams' games, in standard deviations; right = a better game than the league's typical one.", (c) => hBarChart(c, overall.map(({ g, score }) => ({
+    label: `${g.date.slice(5)} ${g.opponent}`, value: score, color: (score ?? 0) >= 0 ? css("--div-pos") : css("--div-neg"),
+    note: `${OUTCOME_SHORT[g.outcome]} ${g.goals_for}–${g.goals_against}`,
+  })), { valueFormat: (v) => signed(v, 2), labelWidth: 220, valueName: "SDs vs league games" }), null);
+  const grid = chartCard("Every stat, every game", "Blue = better than the league's typical team-game on that stat, red = worse (darker = further). Each cell shows our number; hover for how far from typical.", (c) => heatmap(c, { rows: L.games.map((g) => `${g.date.slice(5)} ${g.opponent}`), columns: stats }, (i, j) => {
+    const v = L.games[i].values[j];
+    const z = signedZ(v, j);
+    return z === null ? null : { value: Math.max(-2.5, Math.min(2.5, z)), text: leagueValue(v.value, stats[j]).replace("%", ""), title: `${L.games[i].date} vs ${L.games[i].opponent}: ${stats[j]}`, tip: [{ value: leagueValue(v.value, stats[j]), name: "us" }, { value: leagueValue(L.stats[j].league, stats[j]), name: "league per game" }, { value: signed(z, 1), name: "SDs, + = better" }] };
+  }, { kind: "diverging", min: -2.5, max: 2.5, center: 0 }, { labelWidth: 200, scaleFormat: (v) => signed(v, 1) }), null);
+  return page("Our games vs the league", "Each of our games against what a typical league team-game looks like.", leagueBasis(L), summary, el("div", { style: "height:16px" }), grid);
+}
+
+/** One of our players' stats as league percentiles at their position, and their games graded against league games. */
+function leaguePlayerPanel(a, playerId) {
+  const L = a.league;
+  const p = L.players.find((x) => x.player.id === playerId);
+  if (!p) return emptyNote("No league comparison for this player (forwards and defencemen only).");
+  const names = new Map(L.player_stats.map((s) => [s.stat, s]));
+  const rows = p.stats.filter((r) => r.percentile !== null).map((r) => ({ ...r, name: names.get(r.stat).name }));
+  const group = p.player.position === "Defence" ? L.reference_defence : L.reference_forwards;
+  const position = p.player.position === "Defence" ? "defencemen" : "forwards";
+  const bars = chartCard(`Against ${group} league ${position}`, `Percentile on every stat: 50 = the league's middle ${p.player.position === "Defence" ? "defenceman" : "forward"}, 90 = better than 9 in 10. Lower-is-better stats (losses, attempts against) are already flipped. Average: ${fmt(p.average_percentile, 0)}.${p.qualified ? "" : " Below the minimum ice time, so treat as a first look."}${group < 20 ? ` Only ${group} league ${position} so far, so percentiles move in big steps; adding other teams' Match reports fills this out.` : ""}`, (c) => hBarChart(c, rows.map((r) => ({
+    label: r.name, value: r.percentile, color: window.Charts.divergingColor((r.percentile - 50) / 50),
+    note: `${fmt(r.value, 2)} vs league ${fmt(r.league, 2)}`,
+  })), { min: 0, max: 100, reference: 50, referenceLabel: "league middle", valueFormat: (v) => `${Math.round(v)}`, valueName: "percentile", labelWidth: 190 }), (c) => dataTable(c, [
+    { key: "name", label: "Stat", left: true }, { key: "value", label: p.player.name, format: (v) => fmt(v, 2) },
+    { key: "league", label: "League average", format: (v) => fmt(v, 2) }, { key: "percentile", label: "Percentile", format: (v) => fmt(v, 0), tone: "higher" },
+  ], rows));
+  const games = p.game_ratings.map((g, i) => ({ ...g, i }));
+  const trend = games.length ? chartCard("Each game against league games", "Single-game rating where 50 = an average league skater's game at the position (both teams in every loaded game).", (c) => lineChart(c, [{ name: "Game rating", color: css("--series-1"), points: games.map((g) => ({ x: g.i, y: g.rating, label: `vs ${g.opponent}` })) }], {
+    reference: 50, referenceLabel: "league avg", xFormat: (i) => games[i]?.date.slice(5) || "", yFormat: (v) => fmt(v, 0),
+  }), (c) => dataTable(c, [{ key: "date", label: "Date", left: true }, { key: "opponent", label: "Opponent", left: true }, { key: "rating", label: "Rating", format: (v) => fmt(v, 0) }], p.game_ratings)) : null;
+  return el("div", { class: "grid two" }, [bars, trend].filter(Boolean));
+}
+
+function viewLeaguePlayers() {
+  const a = state.analysis;
+  const L = a.league;
+  if (!L.players.length) return page("Players vs the league", "No players to compare.");
+  const chosen = L.players.find((p) => p.player.id === state.leaguePlayer) || L.players.find((p) => p.qualified) || L.players[0];
+  const select = el("select", { onchange: (e) => { state.leaguePlayer = e.target.value; render(); } }, L.players.map((p) => el("option", { value: p.player.id, text: `${p.player.jersey ?? ""} ${p.player.name} (${positionShort(p.player.position)})`.trim(), selected: p === chosen })));
+  const stats = L.player_stats;
+  const team = chartCard("The whole team against the league", "Every player's percentile on every stat against league skaters at the same position: blue above the league middle, red below. Click a row for that player.", (c) => heatmap(c, { rows: L.players.map((p) => `${p.player.name} (${positionShort(p.player.position)})`), columns: stats.map((s) => s.name) }, (i, j) => {
+    const r = L.players[i].stats[j];
+    return r.percentile === null ? null : { value: r.percentile, text: String(Math.round(r.percentile)), title: `${L.players[i].player.name}: ${stats[j].name}`, tip: [{ value: `${Math.round(r.percentile)}`, name: "percentile" }, { value: fmt(r.value, 2), name: "value" }, { value: fmt(r.league, 2), name: "league average" }], onClick: () => { state.leaguePlayer = L.players[i].player.id; render(); window.scrollTo(0, 0); } };
+  }, { kind: "diverging", min: 0, max: 100, center: 50 }, { labelWidth: 200, scaleFormat: (v) => fmt(v, 0) }), (c) => dataTable(c, [
+    { key: "name", label: "Player", left: true, value: (p) => p.player.name },
+    { key: "games", label: "GP" },
+    { key: "average_percentile", label: "Average percentile", format: (v) => fmt(v, 0), tone: "higher" },
+  ], L.players, { sortKey: "average_percentile", onRow: (p) => { state.leaguePlayer = p.player.id; render(); } }));
+  return page("Players vs the league", "How each of our players compares with league skaters at the same position, stat by stat and game by game. xG and passes come only from our Player report, so they aren't compared.", leagueBasis(L),
+    el("div", { style: "margin-bottom:12px" }, [select]), leaguePlayerPanel(a, chosen.player.id), el("div", { style: "height:16px" }), team);
+}
+
+function viewLeagueStandings() {
+  const a = state.analysis;
+  const L = a.league;
+  const card = el("div", { class: "card" }, [el("p", { class: "desc", text: "From every loaded game only (ours and league match reports), so teams with fewer games loaded have fewer points; points per game is the fairer column. Click a team to compare with them." }), el("div")]);
+  dataTable(card.lastChild, [
+    { key: "team", label: "Team", left: true, render: (r) => (r.ours ? el("strong", { text: r.team }) : r.team) },
+    { key: "games", label: "GP" }, { key: "wins", label: "W" }, { key: "losses", label: "L" }, { key: "overtime_losses", label: "OTL" }, { key: "ties", label: "T" },
+    { key: "points", label: "Pts" },
+    { key: "ppg", label: "Pts/GP", value: (r) => r.points / Math.max(1, r.games), format: (v) => fmt(v, 2) },
+    { key: "goals", label: "Goals", value: (r) => r.goals_for - r.goals_against, render: (r) => `${r.goals_for}–${r.goals_against}` },
+    { key: "attempt_share", label: "Shot share", format: (v) => pct(v, 0) },
+    { key: "xg_share", label: "xG share", format: (v) => pct(v, 0) },
+  ], L.standings, { sortKey: "ppg", onRow: (r) => { if (!r.ours) { state.leagueCompare = r.team; state.sub.league = "team"; render(); } } });
+  return page("Standings", "Every team with games loaded.", leagueBasis(L), card);
+}
+
 function luckWords(L) {
   if (L.chance_of_at_most_actual !== null && L.chance_of_at_most_actual < 0.1) return `unlucky: chances like ours earn more points ${pct(100 * (1 - L.chance_of_at_most_actual), 0)} of the time`;
   if (L.chance_of_at_least_actual !== null && L.chance_of_at_least_actual < 0.1) return `lucky: chances like ours earn this many only ${pct(100 * L.chance_of_at_least_actual, 0)} of the time`;
@@ -2704,6 +2863,7 @@ function viewHelp() {
     ["Luck & results", "Each shot's xG is its chance of scoring; combining every shot in a game gives the exact chance of each final score, so how often the game is won, lost, tied or goes to overtime. Overtime is 5 minutes of sudden death at each team's regulation scoring rate. Expected points add those up (2 for a win, 1 for an overtime loss or tie). The goal differential splits exactly into shot volume, chance quality, our finishing and our goaltending."],
     ["Goals saved above expected (GSAx)", "The xG of every attempt a goalie faced minus the goals allowed. Attempts include ones that missed or were blocked, so it also reflects the defence. When two goalies shared a game, each gets the team's xG in proportion to the shots on goal they faced. Weak spots on the net pull each area's save % toward the goalie's own average in proportion to how few shots it has."],
     ["Density maps", "Dots smoothed into a heat map (a Gaussian kernel about 7 ft wide on the half rink, 10 ft on the full rink) and shown per game, per 10 × 10 ft square, so seasons with different numbers of games compare fairly. Difference maps subtract one map from another: blue where the first is higher, red where the second is."],
+    ["League", "Optional league match reports (games between two other teams) and our opponents' side of our own games make up the league average; our team never counts toward it. Us vs the league compares our per-game numbers with the league or any one team, with a rank among all teams. Our games vs the league shows each game against a typical league team-game. Players vs the league gives every stat as a percentile among league skaters at the same position (xG and passes need the Player report, so they're left out), and each game graded against league player-games. Duplicate uploads of the same game are skipped automatically."],
     ["Passing network layouts", "Pull together (the default) is a force-directed layout like Obsidian's graph view: every player pushes the others away and each passing link pulls its two players together, harder the more passes they share, so players who pass to each other a lot end up close and passing groups form clusters. Drag a player to move them; double-click to let them go. Circle puts every player around a ring, ordered by passing group."],
     ["Passing network measures", "PageRank: where the puck ends up flowing, counting passes from busy passers more (the scores add to 100%). Connector score (betweenness): the share of the quickest passing routes between two teammates that run through a player, where a link with more passes is quicker. Passing groups come from Louvain community detection: groups who pass among themselves more than their volume predicts; modularity above about 0.3 means clear cliques."],
     ["Line builder", "Uses the individual impact ratings (ridge Poisson models of shot attempts for and against) to predict every possible line and pair's shot share, then searches every way of splitting the roster into lines for the best set, with the current ice-time split and a faceoff taker on each line when there are enough. Predictions can't see chemistry, and combinations that never played together are extrapolations."],
@@ -2748,6 +2908,7 @@ function render() {
   const sections = {
     lines: { title: "Lines & pairs", views: { units: viewLines, builder: viewLineBuilder, chemistry: viewChemistry, passing: viewPassing } },
     team: { title: "Team & goalies", views: { team: viewTeam, luck: viewLuck, timing: viewTiming, usage: viewUsage, play: viewPlay, focus: viewFocus, goalies: viewGoalies } },
+    league: { title: "League", views: { team: viewLeagueTeam, games: viewLeagueGames, players: viewLeaguePlayers, standings: viewLeagueStandings } },
     deep: { title: "Deep dive", views: { impact: viewImpact, profiles: viewProfiles, instat: viewInstat, unusual: viewUnusual, xg: viewXgModel, advanced: viewAdvanced } },
   };
   const views = { games: viewGames, summary: viewSummary, rankings: viewRankings, players: viewPlayers, game: viewGame, help: viewHelp };

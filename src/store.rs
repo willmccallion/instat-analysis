@@ -12,9 +12,9 @@ use crate::analysis::rating_setup::RatingWeights;
 use crate::analysis::targets::PlayerTarget;
 use crate::error::Error;
 use crate::ingest::{Document, describe, parse_document, same_game};
-use crate::model::{Game, GameId, TeamPrefix};
-use crate::parse::match_report::Title;
-use crate::reconcile::reconcile;
+use crate::model::{Game, GameId, LeagueGame, TeamPrefix};
+use crate::parse::match_report::{LeagueReport, Title};
+use crate::reconcile::{reconcile, reconcile_league};
 
 /// Bump when parsing or reconciliation changes, to rebuild cached games.
 pub const PARSER_VERSION: u32 = 14;
@@ -39,6 +39,15 @@ struct StoredGame {
     game: Game,
 }
 
+/// A league game (two other teams) and the match report it was built from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredLeagueGame {
+    version: u32,
+    match_file: String,
+    match_title: Title,
+    game: LeagueGame,
+}
+
 #[derive(Debug, Clone)]
 struct Pending {
     file: String,
@@ -52,6 +61,9 @@ pub enum AddOutcome {
     GameAdded(String),
     GameUpdated(String),
     WaitingForMatchReport(String),
+    LeagueGameAdded(String),
+    /// The same game (same teams, score and date) is already loaded, so nothing was added.
+    AlreadyLoaded(String),
 }
 
 pub struct Store {
@@ -60,6 +72,7 @@ pub struct Store {
     rating_weights: RatingWeights,
     player_targets: Vec<PlayerTarget>,
     games: Vec<StoredGame>,
+    league: Vec<StoredLeagueGame>,
     pending: Vec<Pending>,
     pub problems: Vec<String>,
 }
@@ -73,7 +86,7 @@ fn slug(text: &str) -> String {
 fn file_name(document: &Document) -> String {
     let title = document.title();
     let kind = match document {
-        Document::Match(_) => "match",
+        Document::Match(_) | Document::League(_) => "match",
         Document::Players(_) => "players",
     };
     format!(
@@ -95,6 +108,10 @@ impl Store {
         self.dir.join("games")
     }
 
+    fn league_dir(&self) -> PathBuf {
+        self.dir.join("league")
+    }
+
     fn settings_path(&self) -> PathBuf {
         self.dir.join("settings.json")
     }
@@ -108,11 +125,13 @@ impl Store {
             rating_weights: RatingWeights::default(),
             player_targets: Vec::new(),
             games: Vec::new(),
+            league: Vec::new(),
             pending: Vec::new(),
             problems: Vec::new(),
         };
         fs::create_dir_all(store.pdf_dir())?;
         fs::create_dir_all(store.game_dir())?;
+        fs::create_dir_all(store.league_dir())?;
         match fs::read(store.settings_path()) {
             Ok(bytes) => {
                 let settings = serde_json::from_slice::<Settings>(&bytes)?;
@@ -171,6 +190,7 @@ impl Store {
         self.save_settings(&team)?;
         self.team = Some(team);
         self.games.clear();
+        self.league.clear();
         self.pending.clear();
         self.problems.clear();
         self.load()
@@ -195,16 +215,29 @@ impl Store {
                 }
             }
         }
+        for entry in fs::read_dir(self.league_dir())? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|e| e == "json") {
+                let loaded = fs::read(&path)
+                    .map_err(Error::from)
+                    .and_then(|bytes| serde_json::from_slice::<StoredLeagueGame>(&bytes).map_err(Error::from));
+                match loaded {
+                    Ok(stored) if stored.version == PARSER_VERSION && !stored.match_title.teams.iter().any(|t| team.matches(t)) => {
+                        self.league.push(stored);
+                    }
+                    _ => fs::remove_file(&path)?,
+                }
+            }
+        }
         let mut orphans: Vec<PathBuf> = fs::read_dir(self.pdf_dir())?
             .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|e| e == "pdf"))
             .filter(|p| {
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
-                !self
-                    .games
-                    .iter()
-                    .any(|g| g.match_file == name || g.players_file.as_deref() == Some(name.as_str()))
+                let ours = self.games.iter().any(|g| g.match_file == name || g.players_file.as_deref() == Some(name.as_str()));
+                let league = self.league.iter().any(|g| g.match_file == name);
+                !ours && !league
             })
             .collect();
         orphans.sort_by_key(|p| p.to_string_lossy().contains("_players"));
@@ -223,6 +256,41 @@ impl Store {
         let mut games: Vec<Game> = self.games.iter().map(|g| g.game.clone()).collect();
         games.sort_by_key(|g| g.date);
         games
+    }
+
+    #[must_use]
+    pub fn league_games(&self) -> Vec<LeagueGame> {
+        let mut games: Vec<LeagueGame> = self.league.iter().map(|g| g.game.clone()).collect();
+        games.sort_by_key(|g| g.date);
+        games
+    }
+
+    fn add_league_game(&mut self, report: &LeagueReport, file: String) -> Result<AddOutcome, Error> {
+        let game = reconcile_league(report)?;
+        let label = describe(&report.title);
+        let path = self.league_dir().join(format!("{}.json", game.id.0));
+        let stored = StoredLeagueGame { version: PARSER_VERSION, match_file: file, match_title: report.title.clone(), game };
+        fs::write(path, serde_json::to_vec(&stored)?)?;
+        self.league.retain(|g| g.game.id != stored.game.id);
+        self.league.push(stored);
+        Ok(AddOutcome::LeagueGameAdded(label))
+    }
+
+    /// Deletes a league game and its match report.
+    pub fn remove_league_game(&mut self, id: &GameId) -> Result<bool, Error> {
+        let Some(index) = self.league.iter().position(|g| &g.game.id == id) else {
+            return Ok(false);
+        };
+        let stored = self.league.remove(index);
+        let pdf = self.pdf_dir().join(&stored.match_file);
+        if pdf.exists() {
+            fs::remove_file(pdf)?;
+        }
+        let json = self.league_dir().join(format!("{}.json", id.0));
+        if json.exists() {
+            fs::remove_file(json)?;
+        }
+        Ok(true)
     }
 
     #[must_use]
@@ -246,8 +314,14 @@ impl Store {
         let team = self.team.clone().ok_or(Error::NoTeam)?;
         let document = parse_document(bytes, &team)?;
         let name = file_name(&document);
+        if let Document::League(report) = &document
+            && self.league.iter().any(|g| same_game(&g.match_title, &report.title))
+        {
+            return Ok(AddOutcome::AlreadyLoaded(describe(&report.title)));
+        }
         fs::write(self.pdf_dir().join(&name), bytes)?;
         match document {
+            Document::League(report) => self.add_league_game(&report, name),
             Document::Match(report) => {
                 let partner_index = self
                     .pending
@@ -256,7 +330,7 @@ impl Store {
                 let partner = partner_index.map(|i| self.pending.remove(i));
                 let players = partner.as_ref().and_then(|p| match &p.document {
                     Document::Players(players) => Some(players.as_ref()),
-                    Document::Match(_) => None,
+                    Document::Match(_) | Document::League(_) => None,
                 });
                 let existing_players_file = self
                     .games
@@ -266,7 +340,7 @@ impl Store {
                 let reloaded = match (players, &existing_players_file) {
                     (None, Some(file)) => match parse_document(&fs::read(self.pdf_dir().join(file))?, &team)? {
                         Document::Players(p) => Some(p),
-                        Document::Match(_) => None,
+                        Document::Match(_) | Document::League(_) => None,
                     },
                     _ => None,
                 };
