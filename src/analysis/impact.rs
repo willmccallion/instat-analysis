@@ -70,18 +70,31 @@ pub struct Ratings {
     pub defence: HashMap<PlayerId, f64>,
 }
 
+/// Events for and against per 60 minutes that the additive model expects of a group.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExpectedRates {
+    pub for_per_60: f64,
+    pub against_per_60: f64,
+}
+
 impl Ratings {
+    /// Rates for a group with every other player on the ice average.
+    #[must_use]
+    pub fn expected_rates(&self, players: &[&PlayerId]) -> Option<ExpectedRates> {
+        let mut log_for = self.intercept_for;
+        let mut log_against = self.intercept_against;
+        for id in players {
+            log_for += self.offence.get(*id)?;
+            log_against += self.defence.get(*id)?;
+        }
+        Some(ExpectedRates { for_per_60: log_for.exp(), against_per_60: log_against.exp() })
+    }
+
     /// Expected CF% for a group under the additive model.
     #[must_use]
     pub fn expected_share(&self, players: &[&PlayerId]) -> Option<f64> {
-        let mut rate_for = self.intercept_for;
-        let mut rate_against = self.intercept_against;
-        for id in players {
-            rate_for += self.offence.get(*id)?;
-            rate_against += self.defence.get(*id)?;
-        }
-        let (f, a) = (rate_for.exp(), rate_against.exp());
-        Some(100.0 * f / (f + a))
+        let rates = self.expected_rates(players)?;
+        Some(100.0 * rates.for_per_60 / (rates.for_per_60 + rates.against_per_60))
     }
 }
 
@@ -279,6 +292,7 @@ pub struct ImpactOutputs {
     pub defence_ratings: Option<Ratings>,
     pub forward_ratings: Option<Ratings>,
     pub full_unit_ratings: Option<Ratings>,
+    pub goal_ratings: Option<Ratings>,
 }
 
 #[must_use]
@@ -311,11 +325,12 @@ pub fn impact(context: &Context<'_>) -> ImpactOutputs {
         report: ImpactReport {
             corsi_defence: defence.as_ref().map(|(m, _)| m.clone()),
             corsi_forwards: forwards.as_ref().map(|(m, _)| m.clone()),
-            goals: goals.map(|(m, _)| m),
+            goals: goals.as_ref().map(|(m, _)| m.clone()),
         },
         defence_ratings: defence.map(|(_, r)| r),
         forward_ratings: forwards.map(|(_, r)| r),
         full_unit_ratings: full.map(|(_, r)| r),
+        goal_ratings: goals.map(|(_, r)| r),
     }
 }
 
