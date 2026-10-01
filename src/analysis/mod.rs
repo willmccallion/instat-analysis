@@ -33,7 +33,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Date, Game, GameId, GoalPlay, LeagueGame, PlayerId, Seconds, Strength, Team, TeamStatRow, UnitKind, UnitStats};
+use crate::model::{
+    Date, Game, GameId, GoalPlay, LeagueGame, PlayerId, PositionSource, Seconds, Strength, Team, TeamStatRow, UnitKind, UnitStats,
+};
 use common::{PlayerRef, TestRow, adjust_families};
 use impact::Ratings;
 use pairs::PairRow;
@@ -158,6 +160,8 @@ pub struct Analysis {
     pub style: style::StyleReport,
     pub goal_plays: goal_plays::GoalPlaysReport,
     pub players: Vec<players::PlayerSeason>,
+    /// Where each player's position came from.
+    pub position_sources: HashMap<PlayerId, PositionSource>,
     pub rankings: rankings::RankingsReport,
     pub goalies: Vec<goalies::GoalieSeason>,
     pub units: units::UnitsReport,
@@ -352,6 +356,7 @@ pub fn analyse(all: &[Game], league: &[LeagueGame], request: &Request) -> Analys
         team: team_report,
         rankings: rankings_report,
         players: player_seasons,
+        position_sources: common::position_sources(&sorted),
         goalies: goalies::goalies(&context),
         units: units_report,
         pairs: pair_rows,

@@ -4,6 +4,7 @@
 //! cached as JSON (tagged with [`PARSER_VERSION`]) so start-up does not re-read every file.
 //! A game is built from its event export, with any PDF reports adding InStat's own numbers.
 
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,16 +12,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::rating_setup::RatingWeights;
 use crate::analysis::targets::PlayerTarget;
-use crate::enrich::add_reports;
+use crate::enrich::{add_reports, listed_positions};
 use crate::error::Error;
 use crate::events::{EventGame, build_game, build_league_game};
 use crate::ingest::{Document, describe, parse_upload, same_game};
-use crate::model::{Game, GameId, LeagueGame, TeamPrefix};
+use crate::model::{Game, GameId, KnownPosition, LeagueGame, PlayerId, PositionSource, SkaterPosition, TeamPrefix};
 use crate::parse::events::{EventFile, EventFileKind};
 use crate::parse::match_report::{Title, our_index};
 
 /// Bump when parsing or reconciliation changes, to rebuild cached games.
-pub const PARSER_VERSION: u32 = 16;
+pub const PARSER_VERSION: u32 = 17;
+
+/// Players' positions from one source: the coach, or InStat's match report.
+pub type Positions = BTreeMap<PlayerId, SkaterPosition>;
+
+/// The coach setting one player's position, or with `None` handing it back to the app.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PositionChange {
+    pub player: PlayerId,
+    pub position: Option<SkaterPosition>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Settings {
@@ -29,6 +40,8 @@ struct Settings {
     rating_weights: RatingWeights,
     #[serde(default)]
     player_targets: Vec<PlayerTarget>,
+    #[serde(default)]
+    player_positions: Positions,
 }
 
 /// Which of InStat's downloads a file is, in the order a game is best assembled from them.
@@ -110,9 +123,21 @@ struct Entry {
     title: Title,
     files: GameFiles,
     built: Built,
+    /// The coach's positions an [`Built::Ours`] game was built with.
+    #[serde(default)]
+    coach_positions: Positions,
+    /// Where the game's match report puts our players.
+    #[serde(default)]
+    report_positions: Positions,
 }
 
 impl Entry {
+    /// Whether this entry was built the way the current reader, team and positions would.
+    fn is_current(&self, team: &TeamPrefix, coach_positions: &Positions) -> bool {
+        let positions_match = !matches!(self.built, Built::Ours(_)) || &self.coach_positions == coach_positions;
+        self.version == PARSER_VERSION && &self.team == team && positions_match
+    }
+
     fn game_id(&self) -> Option<&GameId> {
         match &self.built {
             Built::Ours(game) => Some(&game.id),
@@ -153,6 +178,7 @@ pub struct Store {
     team: Option<TeamPrefix>,
     rating_weights: RatingWeights,
     player_targets: Vec<PlayerTarget>,
+    coach_positions: Positions,
     entries: Vec<Entry>,
     pub problems: Vec<String>,
 }
@@ -186,8 +212,38 @@ fn game_label(game: &Game) -> String {
     format!("{} vs {} {}-{}", game.date, game.opponent.0, game.goals_for, game.goals_against)
 }
 
-/// The game `documents` make up for `team`.
-fn build(team: &TeamPrefix, title: &Title, documents: &Documents) -> Result<Built, Error> {
+/// Positions for building a game: the coach's over the match report's.
+fn known_positions(coach: &Positions, report: &Positions) -> HashMap<PlayerId, KnownPosition> {
+    let known = |positions: &Positions, source: PositionSource| {
+        positions.iter().map(move |(id, position)| (id.clone(), KnownPosition { position: *position, source })).collect::<Vec<_>>()
+    };
+    known(report, PositionSource::Report).into_iter().chain(known(coach, PositionSource::Coach)).collect()
+}
+
+/// Gives `game` the units and positions its export makes with `known` positions. The PDF
+/// reports add nothing to either, so `game` keeps everything they gave it.
+fn reposition(game: &mut Game, export: &EventGame<'_>, team: &TeamPrefix, known: &HashMap<PlayerId, KnownPosition>) -> Result<(), Error> {
+    let rebuilt = build_game(export, team, known)?;
+    game.units = rebuilt.units;
+    for player in &mut game.players {
+        if let Some(fresh) = rebuilt.players.iter().find(|p| p.id == player.id) {
+            player.position = fresh.position;
+            player.position_source = fresh.position_source;
+        }
+    }
+    Ok(())
+}
+
+/// What a game's files make up, and where its match report puts our players.
+struct Assembled {
+    built: Built,
+    report_positions: Positions,
+}
+
+/// The game `documents` make up for `team`, with `coach_positions` over InStat's over the
+/// app's own guess.
+fn build(team: &TeamPrefix, title: &Title, documents: &Documents, coach_positions: &Positions) -> Result<Assembled, Error> {
+    let only = |built: Built| Assembled { built, report_positions: Positions::new() };
     let ours = match our_index(title, team) {
         Ok(_) => true,
         Err(Error::WrongTeam { both: false, .. }) => false,
@@ -202,15 +258,19 @@ fn build(team: &TeamPrefix, title: &Title, documents: &Documents) -> Result<Buil
         _ => None,
     };
     let Some(players) = &documents.players_export else {
-        return Ok(Built::Waiting("add its players CSV (the one with shifts)".to_owned()));
+        return Ok(only(Built::Waiting("add its players CSV (the one with shifts)".to_owned())));
     };
     let export = EventGame { players, team: documents.team_export.as_ref() };
     if !ours {
-        return Ok(Built::League(Box::new(build_league_game(&export)?)));
+        return Ok(only(Built::League(Box::new(build_league_game(&export)?))));
     }
-    let mut game = build_game(&export, team)?;
+    let mut game = build_game(&export, team, &known_positions(coach_positions, &Positions::new()))?;
     add_reports(&mut game, match_report, players_report);
-    Ok(Built::Ours(Box::new(game)))
+    let report_positions: Positions = match_report.map(|report| listed_positions(&game, report).into_iter().collect()).unwrap_or_default();
+    if !report_positions.is_empty() {
+        reposition(&mut game, &export, team, &known_positions(coach_positions, &report_positions))?;
+    }
+    Ok(Assembled { built: Built::Ours(Box::new(game)), report_positions })
 }
 
 impl Store {
@@ -246,6 +306,7 @@ impl Store {
             team: None,
             rating_weights: RatingWeights::default(),
             player_targets: Vec::new(),
+            coach_positions: Positions::new(),
             entries: Vec::new(),
             problems: Vec::new(),
         };
@@ -263,6 +324,7 @@ impl Store {
                     .into_iter()
                     .map(|t| PlayerTarget { player: t.player.canonical(), ..t })
                     .collect();
+                store.coach_positions = settings.player_positions.into_iter().map(|(id, p)| (id.canonical(), p)).collect();
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
@@ -307,6 +369,50 @@ impl Store {
         &self.player_targets
     }
 
+    #[must_use]
+    pub const fn coach_positions(&self) -> &Positions {
+        &self.coach_positions
+    }
+
+    /// Saves the coach's position for a player and rebuilds our games with it.
+    pub fn set_player_position(&mut self, change: &PositionChange) -> Result<(), Error> {
+        let team = self.team.clone().ok_or(Error::NoTeam)?;
+        let player = change.player.canonical();
+        match change.position {
+            Some(position) => self.coach_positions.insert(player, position),
+            None => self.coach_positions.remove(&player),
+        };
+        self.save_settings(&team)?;
+        self.rebuild_our_games(&team)
+    }
+
+    /// Reapplies positions to our games from their event exports alone; quick, since the
+    /// PDF reports, by far the slowest to read, add nothing to units or positions.
+    fn rebuild_our_games(&mut self, team: &TeamPrefix) -> Result<(), Error> {
+        for index in 0..self.entries.len() {
+            let entry = &self.entries[index];
+            let Built::Ours(cached) = &entry.built else {
+                continue;
+            };
+            let read = |name: &Option<String>| -> Result<Option<EventFile>, Error> {
+                match name.as_ref().map(|n| parse_upload(&fs::read(self.file_path(n))?, n, team)).transpose()? {
+                    Some(Document::Events(file)) => Ok(Some(*file)),
+                    Some(_) => Err(Error::parse("library", format!("{} isn't an event export", describe(&entry.title)))),
+                    None => Ok(None),
+                }
+            };
+            let players = read(&entry.files.players_export)?.ok_or_else(|| Error::parse("library", format!("{} has no players CSV", describe(&entry.title))))?;
+            let team_export = read(&entry.files.team_export)?;
+            let mut game = cached.as_ref().clone();
+            let known = known_positions(&self.coach_positions, &entry.report_positions);
+            reposition(&mut game, &EventGame { players: &players, team: team_export.as_ref() }, team, &known)?;
+            let updated = Entry { built: Built::Ours(Box::new(game)), coach_positions: self.coach_positions.clone(), ..entry.clone() };
+            fs::write(self.library_dir().join(updated.json_name()), serde_json::to_vec(&updated)?)?;
+            self.entries[index] = updated;
+        }
+        Ok(())
+    }
+
     /// Saves the coach's player targets.
     pub fn set_player_targets(&mut self, targets: Vec<PlayerTarget>) -> Result<(), Error> {
         let team = self.team.clone().ok_or(Error::NoTeam)?;
@@ -319,6 +425,7 @@ impl Store {
             team: team.clone(),
             rating_weights: self.rating_weights.clone(),
             player_targets: self.player_targets.clone(),
+            player_positions: self.coach_positions.clone(),
         };
         fs::write(self.settings_path(), serde_json::to_vec(&settings)?)?;
         Ok(())
@@ -352,7 +459,7 @@ impl Store {
                     .map_err(Error::from)
                     .and_then(|bytes| serde_json::from_slice::<Entry>(&bytes).map_err(Error::from));
                 match loaded {
-                    Ok(entry) if entry.version == PARSER_VERSION && entry.team == team => self.entries.push(entry),
+                    Ok(entry) if entry.is_current(&team, &self.coach_positions) => self.entries.push(entry),
                     _ => fs::remove_file(&path)?,
                 }
             }
@@ -468,9 +575,9 @@ impl Store {
         };
         let path = self.file_path(&name);
         fs::write(&path, bytes)?;
-        let built = self
+        let Assembled { built, report_positions } = self
             .read_documents(&team, &files)
-            .and_then(|documents| build(&team, &title, &documents))
+            .and_then(|documents| build(&team, &title, &documents, &self.coach_positions))
             .inspect_err(|_| {
                 if let Err(e) = fs::remove_file(&path) {
                     eprintln!("could not remove {name}: {e}");
@@ -484,7 +591,8 @@ impl Store {
             Built::League(_) => AddOutcome::LeagueGameAdded(describe(&title)),
             Built::Waiting(missing) => AddOutcome::Waiting(format!("{}: {missing}", describe(&title))),
         };
-        self.save_entry(Entry { version: PARSER_VERSION, team, title, files, built }, index)?;
+        let coach_positions = if matches!(built, Built::Ours(_)) { self.coach_positions.clone() } else { Positions::new() };
+        self.save_entry(Entry { version: PARSER_VERSION, team, title, files, built, coach_positions, report_positions }, index)?;
         Ok(outcome)
     }
 
@@ -529,6 +637,7 @@ pub fn default_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Position;
 
     const HEADER: &str = "ID,start,end,duration,pos_x,pos_y,player,team,action,half";
 
@@ -610,6 +719,25 @@ mod tests {
 
         assert!(matches!(outcome, AddOutcome::LeagueGameAdded(_)), "{outcome:?}");
         assert_eq!((store.games().len(), store.league_games().len()), (0, 1));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_coach_position_wins_and_survives_reopening_until_cleared() {
+        let (dir, mut store) = library("position");
+        store.add_file(players_csv(OURS).as_bytes(), &format!("{GAME}.csv")).unwrap();
+        let skater = store.games()[0].players.iter().find(|p| p.skater.is_some()).unwrap().id.clone();
+        let position_of = |store: &Store| {
+            let player = store.games()[0].players.iter().find(|p| p.id == skater).unwrap().clone();
+            (player.position, player.position_source)
+        };
+
+        store.set_player_position(&PositionChange { player: skater.clone(), position: Some(SkaterPosition::Defence) }).unwrap();
+        let reopened = Store::open(&dir).unwrap();
+        store.set_player_position(&PositionChange { player: skater.clone(), position: None }).unwrap();
+
+        assert_eq!(position_of(&reopened), (Position::Defence, PositionSource::Coach));
+        assert_eq!(position_of(&store), (Position::Forward, PositionSource::Guessed));
         fs::remove_dir_all(dir).unwrap();
     }
 

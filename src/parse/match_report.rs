@@ -1,10 +1,13 @@
-//! The InStat "Match report", read only for what the event export lacks: both teams' xG and
-//! possession, and our players' hits against, shot types and kinds of attack.
+//! The InStat "Match report", read only for what the event export lacks.
+//!
+//! That is both teams' xG and possession, our players' hits against, shot types and kinds of
+//! attack, and who InStat lists as forwards and defencemen.
 
 use crate::error::Error;
 use crate::layout;
 use crate::model::{Date, TeamName, TeamPrefix};
 use crate::parse::common::{LINE_TOLERANCE, PAGE_RIGHT, PlayerRow, page_heading, player_table, require_phrase};
+use crate::parse::lines::{self, ListedPlayer};
 use crate::parse::team_stats::{self, TeamStatsPage};
 use crate::pdf::Page;
 
@@ -28,6 +31,8 @@ pub struct MatchReport {
     pub players: Vec<PlayerRow>,
     /// Our players' shots table.
     pub shots: Vec<PlayerRow>,
+    /// Our players in the forward lines and defence pairs; empty without a lines page.
+    pub lines: Vec<ListedPlayer>,
 }
 
 /// Index of our team in the title (0 = listed first).
@@ -84,6 +89,7 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
     let our_index = our_index(&title, team)?;
     let our_name = &title.teams[our_index];
     let (mut team_stats, mut players, mut shots) = (None, None, None);
+    let mut listed = Vec::new();
     for page in &pages[1..] {
         let Some(heading) = page_heading(page) else {
             continue;
@@ -94,6 +100,7 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
             match heading.title.as_str() {
                 "PLAYERS' STATS" => players = Some(table_under(page, "Main statistics", "players' stats")?),
                 "SHOTS" => shots = Some(table_under(page, "Shots stats", "shots")?),
+                "LINES STATS" => listed = lines::parse(page)?,
                 _ => {}
             }
         }
@@ -105,6 +112,7 @@ pub fn parse(pages: &[Page], team: &TeamPrefix) -> Result<MatchReport, Error> {
         team_stats: team_stats.ok_or_else(|| missing("TEAMS STATS"))?,
         players: players.ok_or_else(|| missing("PLAYERS' STATS"))?,
         shots: shots.ok_or_else(|| missing("SHOTS"))?,
+        lines: listed,
     })
 }
 

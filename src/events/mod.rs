@@ -6,15 +6,17 @@
 //! rink feet in the acting team's frame.
 
 mod plays;
+mod positions;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::BuildHasher;
 
 use crate::error::Error;
 use crate::model::{
     Advantage, AreaBattles, BattleArea, CellValue, ChartedShot, EntryTypes, EvenStrengthUnitStats, FaceoffSpot, Feet, Game, GameId,
-    Goal, GoalieStats, Interval, LeagueGame, LeagueSide, Matchup, Opponent, OpponentShot, OpponentSkater, PERIOD_SECONDS, Player,
-    PlayerId, PlayerMatrix, Position, RinkEvent, RinkEventKind, RinkPoint, SaveSplits, Seconds, ShotSources, ShotZone, SkaterStats,
-    SpecialTeamsUnitStats, SpotFaceoffs, Strength, Tally, Team, TeamName, TeamPlay, TeamPrefix, TeamStatRow, TeamSummary, Unit,
+    Goal, GoalieStats, Interval, KnownPosition, LeagueGame, LeagueSide, Matchup, Opponent, OpponentShot, OpponentSkater, PERIOD_SECONDS, Player,
+    PlayerId, PlayerMatrix, Position, PositionSource, RinkEvent, RinkEventKind, RinkPoint, SaveSplits, Seconds, ShotSources, ShotZone, SkaterStats,
+    SkaterPosition, SpecialTeamsUnitStats, SpotFaceoffs, Strength, Tally, Team, TeamName, TeamPlay, TeamPrefix, TeamStatRow, TeamSummary, Unit,
     UnitKind, UnitStats, ZoneShots, add_area_battles, add_spot_faceoffs, add_zone_shots,
 };
 use crate::parse::events::{Action, EventFile, EventFileKind, Span, VideoTime};
@@ -35,8 +37,6 @@ const CONTINUOUS: f64 = 1.0;
 const ON_ICE_PROBE: f64 = 0.25;
 /// A pass's receiver is the next teammate to act within this many video seconds.
 const PASS_WINDOW: f64 = 10.0;
-/// Faceoffs per game that mark a skater as a centre for the position guess.
-const CENTRE_FACEOFFS: usize = 3;
 /// The export doesn't give penalty lengths; minors are by far the most common.
 const PENALTY_SECONDS: f64 = 120.0;
 
@@ -292,54 +292,6 @@ fn goalies(team: &TeamRows<'_>) -> BTreeSet<String> {
         .iter()
         .filter(|a| matches!(a.name.as_str(), "Saves" | "Shots against" | "Goals against"))
         .filter_map(|a| a.player.clone())
-        .collect()
-}
-
-fn mean(values: &[f64]) -> f64 {
-    let n = u32::try_from(values.len()).unwrap_or(u32::MAX);
-    if n == 0 { 0.0 } else { values.iter().sum::<f64>() / f64::from(n) }
-}
-
-fn standardised(values: &[f64]) -> Vec<f64> {
-    let m = mean(values);
-    let sd = mean(&values.iter().map(|v| (v - m).powi(2)).collect::<Vec<_>>()).sqrt();
-    values.iter().map(|v| if sd > 0.0 { (v - m) / sd } else { 0.0 }).collect()
-}
-
-fn overlap(a: &[Interval], b: &[Interval]) -> f64 {
-    a.iter().flat_map(|x| b.iter().map(move |y| x.overlap(y).0)).sum()
-}
-
-/// Forward or defence for every skater. Centres take faceoffs; defencemen play deeper and
-/// spend the most even-strength time beside the centres, since a pair plays behind every line.
-fn guess_positions(team: &TeamRows<'_>, shifts: &HashMap<String, Vec<Interval>>, skaters: &[&str]) -> HashMap<String, Position> {
-    let faceoffs = |name: &str| team.actions.iter().filter(|a| a.name == "Faceoffs" && a.player.as_deref() == Some(name)).count();
-    let centres: BTreeSet<&str> = skaters.iter().copied().filter(|n| faceoffs(n) >= CENTRE_FACEOFFS).collect();
-    let empty = Vec::new();
-    let shifts_of = |n: &str| shifts.get(n).unwrap_or(&empty);
-    let share_with_centres = |n: &str| {
-        let with_all: f64 = skaters.iter().filter(|o| **o != n).map(|o| overlap(shifts_of(n), shifts_of(o))).sum();
-        let with_centres: f64 = centres.iter().filter(|o| **o != n).map(|o| overlap(shifts_of(n), shifts_of(o))).sum();
-        if with_all > 0.0 { with_centres / with_all } else { 0.0 }
-    };
-    let depth = |n: &str| {
-        let xs: Vec<f64> = team
-            .actions
-            .iter()
-            .filter(|a| a.player.as_deref() == Some(n) && !a.name.starts_with("Faceoffs"))
-            .filter_map(|a| a.position.map(|(x, _)| x))
-            .collect();
-        mean(&xs)
-    };
-    let shares = standardised(&skaters.iter().map(|n| share_with_centres(n)).collect::<Vec<_>>());
-    let depths = standardised(&skaters.iter().map(|n| depth(n)).collect::<Vec<_>>());
-    let mut scored: Vec<(&str, f64)> = skaters.iter().copied().zip(shares.iter().zip(&depths).map(|(s, d)| s - d)).collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let defence = (skaters.len() + 1) / 3;
-    scored
-        .iter()
-        .enumerate()
-        .map(|(i, (n, _))| ((*n).to_owned(), if i < defence && !centres.contains(n) { Position::Defence } else { Position::Forward }))
         .collect()
 }
 
@@ -824,15 +776,16 @@ fn stat_rows(ours: &TeamSummary, theirs: &TeamSummary) -> Vec<TeamStatRow> {
     ]
 }
 
-/// Skaters (by export name) and their guessed positions, goalies apart.
-fn roster(side: &Side<'_>) -> (Vec<String>, HashMap<String, Position>) {
+/// Skaters (by export name) and their positions, goalies apart: `fixed` ones as given, the
+/// rest worked out from the export.
+fn roster(side: &Side<'_>, fixed: &HashMap<&str, SkaterPosition>) -> (Vec<String>, HashMap<String, Position>) {
     let skaters: Vec<&str> = side.team.players().into_iter().filter(|n| !side.goalies.contains(*n)).collect();
-    let positions = guess_positions(&side.team, &side.shifts, &skaters);
+    let positions = positions::positions(side, &skaters, fixed);
     (skaters.into_iter().map(str::to_owned).collect(), positions)
 }
 
 fn listed_skaters(side: &Side<'_>) -> Vec<OpponentSkater> {
-    let (skaters, positions) = roster(side);
+    let (skaters, positions) = roster(side, &HashMap::new());
     skaters
         .iter()
         .map(|name| OpponentSkater {
@@ -911,13 +864,14 @@ impl EventGame<'_> {
     }
 }
 
-fn player(name: &str, id: PlayerId, position: Position) -> Player {
+fn player(name: &str, id: PlayerId, position: Position, position_source: PositionSource) -> Player {
     Player {
         id,
         name: display_name(name),
         surname: surname(name),
         jersey: None,
         position,
+        position_source,
         skater: None,
         goalie: None,
         shifts: Vec::new(),
@@ -935,8 +889,8 @@ fn score_mismatch(side: &Side<'_>, (named_for, named_against): (u32, u32)) -> Op
         .then(|| format!("the file name says {named_for}–{named_against} but the export has {listed_for}–{listed_against}"))
 }
 
-/// Our game, from our team's point of view.
-pub fn build_game(game: &EventGame<'_>, team: &TeamPrefix) -> Result<Game, Error> {
+/// Our game, from our team's point of view, with `known` players' positions as given.
+pub fn build_game<S: BuildHasher>(game: &EventGame<'_>, team: &TeamPrefix, known: &HashMap<PlayerId, KnownPosition, S>) -> Result<Game, Error> {
     game.check()?;
     let title = game.title();
     let ours = our_index(title, team)?;
@@ -944,19 +898,22 @@ pub fn build_game(game: &EventGame<'_>, team: &TeamPrefix) -> Result<Game, Error
     let clock = Clock::new(&game.players.spans);
     let us = side(game, our_name, their_name, &clock);
     let them = side(game, their_name, our_name, &clock);
-    let (skaters, positions) = roster(&us);
     let ids: HashMap<String, PlayerId> = us.team.players().into_iter().map(|n| (n.to_owned(), PlayerId::new(our_name, n))).collect();
+    let known_by_name: HashMap<&str, KnownPosition> = ids.iter().filter_map(|(name, id)| Some((name.as_str(), *known.get(id)?))).collect();
+    let fixed: HashMap<&str, SkaterPosition> = known_by_name.iter().map(|(name, k)| (*name, k.position)).collect();
+    let (skaters, positions) = roster(&us, &fixed);
     let id_of = |name: &str| ids.get(name).cloned().ok_or_else(|| Error::parse(SECTION, format!("no id for \"{name}\"")));
     let mut players = Vec::new();
     for name in &skaters {
+        let source = known_by_name.get(name.as_str()).map_or(PositionSource::Guessed, |k| k.source);
         players.push(Player {
             skater: Some(skater_stats(name, &us)),
             shifts: us.shifts.get(name).cloned().unwrap_or_default(),
-            ..player(name, id_of(name)?, positions.get(name).copied().unwrap_or(Position::Unknown))
+            ..player(name, id_of(name)?, positions.get(name).copied().unwrap_or(Position::Unknown), source)
         });
     }
     for name in &us.goalies {
-        players.push(Player { goalie: Some(goalie_stats(name, &us, &clock)), ..player(name, id_of(name)?, Position::Goalie) });
+        players.push(Player { goalie: Some(goalie_stats(name, &us, &clock)), ..player(name, id_of(name)?, Position::Goalie, PositionSource::Guessed) });
     }
     let goals = us
         .goals
@@ -1059,7 +1016,7 @@ mod tests {
     fn game(extra: &[String]) -> Game {
         let players = parse(csv(extra).as_bytes(), NAME).unwrap();
         let team = TeamPrefix::parse("Team One").unwrap();
-        build_game(&EventGame { players: &players, team: None }, &team).unwrap()
+        build_game(&EventGame { players: &players, team: None }, &team, &HashMap::new()).unwrap()
     }
 
     fn skater<'a>(game: &'a Game, name: &str) -> &'a SkaterStats {

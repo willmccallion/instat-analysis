@@ -18,7 +18,7 @@ use crate::analysis::targets::PlayerTarget;
 use crate::analysis::{Request, analyse};
 use crate::error::Error;
 use crate::model::{GameId, TeamPrefix};
-use crate::store::Store;
+use crate::store::{PositionChange, Positions, Store};
 use crate::update::{self, UpdateStatus};
 use crate::web;
 
@@ -150,6 +150,7 @@ struct StateResponse<'a> {
     team: Option<&'a TeamPrefix>,
     rating_weights: &'a RatingWeights,
     player_targets: &'a [PlayerTarget],
+    player_positions: &'a Positions,
     games: usize,
     pending: Vec<String>,
     problems: &'a [String],
@@ -274,6 +275,18 @@ impl App {
         }
     }
 
+    /// Saves the coach's position for a player; the games are rebuilt, so cached analyses go.
+    fn save_player_position(&mut self, mut request: HttpRequest) {
+        let parsed = read_body(&mut request).and_then(|body| serde_json::from_slice::<PositionChange>(&body).map_err(Error::from));
+        match parsed.and_then(|change| self.store.set_player_position(&change)) {
+            Ok(()) => {
+                self.cache.clear();
+                respond_json(request, 200, self.store.coach_positions());
+            }
+            Err(e) => error_json(request, 400, e.to_string()),
+        }
+    }
+
     fn handle(&mut self, mut request: HttpRequest) {
         self.last_activity = Instant::now();
         let url = request.url().to_owned();
@@ -292,6 +305,7 @@ impl App {
                     team: self.store.team(),
                     rating_weights: self.store.rating_weights(),
                     player_targets: self.store.player_targets(),
+                    player_positions: self.store.coach_positions(),
                     games: self.store.games().len(),
                     pending: self.store.pending_descriptions(),
                     problems: &self.store.problems,
@@ -351,6 +365,7 @@ impl App {
             (Method::Post, "/api/rating-weights") => {
                 self.save_setting(request, Store::set_rating_weights, |store: &Store| store.rating_weights().clone());
             }
+            (Method::Post, "/api/player-position") => self.save_player_position(request),
             (Method::Post, "/api/player-targets") => {
                 self.save_setting(request, Store::set_player_targets, |store: &Store| store.player_targets().to_vec());
             }

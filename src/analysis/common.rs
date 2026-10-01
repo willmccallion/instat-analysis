@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::model::{Game, PlayerId, Position, Seconds};
+use crate::model::{Game, PlayerId, Position, PositionSource, Seconds};
 use crate::stats::dist;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -15,40 +15,54 @@ pub struct PlayerRef {
     pub position: Position,
 }
 
-/// Latest known name/jersey and most frequent position for every player in `games`.
+/// Latest known name/jersey and season position for every player in `games`.
 #[must_use]
 pub fn roster(games: &[&Game]) -> HashMap<PlayerId, PlayerRef> {
-    let mut positions: HashMap<PlayerId, HashMap<Position, u32>> = HashMap::new();
     let mut result: HashMap<PlayerId, PlayerRef> = HashMap::new();
-    for game in games {
-        for player in &game.players {
-            *positions
-                .entry(player.id.clone())
-                .or_default()
-                .entry(player.position)
-                .or_default() += 1;
-            result.insert(
-                player.id.clone(),
-                PlayerRef {
-                    id: player.id.clone(),
-                    name: player.name.clone(),
-                    jersey: player.jersey.map(|j| j.0),
-                    position: player.position,
-                },
-            );
-        }
+    for player in games.iter().flat_map(|g| &g.players) {
+        result.insert(
+            player.id.clone(),
+            PlayerRef {
+                id: player.id.clone(),
+                name: player.name.clone(),
+                jersey: player.jersey.map(|j| j.0),
+                position: player.position,
+            },
+        );
     }
-    for (id, counts) in positions {
-        let known = counts
-            .iter()
-            .filter(|(p, _)| **p != Position::Unknown)
-            .max_by_key(|(p, n)| (**n, tie_break(**p)))
-            .map(|(p, _)| *p);
-        if let (Some(position), Some(entry)) = (known, result.get_mut(&id)) {
+    for (id, (position, _)) in season_positions(games) {
+        if let Some(entry) = result.get_mut(&id) {
             entry.position = position;
         }
     }
     result
+}
+
+/// Where each player's season position came from.
+#[must_use]
+pub fn position_sources(games: &[&Game]) -> HashMap<PlayerId, PositionSource> {
+    season_positions(games).into_iter().map(|(id, (_, source))| (id, source)).collect()
+}
+
+/// Each player's position over `games`: the most frequent among the games whose position
+/// comes from the most trusted source.
+fn season_positions(games: &[&Game]) -> HashMap<PlayerId, (Position, PositionSource)> {
+    let mut counts: HashMap<PlayerId, HashMap<(PositionSource, Position), u32>> = HashMap::new();
+    for player in games.iter().flat_map(|g| &g.players).filter(|p| p.position != Position::Unknown) {
+        *counts.entry(player.id.clone()).or_default().entry((player.position_source, player.position)).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter_map(|(id, by_source)| {
+            let source = by_source.keys().map(|(s, _)| *s).max()?;
+            let position = by_source
+                .iter()
+                .filter(|((s, _), _)| *s == source)
+                .max_by_key(|((_, p), n)| (**n, tie_break(*p)))
+                .map(|((_, p), _)| *p)?;
+            Some((id, (position, source)))
+        })
+        .collect()
 }
 
 /// Deterministic preference when a player's positions are equally frequent.

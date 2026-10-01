@@ -9,13 +9,42 @@ use std::collections::HashMap;
 use crate::cell::Cell;
 use crate::model::{
     BodyArea, CellValue, Date, Game, GoaliePageRow, GoalieState, HistoryKind, HistoryRow, NetArea, NetShots, Player, PlayerId,
-    ReboundControl, SaveSplits, Saves, Seconds, ShotDistance, ShotSituation, ShotType, SkaterStats, StatEntry, Tally, TeamSummary,
-    TypeShots,
+    ReboundControl, SaveSplits, Saves, Seconds, ShotDistance, ShotSituation, ShotType, SkaterPosition, SkaterStats, StatEntry, Tally,
+    TeamSummary, TypeShots,
 };
 use crate::parse::common::{PlayerRow, RowLabel};
 use crate::parse::match_report::MatchReport;
 use crate::parse::players_report::{HistoryColumn, PageKind, PlayerPage, PlayersReport, infer_year};
 use crate::parse::team_stats::{InstatTeamNumbers, instat_numbers};
+
+/// Where InStat's lines tables put our players: with whichever of the defence pairs or
+/// forward lines they are listed in for longer. Players it can't tell apart are left out.
+#[must_use]
+pub fn listed_positions(game: &Game, report: &MatchReport) -> HashMap<PlayerId, SkaterPosition> {
+    let mut toi: HashMap<PlayerId, HashMap<SkaterPosition, f64>> = HashMap::new();
+    for listed in &report.lines {
+        if let Some(id) = listed_player(&game.players, &listed.label) {
+            *toi.entry(id).or_default().entry(listed.position).or_default() += listed.toi.0;
+        }
+    }
+    toi.into_iter()
+        .filter_map(|(id, by_position)| by_position.into_iter().max_by(|a, b| a.1.total_cmp(&b.1)).map(|(position, _)| (id, position)))
+        .collect()
+}
+
+/// The skater a lines-table label names: by surname, or by jersey among players sharing it.
+fn listed_player(players: &[Player], label: &RowLabel) -> Option<PlayerId> {
+    let named: Vec<&Player> = players.iter().filter(|p| p.skater.is_some() && has_surname(p, &label.surname)).collect();
+    if let [only] = named.as_slice() {
+        return Some(only.id.clone());
+    }
+    let number = label.number?;
+    let numbered: Vec<&&Player> = named.iter().filter(|p| p.jersey.is_some_and(|j| j.0 == number)).collect();
+    match numbered.as_slice() {
+        [only] => Some(only.id.clone()),
+        _ => None,
+    }
+}
 
 /// Players who share a surname are told apart by ice time to within this many seconds; the
 /// export and the report round it differently.

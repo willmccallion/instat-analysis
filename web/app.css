@@ -235,6 +235,7 @@ h3 .badge { margin-left: 8px; vertical-align: middle; }
 .tabs button { border-bottom-width: 3px; }
 .tabs button.on { border-bottom-color: var(--series-1); color: var(--text-primary); font-weight: 650; background: var(--active-bg); border-radius: 6px 6px 0 0; }
 
+.position-control { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 4px 0 16px; }
 .player-head { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
 .jersey { font-size: 28px; font-weight: 700; color: var(--text-muted); }
 .pill-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 12px; }

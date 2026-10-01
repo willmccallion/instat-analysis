@@ -207,6 +207,40 @@ pub enum Position {
     Unknown,
 }
 
+/// A skater's position as InStat's lines tables or the coach give it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SkaterPosition {
+    Defence,
+    Forward,
+}
+
+impl From<SkaterPosition> for Position {
+    fn from(position: SkaterPosition) -> Self {
+        match position {
+            SkaterPosition::Defence => Self::Defence,
+            SkaterPosition::Forward => Self::Forward,
+        }
+    }
+}
+
+/// Where a player's position in a game came from, least to most trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum PositionSource {
+    /// Worked out from the event export, which doesn't say.
+    Guessed,
+    /// InStat's match report lists them among its forward lines or defence pairs.
+    Report,
+    /// Set by the coach.
+    Coach,
+}
+
+/// A position known before a game is built, and where it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KnownPosition {
+    pub position: SkaterPosition,
+    pub source: PositionSource,
+}
+
 /// Manpower situation from one team's point of view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Strength {
@@ -1067,6 +1101,7 @@ pub struct Player {
     pub surname: String,
     pub jersey: Option<Jersey>,
     pub position: Position,
+    pub position_source: PositionSource,
     pub skater: Option<SkaterStats>,
     pub goalie: Option<GoalieStats>,
     pub shifts: Vec<Interval>,

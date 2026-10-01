@@ -118,6 +118,7 @@ const state = {
   playerTab: "overview",
   gameTab: "overview",
   goalieTab: "overview",
+  playerPositions: {},
   shotPeriod: "all",
   heatWeight: "attempts",
   passingLayout: "force",
@@ -235,6 +236,7 @@ async function refresh() {
       state.request = { ...state.request, targets: status.player_targets };
       state.targetsLoaded = true;
     }
+    state.playerPositions = status.player_positions || {};
     state.pending = status.pending;
     state.problems = status.problems;
     state.analysis = await api("/api/analyze", { method: "POST", body: JSON.stringify(state.request) });
@@ -860,6 +862,15 @@ async function saveWeights(weights) {
     } catch (error) {
       state.error = `Couldn't save the weights: ${error.message}`;
     }
+  }
+  refresh();
+}
+
+async function savePlayerPosition(player, position) {
+  try {
+    state.playerPositions = await api("/api/player-position", { method: "POST", body: JSON.stringify({ player, position }) });
+  } catch (error) {
+    state.error = `Couldn't save the position: ${error.message}`;
   }
   refresh();
 }
@@ -1674,6 +1685,27 @@ function playerTargets(a, s) {
   return [form, cards.length ? el("div", { class: "grid two", style: "margin-top:16px" }, cards) : null];
 }
 
+const POSITION_SOURCES = {
+  Coach: "set by you",
+  Report: "from InStat's match report",
+  Guessed: "worked out from the event data (the export doesn't say)",
+};
+
+/** The player's position, where it came from, and (in the app) a way to correct it. */
+function positionControl(a, player) {
+  const source = a.position_sources[player.id];
+  const note = el("span", { class: "small muted", text: `${player.position}, ${POSITION_SOURCES[source] || "unknown"}` });
+  if (snapshot || player.position === "Goalie") return el("div", { class: "position-control" }, [note]);
+  const chosen = (state.playerPositions || {})[player.id] || null;
+  const buttons = el("div", { class: "segmented" }, [[null, "Auto"], ["Forward", "Forward"], ["Defence", "Defence"]].map(([value, label]) => el("button", {
+    class: chosen === value ? "on" : "",
+    text: label,
+    title: value ? `Always treat as ${label.toLowerCase()} in every game` : "InStat's match report when it's loaded, otherwise worked out from who's on the ice together and where",
+    onclick: () => { if (chosen !== value) savePlayerPosition(player.id, value); },
+  })));
+  return el("div", { class: "position-control" }, [el("span", { class: "small muted", text: "Position" }), buttons, note]);
+}
+
 const PLAYER_TABS = [["overview", "Overview"], ["targets", "Targets"], ["league", "vs league"], ["shooting", "Shooting"], ["puck", "Puck play"], ["matchups", "Matchups"], ["numbers", "All numbers"]];
 
 function playerDetail(a, s) {
@@ -1684,6 +1716,7 @@ function playerDetail(a, s) {
     el("h1", { text: s.player.name }),
     el("span", { class: "muted", text: `${s.player.position} · ${t.games} GP` }),
   ]);
+  const position = positionControl(a, s.player);
   const kpis = tiles([
     { label: "Points", value: `${t.points}`, note: `${t.goals} G, ${t.assists} A · ${fmt(s.rates.points, 1)}/60` },
     { label: "Ice time", value: clock(t.toi / Math.max(1, t.games)), note: `per game · PP ${clock(t.pp_toi / Math.max(1, t.games))}, PK ${clock(t.sh_toi / Math.max(1, t.games))}` },
@@ -1694,7 +1727,7 @@ function playerDetail(a, s) {
   ]);
   const [tabs, current] = pageTabs("playerTab", PLAYER_TABS);
   const body = { overview: playerOverview, targets: playerTargets, league: (a, s) => leaguePlayerPanel(a, s.player.id), shooting: playerShooting, puck: playerPuckPlay, matchups: playerMatchups, numbers: playerNumbers }[current](a, s);
-  return [back, head, kpis, tabs, ...[].concat(body)];
+  return [back, head, position, kpis, tabs, ...[].concat(body)];
 }
 
 /** SHAP-style breakdown: from the average skater's 50, what each stat added or took away. */
@@ -3066,7 +3099,7 @@ function viewHelp() {
     ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],
     ["Practice focus", "Each area compares us with our opponents (50% = even; power play against 20%, penalty kill against 80%). An area is flagged only when it's 8+ points off and backed by at least 10 events; the drill ideas are starting points, not prescriptions."],
     ["Shift data", "Rebuilt from InStat's time-distribution chart. The reader checks itself: every player's +/- rebuilt from shifts must match InStat's own column, or the game shows a warning."],
-    ["Where the numbers come from", "InStat's event export: two CSV files with every action (time, spot on the ice, player) and every shift for both teams. Lines, +/-, attempts on and off the ice, power plays and passing partners are rebuilt from it; a pass's receiver is taken as the next teammate to touch the puck, which agrees with InStat's own passing table about 70% of the time, and penalties are counted as 2-minute minors since the export gives no lengths. Forward or defence is guessed from faceoffs, depth and linemates. The optional PDF reports add what only InStat computes: its xG, InStat Index, goalie save splits, shot types, possession, jersey numbers and each player's recent-games history."],
+    ["Where the numbers come from", "InStat's event export: two CSV files with every action (time, spot on the ice, player) and every shift for both teams. Lines, +/-, attempts on and off the ice, power plays and passing partners are rebuilt from it; a pass's receiver is taken as the next teammate to touch the puck, which agrees with InStat's own passing table about 70% of the time, and penalties are counted as 2-minute minors since the export gives no lengths. Forward or defence comes from the match report's lines tables when its PDF is loaded; otherwise it's worked out from who is on the ice together (two defencemen at five-on-five) and how deep each player plays within each zone, with faceoff takers as centres. If a player is still wrong, set their position on their player card and every game uses it. The optional PDF reports add what only InStat computes: its xG, InStat Index, goalie save splits, shot types, possession, jersey numbers and each player's recent-games history."],
   ];
   return page("How to read this", "Short explanations of every number in the report. Anywhere in the app, a stat name with a dotted underline explains itself: hover over it, tap it, or tab to it.", el("dl", { class: "explain" }, terms.flatMap(([t, d]) => [el("dt", { text: t }), el("dd", { text: d })])));
 }
