@@ -999,7 +999,7 @@ function viewRankings() {
 
 // ---------- Single game ----------
 
-const GAME_TABS = [["overview", "Overview"], ["summary", "Printable summary"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
+const GAME_TABS = [["overview", "Overview"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
 
 function viewGame() {
   const a = state.analysis;
@@ -1013,7 +1013,7 @@ function viewGame() {
     queueMicrotask(refresh);
   }
   const [tabs, current] = pageTabs("gameTab", GAME_TABS);
-  const body = { overview: gameOverview, summary: gameSummary, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
+  const body = { overview: gameOverview, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
   return page("Single game", "Pick a game to see its shifts, goals and how each player compared with their usual.",
     el("div", { style: "margin-bottom:14px" }, [select]), tabs, ...[].concat(body));
 }
@@ -1051,58 +1051,6 @@ function gameOverview(a, timeline) {
   const luck = a.luck.games.find((g) => g.game === timeline.game);
   const why = luck ? chartCard(`Why it ended ${signed(luck.goals_for - luck.goals_against, 0)}`, "The goal differential built up from shot volume, chance quality, our finishing and our goaltending, biggest first.", (c) => splitChart(c, luck.split), null) : null;
   return [luck ? el("div", { class: "grid two", style: "margin-bottom:16px" }, [deservedCard(luck), why]) : null, compareCard, el("div", { style: "margin-top:16px" }, [shiftCard]), badges];
-}
-
-const RESULT_WORDS = { Win: "Win", Loss: "Loss", OvertimeLoss: "Overtime loss", Tie: "Tie" };
-
-/** One printable page about one game: result, why, team numbers, goals and every player. */
-function gameSummary(a, timeline) {
-  const log = a.team.game_log.find((g) => g.game === timeline.game);
-  const luck = a.luck.games.find((g) => g.game === timeline.game);
-  const ratings = new Map(a.rankings.game_ratings.filter((r) => r.game === timeline.game).map((r) => [r.player, r.rating]));
-  const skaters = a.players
-    .map((p) => ({ p, row: p.games.find((g) => g.game === timeline.game), rating: ratings.get(p.player.id) ?? null }))
-    .filter((x) => x.row)
-    .sort((x, y) => (y.rating ?? -1) - (x.rating ?? -1));
-  const printButton = el("button", { class: "primary", text: "Print or save as PDF", onclick: () => window.print() });
-  const heading = el("div", {}, [
-    el("h2", { text: `${a.team_name} ${timeline.goals_for}–${timeline.goals_against} ${timeline.opponent}` }),
-    el("div", { class: "muted", text: `${timeline.date} · ${log ? RESULT_WORDS[log.outcome] : ""}` }),
-  ]);
-  const both = (x, y, digits = 0) => `${fmt(x, digits)}–${fmt(y, digits)}`;
-  const numbers = log ? tiles([
-    { label: "Shot attempts", value: both(log.attempts_for, log.attempts_against), note: "us–them" },
-    { label: "Shots on goal", value: both(log.shots_on_goal_for, log.shots_on_goal_against) },
-    { label: "xG", value: both(log.xg_for, log.xg_against, 2), note: "quality of chances" },
-    { label: "Power play", value: `${log.power_play[0]}/${log.power_play[1]}`, note: `PK ${log.penalty_kill[0]}/${log.penalty_kill[1]}` },
-    { label: "Faceoffs", value: pct(log.faceoff_pct, 0), note: `possession ${pct(log.possession_pct, 0)}` },
-  ]) : null;
-  const why = luck ? el("div", { class: "grid two" }, [
-    deservedCard(luck),
-    chartCard("Why it ended that way", "Goal differential built up from four parts, biggest first.", (c) => splitChart(c, luck.split), null),
-  ]) : null;
-  const goals = el("div", { class: "card" }, [cardTitle("Goals"), el("div")]);
-  dataTable(goals.lastChild, [
-    { key: "time", label: "When", left: true, format: (v) => `${periodName(Math.floor(v / 1200) + 1)} ${clock(v - Math.floor(v / 1200) * 1200)}` },
-    { key: "scored_by", label: "", left: true, format: (v) => (v === "Us" ? a.team_name : timeline.opponent) },
-    { key: "strength", label: "", left: true, format: (v) => ({ Even: "even strength", PowerPlay: "our power play", ShortHanded: "we were short-handed" })[v] },
-    { key: "score", label: "Score", value: (g) => `${g.score[0]}–${g.score[1]}` },
-  ], timeline.goals);
-  const players = el("div", { class: "card" }, [cardTitle("Every skater"), el("p", { class: "desc", text: "Rating: this game against every skater on both teams (50 = average). Best first." }), el("div")]);
-  dataTable(players.lastChild, [
-    { key: "name", label: "Player", left: true, value: (x) => `${x.p.player.jersey ?? ""} ${x.p.player.name}`.trim() },
-    { key: "rating", label: "Rating", format: (v) => fmt(v, 0) },
-    { key: "g", label: "G", value: (x) => x.row.goals }, { key: "a", label: "A", value: (x) => x.row.assists },
-    { key: "shots", label: "Shots", value: (x) => x.row.shots },
-    { key: "pm", label: "+/-", value: (x) => x.row.plus_minus, format: (v) => signed(v, 0) },
-    { key: "toi", label: "TOI", value: (x) => x.row.toi, format: (v) => clock(v) },
-    { key: "cf", label: "CF%", value: (x) => x.row.corsi_pct, format: (v) => pct(v, 0) },
-    { key: "bat", label: "Battles", value: (x) => x.row.battles_pct, format: (v) => pct(v, 0) },
-    { key: "idx", label: "InStat", value: (x) => x.row.instat_index, format: (v) => fmt(v, 0) },
-  ], skaters, { sortKey: "rating" });
-  const goalieRows = a.goalies.flatMap((g) => g.trend.filter((t) => t.loaded && t.date === timeline.date).map((t) => `${g.player.name}: ${t.saves} saves on ${t.shots_against} shots (${pct(t.save_pct, 1)})`));
-  const goalies = goalieRows.length ? el("p", { class: "small" }, [`Goalies — ${goalieRows.join(" · ")}`]) : null;
-  return el("div", { class: "print-summary" }, [el("div", { class: "no-print", style: "margin-bottom:6px" }, [printButton]), heading, numbers, why, players, goals, goalies]);
 }
 
 function periodName(period) {
@@ -2751,7 +2699,6 @@ function viewHelp() {
     ["What InStat rewards", "A ridge regression of each player-game's InStat Index on that game's numbers (goals, assists, shots, +/-, ice time, shot attempts on ice, battles, recoveries, losses, entries, faceoffs, hits, blocks, penalties, position) over every skater in the games, both teams, with the penalty chosen by 5-fold cross-validation. Gaps compare each of our players' Index with what their own numbers predict."],
     ["Real changes in level", "For each player's InStat Index history (loaded games plus InStat's recent-games table), the single split into before and after that separates the levels most, and a permutation test: shuffle the games 999 times and see how often a split that clear appears by chance."],
     ["Unusual games", "Once there are 5 games, each game's team stats (shot, xG and scoring-chance shares, faceoffs, battles, possession, hits, power plays) become standard scores against the games in scope. Unusualness is their average square (about 1 is typical); look-alikes are the earlier games with the closest profile."],
-    ["Printable summary", "Game → Printable summary lays out one game on a page: the result, how the game would usually end from the chances, why it ended the way it did, the team numbers, the goals and every skater's rating, points and ice time. The button opens the computer's print dialog, where you can also save it as a PDF."],
     ["Player targets", "On a player's card (Targets tab), pick one of the rating stats and the level to reach. Each target is tracked game by game and judged on the last 3 games: met, improving (better than the games before, not there yet) or not yet. Targets are saved on this computer and listed on the Players page."],
     ["What decides the ratings", "On Rankings, a SHAP summary (beeswarm) plot: one row per stat, ordered by how many rating points it moves on average; one dot per player, right when the stat raised their rating and left when it lowered it, darker for a higher value of the stat. A row with dots spread wide is a stat that separates players; a tight row barely matters."],
     ["Rating breakdown", "On each player card, the rating is built up like a SHAP plot from machine learning: start at the average skater (50), then each stat adds or takes away rating points, biggest first. Blue bars push the rating up, red pull it down; stats worth under half a point are grouped. Because the rating is a weighted sum, these points add up exactly to the rating."],
