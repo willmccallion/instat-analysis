@@ -753,6 +753,7 @@ function networkChart(container, nodes, edges, options = {}) {
   const nodeLayer = svg("g");
   root.append(edgeLayer, nodeLayer);
   const edgeNodes = [];
+  const nodeMarks = [];
   for (const e of edges) {
     const a = position.get(e.from);
     const b = position.get(e.to);
@@ -789,13 +790,23 @@ function networkChart(container, nodes, edges, options = {}) {
     g.append(svg("text", { x: p.x + (r + 6) * Math.cos(p.angle), y: p.y + (r + 6) * Math.sin(p.angle) + 4 + (Math.sin(p.angle) > 0.95 ? 8 : 0), "text-anchor": anchor, text: n.label }));
     g.append(svg("circle", { class: "hit", cx: p.x, cy: p.y, r: Math.max(12, r + 4) }));
     attachTooltip(g, n.label, [{ value: String(n.size), name: "passes made" }, ...(n.tip || [])]);
+    nodeLayer.append(g);
+    nodeMarks.push({ n, g });
+  }
+  const partners = new Map(nodes.map((n) => [n.id, new Set([n.id])]));
+  for (const { e } of edgeNodes) {
+    partners.get(e.from)?.add(e.to);
+    partners.get(e.to)?.add(e.from);
+  }
+  for (const { n, g } of nodeMarks) {
     g.addEventListener("pointerenter", () => {
       for (const { g: eg, e } of edgeNodes) eg.style.opacity = e.from === n.id || e.to === n.id ? "1" : "0.08";
+      for (const other of nodeMarks) other.g.style.opacity = partners.get(n.id).has(other.n.id) ? "1" : "0.15";
     });
     g.addEventListener("pointerleave", () => {
       for (const { g: eg } of edgeNodes) eg.style.opacity = "1";
+      for (const other of nodeMarks) other.g.style.opacity = "1";
     });
-    nodeLayer.append(g);
   }
   container.replaceChildren(root);
   container.append(el("div", { class: "legend" }, [
@@ -934,15 +945,24 @@ function forceNetworkChart(container, nodes, edges, options = {}) {
     const name = svg("text", { "text-anchor": "middle", "pointer-events": "none", text: b.n.label });
     const g = svg("g", { class: "mark", style: "cursor:grab" }, [circle, tag, name].filter(Boolean));
     attachTooltip(g, b.n.label, [{ value: String(b.n.size), name: "passes made" }, ...(b.n.tip || [])]);
-    g.addEventListener("pointerenter", () => {
-      for (const { s, g: lg } of drawnLinks) lg.style.opacity = s.a === b || s.b === b ? "1" : "0.08";
-    });
-    g.addEventListener("pointerleave", () => {
-      for (const { g: lg } of drawnLinks) lg.style.opacity = "1";
-    });
     nodeLayer.append(g);
     return { b, g, circle, tag, name };
   });
+  const partners = new Map(bodies.map((b) => [b, new Set([b])]));
+  for (const s of springs) {
+    partners.get(s.a).add(s.b);
+    partners.get(s.b).add(s.a);
+  }
+  for (const { b, g } of drawnNodes) {
+    g.addEventListener("pointerenter", () => {
+      for (const { s, g: lg } of drawnLinks) lg.style.opacity = s.a === b || s.b === b ? "1" : "0.08";
+      for (const other of drawnNodes) other.g.style.opacity = partners.get(b).has(other.b) ? "1" : "0.15";
+    });
+    g.addEventListener("pointerleave", () => {
+      for (const { g: lg } of drawnLinks) lg.style.opacity = "1";
+      for (const other of drawnNodes) other.g.style.opacity = "1";
+    });
+  }
   const draw = () => {
     for (const { s, line, hit } of drawnLinks) {
       const [a, b] = [view.toScreen(s.a), view.toScreen(s.b)];
