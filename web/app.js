@@ -1130,7 +1130,7 @@ function gamePlays(a, timeline) {
       { key: "team", label: "", left: true, value: (e) => (e.team === "Us" ? "Us" : "Them") },
       { key: "name", label: "Player", left: true, value: (e) => e.name || "" },
       { key: "detail", label: "What happened", left: true },
-    ], events.slice(0, step), { sortKey: "n", descending: false, onRow: (e) => { stop(); step = events.indexOf(e) + 1; draw(); } });
+    ], events.slice(0, step), { sortKey: "n", descending: true, onRow: (e) => { stop(); step = events.indexOf(e) + 1; draw(); } });
   };
   const stop = () => { if (timer) clearInterval(timer); timer = null; };
   const play_ = () => {
@@ -1156,7 +1156,7 @@ function gamePlays(a, timeline) {
     cardTitle(goalLabel(play, timeline)),
     el("ul", { class: "small notes" }, facts.map((f) => el("li", { text: f }))),
     controls, rink,
-    el("p", { class: "small muted", text: "Every action InStat logged for both teams, in order. A faceoff or puck battle is shown once, from the winner's side. Click a dot or a row to stop there." }),
+    el("p", { class: "small muted", text: "Every action InStat logged for both teams, the latest at the top. A faceoff or puck battle is shown once, from the winner's side. Click a dot or a row to stop there." }),
     list,
   ]);
   requestAnimationFrame(draw);
