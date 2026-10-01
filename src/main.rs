@@ -1,16 +1,14 @@
 //! Hockey Stats: double-click to open the app in the browser, or run
-//! `hockey-stats --report <pdfs…> -o report.html` to build a report without the UI.
+//! `hockey-stats --report <files…> -o report.html` to build a report without the UI.
 // On Windows, a double-clicked app must not open a console window.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use hockey_stats::analysis::{Request, analyse};
 use hockey_stats::error::Error;
-use hockey_stats::ingest::{Document, build_games, describe, parse_document};
-use hockey_stats::model::{LeagueGame, TeamPrefix};
-use hockey_stats::reconcile::reconcile_league;
+use hockey_stats::model::TeamPrefix;
 use hockey_stats::server::{self, RunningInstance};
 use hockey_stats::store::{self, Store};
 use hockey_stats::update;
@@ -20,7 +18,8 @@ const USAGE: &str = "\
 Hockey Stats
 
   hockey-stats                                   open the app in your browser
-  hockey-stats --report FILES… --team NAME -o OUT write a standalone HTML report from PDFs
+  hockey-stats --report FILES… --team NAME -o OUT write a standalone HTML report from
+                                                 InStat CSV exports and/or PDF reports
 
 Options:
   --team NAME      start of your team's name in the reports, e.g. SSAC (--report only)
@@ -87,46 +86,44 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         let output = output.ok_or("--report needs -o OUTPUT.html")?;
         let team = team.ok_or("--report needs --team NAME")?;
         if inputs.is_empty() {
-            return Err("--report needs at least one PDF".into());
+            return Err("--report needs at least one file".into());
         }
         options.mode = Mode::Report { inputs, output, team };
     } else if !inputs.is_empty() && !matches!(options.mode, Mode::Help) {
-        return Err("PDF files are only accepted with --report; in the app, drop them on the page".into());
+        return Err("files are only accepted with --report; in the app, drop them on the page".into());
     }
     Ok(options)
 }
 
 fn write_report(inputs: &[PathBuf], output: &PathBuf, team: &TeamPrefix) -> Result<(), Error> {
-    let documents = inputs
-        .iter()
-        .map(|path| {
-            let bytes = std::fs::read(path)?;
-            parse_document(&bytes, team).map_err(|e| Error::Pdf(format!("{}: {e}", path.display())))
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    let (games, problems) = build_games(&documents);
-    for problem in &problems {
-        eprintln!("warning: {problem}");
+    let library = std::env::temp_dir().join(format!("hockey-stats-report-{}", std::process::id()));
+    let result = report_from(&library, inputs, output, team);
+    if let Err(e) = std::fs::remove_dir_all(&library) {
+        eprintln!("could not remove {}: {e}", library.display());
     }
+    result
+}
+
+/// Reads `inputs` into a throwaway library at `library`, the same way the app does.
+fn report_from(library: &Path, inputs: &[PathBuf], output: &PathBuf, team: &TeamPrefix) -> Result<(), Error> {
+    let mut store = Store::open(library)?;
+    store.set_team(team.clone())?;
+    for path in inputs {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        store
+            .add_file(&std::fs::read(path)?, name)
+            .map_err(|e| Error::parse("report", format!("{}: {e}", path.display())))?;
+    }
+    for pending in store.pending_descriptions() {
+        eprintln!("warning: {pending}");
+    }
+    let games = store.games();
     for game in &games {
         for warning in &game.warnings {
             eprintln!("warning ({} vs {}): {warning}", game.date, game.opponent.0);
         }
     }
-    let league: Vec<LeagueGame> = documents
-        .iter()
-        .filter_map(|d| match d {
-            Document::League(report) => match reconcile_league(report) {
-                Ok(game) => Some(game),
-                Err(e) => {
-                    eprintln!("warning: league game {}: {e}", describe(&report.title));
-                    None
-                }
-            },
-            _ => None,
-        })
-        .collect();
-    let analysis = analyse(&games, &league, &Request::default());
+    let analysis = analyse(&games, &store.league_games(), &Request::default());
     std::fs::write(output, web::snapshot_page(&serde_json::to_string(&analysis)?))?;
     eprintln!("wrote {} ({} game(s))", output.display(), games.len());
     Ok(())

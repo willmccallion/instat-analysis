@@ -1,8 +1,9 @@
-//! Turning dropped PDF files into games: classify each document, pair match reports with
-//! their player reports, and reconcile.
+//! Turning dropped files into documents: InStat's event exports (CSV), its match and player
+//! reports (PDF), and pairing PDF reports into games.
 
 use crate::error::Error;
 use crate::model::{Game, TeamPrefix};
+use crate::parse::events::{self, EventFile};
 use crate::parse::match_report::{self, LeagueReport, MatchReport, Title};
 use crate::parse::players_report::{self, PlayersReport};
 use crate::pdf;
@@ -14,6 +15,8 @@ pub enum Document {
     Players(Box<PlayersReport>),
     /// A match report between two other teams in the league.
     League(Box<LeagueReport>),
+    /// One of the two event-export files (players or team), for any game.
+    Events(Box<EventFile>),
 }
 
 impl Document {
@@ -23,8 +26,21 @@ impl Document {
             Self::Match(m) => &m.title,
             Self::Players(p) => &p.title,
             Self::League(l) => &l.title,
+            Self::Events(e) => &e.title,
         }
     }
+}
+
+/// Reads an uploaded file: an event-export CSV (whose date and score come from `file_name`)
+/// or a PDF report.
+pub fn parse_upload(bytes: &[u8], file_name: &str, team: &TeamPrefix) -> Result<Document, Error> {
+    if events::is_event_export(bytes) {
+        return Ok(Document::Events(Box::new(events::parse(bytes, file_name)?)));
+    }
+    if file_name.to_lowercase().ends_with(".xml") {
+        return Err(Error::parse("upload", "the XML export isn't needed; add the two CSV files instead"));
+    }
+    parse_document(bytes, team)
 }
 
 pub fn parse_document(bytes: &[u8], team: &TeamPrefix) -> Result<Document, Error> {
@@ -38,9 +54,7 @@ pub fn parse_document(bytes: &[u8], team: &TeamPrefix) -> Result<Document, Error
     } else if players_report::is_players_report(&pages) {
         Ok(Document::Players(Box::new(players_report::parse(&pages, team)?)))
     } else {
-        Err(Error::Pdf(
-            "not an InStat match report or player report".to_owned(),
-        ))
+        Err(Error::Pdf("not an InStat event export (CSV), match report or player report".to_owned()))
     }
 }
 

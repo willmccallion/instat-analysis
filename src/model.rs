@@ -67,7 +67,8 @@ impl fmt::Display for Jersey {
     }
 }
 
-/// Stable identity of a player across games: normalised team + full name.
+/// Stable identity of a player across games: normalised team + the words of their full
+/// name in sorted order, so "Zach Boyd" (PDF reports) and "Boyd Zach" (event exports) match.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PlayerId(pub String);
@@ -75,8 +76,24 @@ pub struct PlayerId(pub String);
 impl PlayerId {
     #[must_use]
     pub fn new(team: &TeamName, full_name: &str) -> Self {
-        Self(format!("{}|{}", team.0, normalise_name(full_name)))
+        Self(format!("{}|{}", team.0, name_key(full_name)))
     }
+
+    /// The same id built by an older version that kept the name's word order.
+    #[must_use]
+    pub fn canonical(&self) -> Self {
+        match self.0.split_once('|') {
+            Some((team, name)) => Self(format!("{team}|{}", name_key(name))),
+            None => self.clone(),
+        }
+    }
+}
+
+/// Upper-cased name words in sorted order.
+fn name_key(name: &str) -> String {
+    let mut words: Vec<String> = name.split_whitespace().map(str::to_uppercase).collect();
+    words.sort();
+    words.join(" ")
 }
 
 /// Upper-cased, whitespace-collapsed name used for matching.

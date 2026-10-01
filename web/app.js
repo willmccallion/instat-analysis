@@ -409,13 +409,13 @@ function tiles(items) {
 function viewGames() {
   const a = state.analysis;
   const log = el("div", { class: "upload-log" }, state.uploadLog.map((line) => el("div", { class: line.ok ? "ok" : "err", text: line.text })));
-  const input = el("input", { type: "file", accept: "application/pdf,.pdf", multiple: true, style: "display:none" });
+  const input = el("input", { type: "file", accept: ".csv,text/csv,application/pdf,.pdf", multiple: true, style: "display:none" });
   input.addEventListener("change", () => uploadFiles([...input.files]));
   const folder = el("input", { type: "file", webkitdirectory: true, style: "display:none" });
-  folder.addEventListener("change", () => uploadFiles([...folder.files].filter((f) => f.name.toLowerCase().endsWith(".pdf"))));
+  folder.addEventListener("change", () => uploadFiles([...folder.files].filter(isUploadable)));
   const zone = el("div", { class: "dropzone" }, [
-    el("div", { class: "big", text: "Drop InStat PDFs here" }),
-    el("div", { class: "muted", text: "For our games, both the Match report and the Player report. For other teams' games (optional, for the League pages), just the Match report. Whole folders work too; games already loaded are skipped." }),
+    el("div", { class: "big", text: "Drop InStat CSV exports here" }),
+    el("div", { class: "muted", text: "For every game, the two CSV files InStat downloads (players and team). Other teams' games are optional and feed the League pages. For our games you can add the PDF Match and Player reports too, for InStat's xG, InStat Index, goalie save splits and recent-game history. Whole folders work; files already loaded are skipped." }),
     el("div", { style: "margin-top:14px;display:flex;gap:8px;justify-content:center" }, [
       el("button", { class: "primary", text: "Choose files…", onclick: () => input.click() }),
       el("button", { text: "Choose a folder…", onclick: () => folder.click() }),
@@ -456,7 +456,7 @@ function viewGames() {
     rows.length ? el("div", { class: "table-wrap" }, [el("table", {}, [
       el("thead", {}, [el("tr", {}, ["", "Date", "Opponent", "Score", "", "Checks", ""].map((h) => el("th", { class: "left", text: h })))]),
       el("tbody", {}, rows),
-    ])]) : el("div", { class: "empty", text: "No games yet — drop the PDFs above." }),
+    ])]) : el("div", { class: "empty", text: "No games yet — drop the CSV exports above." }),
     state.pending.length ? el("div", { class: "warning-box", style: "margin-top:12px" }, [`Waiting: ${state.pending.join("; ")}`]) : null,
     state.problems.length ? el("div", { class: "warning-box", style: "margin-top:12px" }, [`Problems: ${state.problems.join("; ")}`]) : null,
   ]);
@@ -469,7 +469,7 @@ function viewGames() {
   const leagueLibrary = el("div", { class: "card", style: "margin-top:16px" }, [
     el("h3", { text: `League games: other teams (${leagueRows.length})` }),
     leagueRows.length && !rows.length ? el("div", { class: "warning-box", text: `None of your own games are loaded, only other teams'. If your games ended up here, check your team name (${state.team}) above: games are yours when one team's name starts with it.` }) : null,
-    el("p", { class: "desc", text: "Optional: Match reports from games between other teams in your league. Drop them in the same box; the app recognises they don't involve your team, skips any game that's already loaded, and uses them only for the League pages and to set the league average in player ratings." }),
+    el("p", { class: "desc", text: "Optional: CSV exports of games between other teams in your league. Drop them in the same box; the app recognises they don't involve your team, skips any game that's already loaded, and uses them only for the League pages and to set the league average in player ratings." }),
     leagueRows.length ? el("div", { class: "table-wrap" }, [el("table", {}, [
       el("thead", {}, [el("tr", {}, ["Date", "Game", "Checks", ""].map((h) => el("th", { class: "left", text: h })))]),
       el("tbody", {}, leagueRows),
@@ -479,7 +479,7 @@ function viewGames() {
     `Your team: ${state.team} `,
     el("button", { class: "link small", text: "change", onclick: () => { state.changingTeam = true; render(); } }),
   ]);
-  return page("Games & uploads", "Everything stays on this computer. Reports are read, checked and stored in the app's library folder.", team, zone, el("div", { style: "height:16px" }), library, leagueLibrary);
+  return page("Games & uploads", "Everything stays on this computer. Files are read, checked and stored in the app's library folder.", team, zone, el("div", { style: "height:16px" }), library, leagueLibrary);
 }
 
 /** The preset for the team this app was built for; any other team can be typed in. */
@@ -519,7 +519,7 @@ async function filesFromDrop(transfer) {
   const out = [];
   const walk = (entry) => new Promise((resolve) => {
     if (entry.isFile) {
-      entry.file((file) => { if (file.name.toLowerCase().endsWith(".pdf")) out.push(file); resolve(); }, () => resolve());
+      entry.file((file) => { if (isUploadable(file)) out.push(file); resolve(); }, () => resolve());
     } else if (entry.isDirectory) {
       const reader = entry.createReader();
       const readAll = () => reader.readEntries(async (entries) => {
@@ -532,24 +532,33 @@ async function filesFromDrop(transfer) {
   });
   const entries = [...(transfer.items || [])].map((i) => (i.webkitGetAsEntry ? i.webkitGetAsEntry() : null)).filter(Boolean);
   if (entries.length) await Promise.all(entries.map(walk));
-  else out.push(...[...transfer.files].filter((f) => f.name.toLowerCase().endsWith(".pdf")));
+  else out.push(...[...transfer.files].filter(isUploadable));
   return out;
+}
+
+const isUploadable = (file) => /\.(csv|pdf)$/i.test(file.name);
+
+/** Players CSV, team CSV, match report, player report: each then adds to a built game. */
+function uploadOrder(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".csv")) return /-2(\s*\(\d+\))?\.csv$/.test(name) ? 1 : 0;
+  return /player/.test(name) ? 3 : 2;
 }
 
 async function uploadFiles(files) {
   if (!files.length) return;
-  // Match reports first so player reports pair immediately.
-  files.sort((a, b) => Number(/player/i.test(a.name)) - Number(/player/i.test(b.name)));
+  files.sort((a, b) => uploadOrder(a) - uploadOrder(b));
   for (const file of files) {
     state.uploadLog.push({ ok: true, text: `Reading ${file.name}…` });
     render();
     try {
-      const outcome = await api("/api/upload", { method: "POST", body: await file.arrayBuffer() });
+      const outcome = await api("/api/upload", { method: "POST", body: await file.arrayBuffer(), headers: { "X-File-Name": encodeURIComponent(file.name) } });
       const text = {
         GameAdded: `Added ${outcome.message}`,
         GameUpdated: `Updated ${outcome.message}`,
-        WaitingForMatchReport: `Stored player report for ${outcome.message}; add its match report too`,
+        Waiting: `Kept; ${outcome.message}`,
         LeagueGameAdded: `Added to League games (neither team is ${state.team}): ${outcome.message}`,
+        LeagueGameUpdated: `Updated League game: ${outcome.message}`,
         AlreadyLoaded: `Already loaded, skipped: ${outcome.message}`,
       }[outcome.status] || JSON.stringify(outcome);
       state.uploadLog[state.uploadLog.length - 1] = { ok: true, text: `✓ ${file.name}: ${text}` };
@@ -562,7 +571,7 @@ async function uploadFiles(files) {
 }
 
 async function removeGame(game) {
-  if (!confirm(`Remove ${game.date} vs ${game.opponent} and its PDFs from the library?`)) return;
+  if (!confirm(`Remove ${game.date} vs ${game.opponent} and its files from the library?`)) return;
   try {
     await api(`/api/games/${encodeURIComponent(game.id)}`, { method: "DELETE" });
   } catch (error) {
@@ -1016,7 +1025,7 @@ function viewRankings() {
         cold.length ? formList(cold) : el("p", { class: "muted small", text: "Nobody yet." }),
       ]),
     ]),
-    more("How the rating is built, stat by stat", el("p", { class: "small muted", text: "Each stat is compared with every skater at the same position in the same games, ours and the opponents' (in standard deviations; positive is always good), after pulling low-ice-time players toward the average. xG and passes are only in our Player report, so they are compared among our players. Within Offence, Defence and Puck play each stat counts by its weight, and the three parts are combined by their weights (see Customise the ranking)." }), breakdown));
+    more("How the rating is built, stat by stat", el("p", { class: "small muted", text: "Each stat is compared with every skater at the same position in the same games, ours and the opponents' (in standard deviations; positive is always good), after pulling low-ice-time players toward the average. xG (from the optional Player report) and passes are compared among our players only. Within Offence, Defence and Puck play each stat counts by its weight, and the three parts are combined by their weights (see Customise the ranking)." }), breakdown));
 }
 
 // ---------- Single game ----------
@@ -2018,7 +2027,7 @@ function goalieTab(g, tab) {
 
 function viewGoalies() {
   const a = state.analysis;
-  if (!a.goalies.length) return page("Goalies", "No goalie pages in scope (they come from the Player report).");
+  if (!a.goalies.length) return page("Goalies", "No goalies in the games in scope.");
   const [tabs, current] = pageTabs("goalieTab", GOALIE_TABS);
   const r = (g) => g.rebounds;
   const controlled = (g) => {
@@ -2550,7 +2559,7 @@ function viewUnusual() {
 /** Where the league numbers come from, said once at the top of each League page. */
 function leagueBasis(L) {
   const games = `${L.reference_games} game${L.reference_games === 1 ? "" : "s"} by ${L.teams.length} other team${L.teams.length === 1 ? "" : "s"}`;
-  const source = L.league_games ? `${L.league_games} league match report${L.league_games === 1 ? "" : "s"} plus our opponents' side of our games` : "only our opponents' side of our own games so far; add other teams' Match reports on the Games page for a fuller league picture";
+  const source = L.league_games ? `${L.league_games} league game${L.league_games === 1 ? "" : "s"} plus our opponents' side of our games` : "only our opponents' side of our own games so far; add other teams' CSV exports on the Games page for a fuller league picture";
   return el("p", { class: "small muted" }, [`League average: ${games} (${source}). Our team never counts toward it.`]);
 }
 
@@ -2636,7 +2645,7 @@ function leaguePlayerPanel(a, playerId) {
   const rows = p.stats.filter((r) => r.percentile !== null).map((r) => ({ ...r, name: names.get(r.stat).name }));
   const group = p.player.position === "Defence" ? L.reference_defence : L.reference_forwards;
   const position = p.player.position === "Defence" ? "defencemen" : "forwards";
-  const bars = chartCard(`Against ${group} league ${position}`, `Percentile on every stat: 50 = the league's middle ${p.player.position === "Defence" ? "defenceman" : "forward"}, 90 = better than 9 in 10. Lower-is-better stats (losses, attempts against) are already flipped. Average: ${fmt(p.average_percentile, 0)}.${p.qualified ? "" : " Below the minimum ice time, so treat as a first look."}${group < 20 ? ` Only ${group} league ${position} so far, so percentiles move in big steps; adding other teams' Match reports fills this out.` : ""}`, (c) => hBarChart(c, rows.map((r) => ({
+  const bars = chartCard(`Against ${group} league ${position}`, `Percentile on every stat: 50 = the league's middle ${p.player.position === "Defence" ? "defenceman" : "forward"}, 90 = better than 9 in 10. Lower-is-better stats (losses, attempts against) are already flipped. Average: ${fmt(p.average_percentile, 0)}.${p.qualified ? "" : " Below the minimum ice time, so treat as a first look."}${group < 20 ? ` Only ${group} league ${position} so far, so percentiles move in big steps; adding other teams' CSV exports fills this out.` : ""}`, (c) => hBarChart(c, rows.map((r) => ({
     label: r.name, value: r.percentile, color: window.Charts.divergingColor((r.percentile - 50) / 50),
     note: `${fmt(r.value, 2)} vs league ${fmt(r.league, 2)}`,
   })), { min: 0, max: 100, reference: 50, referenceLabel: "league middle", valueFormat: (v) => `${Math.round(v)}`, valueName: "percentile", labelWidth: 190 }), (c) => dataTable(c, [
@@ -2665,7 +2674,7 @@ function viewLeaguePlayers() {
     { key: "games", label: "GP" },
     { key: "average_percentile", label: "Average percentile", format: (v) => fmt(v, 0), tone: "higher" },
   ], L.players, { sortKey: "average_percentile", onRow: (p) => { state.leaguePlayer = p.player.id; render(); } }));
-  return page("Players vs the league", "How each of our players compares with league skaters at the same position, stat by stat and game by game. xG and passes come only from our Player report, so they aren't compared.", leagueBasis(L),
+  return page("Players vs the league", "How each of our players compares with league skaters at the same position, stat by stat and game by game. xG and passes are compared among our players only, so they aren't included.", leagueBasis(L),
     el("div", { style: "margin-bottom:12px" }, [select]), leaguePlayerPanel(a, chosen.player.id), el("div", { style: "height:16px" }), team);
 }
 
@@ -2857,13 +2866,13 @@ function viewHelp() {
     ["Verdicts", "Likely real: adjusted p < 0.05. Maybe: < 0.20. Could be noise: otherwise. Not enough data: the test needs more games. p-values are adjusted for the number of pairs/lines tested (Benjamini–Hochberg)."],
     ["Power analysis", "How many more games at the current usage would give an 80% chance of confirming a difference of the size currently estimated."],
     ["Passing lift", "Passes between two players divided by what their overall passing and receiving volumes predict (quasi-independence). Above 1 = a real connection."],
-    ["Rink maps", "Puck recoveries, losses, battles and hits where each player's page in InStat's Player report draws them, placed on a standard rink (our net on the left). The legend counts each kind in our zone, the neutral zone and theirs. InStat's battle maps show a few battles that its battle totals leave out."],
+    ["Rink maps", "Puck recoveries, losses, battles and hits where InStat's event export places them, on a standard rink (our net on the left). The legend counts each kind in our zone, the neutral zone and theirs."],
     ["Shot locations", "Every shot attempt (on net, missed or blocked) from InStat's shooting charts (ours and the opponent's). The charts mark goals but not which other attempts were on net, so on-net totals come from the zone maps. Attempts are placed on a standard rink using the chart's own faceoff circles. Distances are measured to the middle of the net; InStat's drawing is approximate, so treat them as a few feet either way."],
     ["xG per shot", "InStat prints expected goals per player and team, not per shot. The app fits a distance-and-angle model so each player's charted attempts add up to their InStat xG in each game (and the opponent's to their team xG), then scales each shot so the totals match InStat exactly. Deep dive → Shot quality model shows the fit and a leave-one-game-out check."],
     ["Luck & results", "Each shot's xG is its chance of scoring; combining every shot in a game gives the exact chance of each final score, so how often the game is won, lost, tied or goes to overtime. Overtime is 5 minutes of sudden death at each team's regulation scoring rate. Expected points add those up (2 for a win, 1 for an overtime loss or tie). The goal differential splits exactly into shot volume, chance quality, our finishing and our goaltending."],
     ["Goals saved above expected (GSAx)", "The xG of every attempt a goalie faced minus the goals allowed. Attempts include ones that missed or were blocked, so it also reflects the defence. When two goalies shared a game, each gets the team's xG in proportion to the shots on goal they faced. Weak spots on the net pull each area's save % toward the goalie's own average in proportion to how few shots it has."],
     ["Density maps", "Dots smoothed into a heat map (a Gaussian kernel about 7 ft wide on the half rink, 10 ft on the full rink) and shown per game, per 10 × 10 ft square, so seasons with different numbers of games compare fairly. Difference maps subtract one map from another: blue where the first is higher, red where the second is."],
-    ["League", "Optional league match reports (games between two other teams) and our opponents' side of our own games make up the league average; our team never counts toward it. Us vs the league compares our per-game numbers with the league or any one team, with a rank among all teams. Our games vs the league shows each game against a typical league team-game. Players vs the league gives every stat as a percentile among league skaters at the same position (xG and passes need the Player report, so they're left out), and each game graded against league player-games. Duplicate uploads of the same game are skipped automatically."],
+    ["League", "Optional CSV exports of games between two other teams and our opponents' side of our own games make up the league average; our team never counts toward it. Us vs the league compares our per-game numbers with the league or any one team, with a rank among all teams. Our games vs the league shows each game against a typical league team-game. Players vs the league gives every stat as a percentile among league skaters at the same position (xG and passes are compared among our players only, so they're left out), and each game graded against league player-games. Duplicate uploads of the same game are skipped automatically."],
     ["Passing network layouts", "Pull together (the default) is a force-directed layout like Obsidian's graph view: every player pushes the others away and each passing link pulls its two players together, harder the more passes they share, so players who pass to each other a lot end up close and passing groups form clusters. Drag a player to move them; double-click to let them go. Circle puts every player around a ring, ordered by passing group."],
     ["Passing network measures", "PageRank: where the puck ends up flowing, counting passes from busy passers more (the scores add to 100%). Connector score (betweenness): the share of the quickest passing routes between two teammates that run through a player, where a link with more passes is quicker. Passing groups come from Louvain community detection: groups who pass among themselves more than their volume predicts; modularity above about 0.3 means clear cliques."],
     ["Line builder", "Uses the individual impact ratings (ridge Poisson models of shot attempts for and against) to predict every possible line and pair's shot share, then searches every way of splitting the roster into lines for the best set, with the current ice-time split and a faceoff taker on each line when there are enough. Predictions can't see chemistry, and combinations that never played together are extrapolations."],
@@ -2878,13 +2887,13 @@ function viewHelp() {
     ["Shot map", "Where shots came from, using InStat's seven zones: slot, high slot, left and right sides, and three spots along the blue line. Each zone shows shots / on goal; darker = more shots."],
     ["Puck battles by area", "InStat splits every one-on-one puck battle by where it happened: in front of each net, behind each net, the corners, along each blue line, and the neutral zone. The map shows the share we won in each area; corners are one area drawn top and bottom."],
     ["Faceoffs at every dot", "From the faceoff rink on InStat's team stats page: our wins and losses at each of the nine dots (two in each end, four in the neutral zone, centre ice). The app checks the dots against the zone totals in InStat's faceoff table and leaves them out, with a warning, if they don't match."],
-    ["Player ratings", "Each stat is compared with every skater at the same position in the games in scope, ours and the opponents' from their pages of the Match report (in standard deviations, after pulling low-ice-time players toward the average). 50 is the average skater in those games, so the team's own average shows how it stacks up. xG and passes are only in our Player report, so they are compared among our players. Stats are grouped into Offence, Defence and Puck play; within each part a stat counts by its weight, and the parts are combined by their weights. The Recommended weights favour stats most tied to goals for and against; coaches can pick a preset or set any weight from 0 (left out) to 3 under Rankings → Customise the ranking, and reset to the recommended weights at any time."],
+    ["Player ratings", "Each stat is compared with every skater at the same position in the games in scope, ours and the opponents' (in standard deviations, after pulling low-ice-time players toward the average). 50 is the average skater in those games, so the team's own average shows how it stacks up. xG (from the optional Player report) and passes are compared among our players only. Stats are grouped into Offence, Defence and Puck play; within each part a stat counts by its weight, and the parts are combined by their weights. The Recommended weights favour stats most tied to goals for and against; coaches can pick a preset or set any weight from 0 (left out) to 3 under Rankings → Customise the ranking, and reset to the recommended weights at any time."],
     ["Matchups", "InStat's challenge and hits distributions list every one-on-one puck battle and every hit between each of our skaters and each of theirs. Opponents are shown as InStat labels them (number and surname); bars show battles won minus lost, so one battle never looks like a 100% record."],
     ["Goalie breakdowns", "From the goalie's Player-report page: save % by distance, zone, shot type, screened or clear view, where on the net the shot was headed (seen from the shooter), and where the puck met the goalie (the goalie's own left and right). Colours compare each part with the goalie's overall save %. Rebound control splits every save by what happened to the puck next."],
     ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],
     ["Practice focus", "Each area compares us with our opponents (50% = even; power play against 20%, penalty kill against 80%). An area is flagged only when it's 8+ points off and backed by at least 10 events; the drill ideas are starting points, not prescriptions."],
     ["Shift data", "Rebuilt from InStat's time-distribution chart. The reader checks itself: every player's +/- rebuilt from shifts must match InStat's own column, or the game shows a warning."],
-    ["Where the numbers come from", "InStat's Match report (team, player, line, shot, challenge and pass tables, the challenge and hits distributions and the shift chart) and Player report (full names, jersey numbers, xG, goalie details and each player's recent-games history). InStat prints wrong jersey numbers in some Match-report tables; the reader uses names and ice time instead."],
+    ["Where the numbers come from", "InStat's event export: two CSV files with every action (time, spot on the ice, player) and every shift for both teams. Lines, +/-, attempts on and off the ice, power plays and passing partners are rebuilt from it; a pass's receiver is taken as the next teammate to touch the puck, which agrees with InStat's own passing table about 70% of the time, and penalties are counted as 2-minute minors since the export gives no lengths. Forward or defence is guessed from faceoffs, depth and linemates. The optional PDF reports add what only InStat computes: its xG, InStat Index, goalie save splits, shot types, possession, jersey numbers and each player's recent-games history. A game with only PDF reports is read from the Match report's tables and shift chart."],
   ];
   return page("How to read this", "Short explanations of every number in the report. Anywhere in the app, a stat name with a dotted underline explains itself: hover over it, tap it, or tab to it.", el("dl", { class: "explain" }, terms.flatMap(([t, d]) => [el("dt", { text: t }), el("dd", { text: d })])));
 }

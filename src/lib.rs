@@ -1,6 +1,8 @@
 pub mod analysis;
 pub mod cell;
 pub mod error;
+pub mod enrich;
+pub mod events;
 pub mod ingest;
 pub mod layout;
 pub mod model;

@@ -26,7 +26,7 @@ fn wrong_team_reason(team: &str, both: bool) -> String {
         format!("both teams start with \"{team}\", so the app can't tell which is yours")
     } else {
         format!(
-            "neither team starts with \"{team}\". If this is another team's game, only its Match report is needed; otherwise check your team name at the top of the Games page"
+            "neither team starts with \"{team}\". If this is another team's game, add its CSV exports; otherwise check your team name at the top of the Games page"
         )
     }
 }

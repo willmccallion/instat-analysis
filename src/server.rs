@@ -1,4 +1,4 @@
-//! Loopback web server: serves the UI, accepts PDF uploads and answers analysis requests.
+//! Loopback web server: serves the UI, accepts uploads and answers analysis requests.
 //!
 //! Every API call must carry the per-launch token, so other web pages the coach has open
 //! cannot talk to it.
@@ -28,6 +28,8 @@ const CLOSE_GRACE: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_secs(1);
 const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 const TOKEN_HEADER: &str = "X-Hockey-Token";
+/// The uploaded file's name, percent-encoded; event exports carry their date and score in it.
+const FILE_NAME_HEADER: &str = "X-File-Name";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LockFile {
@@ -202,6 +204,32 @@ fn read_body(request: &mut HttpRequest) -> Result<Vec<u8>, Error> {
     Ok(body)
 }
 
+/// Decodes `%XX` escapes (as `encodeURIComponent` writes them) into UTF-8 text.
+fn percent_decode(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&first, tail)) = rest.split_first() {
+        if first == b'%' {
+            let hex = tail.get(..2)?;
+            bytes.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+            rest = &tail[2..];
+        } else {
+            bytes.push(first);
+            rest = tail;
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn file_name(request: &HttpRequest) -> Result<String, Error> {
+    request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv(FILE_NAME_HEADER))
+        .and_then(|h| percent_decode(h.value.as_str()))
+        .ok_or_else(|| Error::parse("upload", "the file's name was not sent"))
+}
+
 fn has_token(request: &HttpRequest, token: &str) -> bool {
     request
         .headers()
@@ -270,8 +298,8 @@ impl App {
                 };
                 respond_json(request, 200, &state);
             }
-            (Method::Post, "/api/upload") => match read_body(&mut request) {
-                Ok(body) => match self.store.add_pdf(&body) {
+            (Method::Post, "/api/upload") => match file_name(&request).and_then(|name| Ok((name, read_body(&mut request)?))) {
+                Ok((name, body)) => match self.store.add_file(&body, &name) {
                     Ok(outcome) => {
                         self.cache.clear();
                         respond_json(request, 200, &outcome);
@@ -298,7 +326,7 @@ impl App {
             }
             (Method::Delete, games_path) if games_path.starts_with("/api/games/") => {
                 let id = GameId(games_path.trim_start_matches("/api/games/").to_owned());
-                match self.store.remove_game(&id).and_then(|ours| if ours { Ok(true) } else { self.store.remove_league_game(&id) }) {
+                match self.store.remove_game(&id) {
                     Ok(true) => {
                         self.cache.clear();
                         respond_json(request, 200, &true);
@@ -409,5 +437,22 @@ pub fn open_browser(url: &str) -> Result<(), Error> {
         Ok(())
     } else {
         Err(Error::Io(std::io::Error::other(format!("browser launcher exited with {status}"))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_decoding_reads_what_encode_uri_component_writes() {
+        assert_eq!(percent_decode("Team%20One%204%20_%205%20Team%20Two%2026.09.2026-2.csv").as_deref(), Some("Team One 4 _ 5 Team Two 26.09.2026-2.csv"));
+        assert_eq!(percent_decode("caf%C3%A9.csv").as_deref(), Some("café.csv"));
+    }
+
+    #[test]
+    fn a_broken_escape_is_refused() {
+        assert_eq!(percent_decode("bad%2"), None);
+        assert_eq!(percent_decode("bad%zz"), None);
     }
 }

@@ -2,6 +2,7 @@
 
 pub mod common;
 pub mod diagrams;
+pub mod events;
 pub mod lines;
 pub mod match_report;
 pub mod matrix;

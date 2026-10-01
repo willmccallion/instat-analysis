@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use crate::cell::Cell;
 use crate::error::Error;
+use crate::parse::match_report::Title;
 use crate::model::{
     Advantage, AreaBattles, BattleArea, BodyArea, CellValue, ChartedShot, FaceoffSpot, Game, OpponentShot, SpotFaceoffs,
     TeamSummary, GameId, Goal, GoaliePageRow, GoalieState, GoalieStats, HistoryKind, HistoryRow, Interval,
@@ -257,7 +258,7 @@ fn skater_stats(
     }
 }
 
-fn net_shots(counts: &[(NetArea, (u32, u32))]) -> Vec<NetShots> {
+pub(crate) fn net_shots(counts: &[(NetArea, (u32, u32))]) -> Vec<NetShots> {
     counts
         .iter()
         .map(|&(area, (on_goal, goals))| NetShots { area, on_goal, goals })
@@ -406,7 +407,7 @@ fn rebound_control(page: &PlayerPage) -> Option<ReboundControl> {
     })
 }
 
-fn goalie_stats(page: &PlayerPage) -> GoalieStats {
+pub(crate) fn goalie_stats(page: &PlayerPage) -> GoalieStats {
     let ratio = |label: &str| page.stat(label).and_then(|c| c.ratio());
     let (shots_against, saves) = ratio("Shots against / saved").unwrap_or_default();
     GoalieStats {
@@ -429,7 +430,7 @@ fn goalie_stats(page: &PlayerPage) -> GoalieStats {
     }
 }
 
-fn history(page: &PlayerPage, reference: crate::model::Date) -> Vec<HistoryRow> {
+pub(crate) fn history(page: &PlayerPage, reference: crate::model::Date) -> Vec<HistoryRow> {
     page.history
         .iter()
         .map(|row| {
@@ -475,7 +476,7 @@ fn history(page: &PlayerPage, reference: crate::model::Date) -> Vec<HistoryRow> 
         .collect()
 }
 
-fn page_details(page: &PlayerPage) -> Vec<StatEntry> {
+pub(crate) fn page_details(page: &PlayerPage) -> Vec<StatEntry> {
     page.stats
         .iter()
         .map(|(label, game, _)| StatEntry {
@@ -825,13 +826,7 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
     check_plus_minus(&players_out, &goals, &mut warnings);
 
     Ok(Game {
-        id: GameId(format!(
-            "{}_{}_{}-{}",
-            title.date,
-            slug(&opponent.0),
-            goals_for,
-            goals_against
-        )),
+        id: game_id(title, ours),
         date: title.date,
         team,
         opponent,
@@ -864,6 +859,16 @@ pub fn reconcile(report: &MatchReport, players: Option<&PlayersReport>) -> Resul
         length,
         warnings,
     })
+}
+
+/// Our game's id: the date, the opponent and the score from our side.
+pub(crate) fn game_id(title: &Title, ours: usize) -> GameId {
+    let (goals_for, goals_against) = if ours == 0 { title.score } else { (title.score.1, title.score.0) };
+    GameId(format!("{}_{}_{goals_for}-{goals_against}", title.date, slug(&title.teams[1 - ours].0)))
+}
+
+pub(crate) fn league_game_id(title: &Title) -> GameId {
+    GameId(format!("league_{}_{}_{}-{}_{}", title.date, slug(&title.teams[0].0), title.score.0, title.score.1, slug(&title.teams[1].0)))
 }
 
 fn slug(text: &str) -> String {
@@ -969,14 +974,7 @@ pub fn reconcile_league(report: &LeagueReport) -> Result<LeagueGame, Error> {
     }
     let [first, second]: [LeagueSide; 2] = sides.try_into().map_err(|_| Error::parse("league game", "expected two teams"))?;
     Ok(LeagueGame {
-        id: GameId(format!(
-            "league_{}_{}_{}-{}_{}",
-            title.date,
-            slug(&title.teams[0].0),
-            title.score.0,
-            title.score.1,
-            slug(&title.teams[1].0)
-        )),
+        id: league_game_id(title),
         date: title.date,
         sides: [first, second],
         warnings,

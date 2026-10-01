@@ -1,7 +1,9 @@
-//! On-disk library of uploaded reports and the games built from them.
+//! On-disk library of uploaded files and the games built from them.
 //!
-//! PDFs are kept so games can be rebuilt when the parser improves; each game is also cached
-//! as JSON (tagged with [`PARSER_VERSION`]) so start-up does not re-read every PDF.
+//! Every file is kept so games can be rebuilt when the reader improves; each game is also
+//! cached as JSON (tagged with [`PARSER_VERSION`]) so start-up does not re-read every file.
+//! A game is built from its event export when that is loaded, with any PDF reports adding
+//! InStat's own numbers; otherwise from its PDF match report alone.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,14 +12,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::rating_setup::RatingWeights;
 use crate::analysis::targets::PlayerTarget;
+use crate::enrich::add_reports;
 use crate::error::Error;
-use crate::ingest::{Document, describe, parse_document, same_game};
+use crate::events::{EventGame, build_game, build_league_game};
+use crate::ingest::{Document, describe, parse_upload, same_game};
 use crate::model::{Game, GameId, LeagueGame, TeamPrefix};
-use crate::parse::match_report::{LeagueReport, Title};
+use crate::parse::events::{EventFile, EventFileKind};
+use crate::parse::match_report::{Title, our_index};
 use crate::reconcile::{reconcile, reconcile_league};
 
 /// Bump when parsing or reconciliation changes, to rebuild cached games.
-pub const PARSER_VERSION: u32 = 14;
+pub const PARSER_VERSION: u32 = 16;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Settings {
@@ -28,30 +33,107 @@ struct Settings {
     player_targets: Vec<PlayerTarget>,
 }
 
+/// Which of InStat's downloads a file is, in the order a game is best assembled from them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FileKind {
+    PlayersExport,
+    TeamExport,
+    MatchReport,
+    PlayersReport,
+}
+
+impl FileKind {
+    const fn of(document: &Document) -> Self {
+        match document {
+            Document::Events(file) if matches!(file.kind, EventFileKind::Players) => Self::PlayersExport,
+            Document::Events(_) => Self::TeamExport,
+            Document::Match(_) | Document::League(_) => Self::MatchReport,
+            Document::Players(_) => Self::PlayersReport,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::PlayersExport => "players CSV",
+            Self::TeamExport => "team CSV",
+            Self::MatchReport => "match report",
+            Self::PlayersReport => "player report",
+        }
+    }
+}
+
+/// The library's file names for one game.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct GameFiles {
+    players_export: Option<String>,
+    team_export: Option<String>,
+    match_report: Option<String>,
+    players_report: Option<String>,
+}
+
+impl GameFiles {
+    const fn slot(&mut self, kind: FileKind) -> &mut Option<String> {
+        match kind {
+            FileKind::PlayersExport => &mut self.players_export,
+            FileKind::TeamExport => &mut self.team_export,
+            FileKind::MatchReport => &mut self.match_report,
+            FileKind::PlayersReport => &mut self.players_report,
+        }
+    }
+
+    const fn has(&self, kind: FileKind) -> bool {
+        match kind {
+            FileKind::PlayersExport => self.players_export.is_some(),
+            FileKind::TeamExport => self.team_export.is_some(),
+            FileKind::MatchReport => self.match_report.is_some(),
+            FileKind::PlayersReport => self.players_report.is_some(),
+        }
+    }
+
+    fn names(&self) -> impl Iterator<Item = &String> {
+        [&self.players_export, &self.team_export, &self.match_report, &self.players_report].into_iter().flatten()
+    }
+}
+
+/// What a game's files add up to so far.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredGame {
+enum Built {
+    Ours(Box<Game>),
+    League(Box<LeagueGame>),
+    /// Not enough files yet; says which is missing.
+    Waiting(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Entry {
     version: u32,
     /// The team the game was read for; games are rebuilt when the coach changes team.
     team: TeamPrefix,
-    match_file: String,
-    players_file: Option<String>,
-    match_title: Title,
-    game: Game,
+    title: Title,
+    files: GameFiles,
+    built: Built,
 }
 
-/// A league game (two other teams) and the match report it was built from.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredLeagueGame {
-    version: u32,
-    match_file: String,
-    match_title: Title,
-    game: LeagueGame,
+impl Entry {
+    fn game_id(&self) -> Option<&GameId> {
+        match &self.built {
+            Built::Ours(game) => Some(&game.id),
+            Built::League(game) => Some(&game.id),
+            Built::Waiting(_) => None,
+        }
+    }
+
+    fn json_name(&self) -> String {
+        format!("{}.json", title_key(&self.title))
+    }
 }
 
-#[derive(Debug, Clone)]
-struct Pending {
-    file: String,
-    document: Document,
+/// The documents read back for one game.
+struct Documents {
+    players_export: Option<EventFile>,
+    team_export: Option<EventFile>,
+    match_report: Option<Document>,
+    players_report: Option<Document>,
 }
 
 /// What happened to an uploaded file, for the UI.
@@ -60,9 +142,11 @@ struct Pending {
 pub enum AddOutcome {
     GameAdded(String),
     GameUpdated(String),
-    WaitingForMatchReport(String),
     LeagueGameAdded(String),
-    /// The same game (same teams, score and date) is already loaded, so nothing was added.
+    LeagueGameUpdated(String),
+    /// Kept, but the game needs another file before it can be shown.
+    Waiting(String),
+    /// This file (or another copy of it) is already loaded, so nothing was added.
     AlreadyLoaded(String),
 }
 
@@ -71,9 +155,7 @@ pub struct Store {
     team: Option<TeamPrefix>,
     rating_weights: RatingWeights,
     player_targets: Vec<PlayerTarget>,
-    games: Vec<StoredGame>,
-    league: Vec<StoredLeagueGame>,
-    pending: Vec<Pending>,
+    entries: Vec<Entry>,
     pub problems: Vec<String>,
 }
 
@@ -83,20 +165,72 @@ fn slug(text: &str) -> String {
         .collect()
 }
 
-fn file_name(document: &Document) -> String {
+fn title_key(title: &Title) -> String {
+    format!("{}_{}_{}-{}_{}", title.date, slug(&title.teams[0].0), title.score.0, title.score.1, slug(&title.teams[1].0))
+}
+
+/// The name a file is kept under. Event exports keep InStat's naming, since their date and
+/// score are read from the name.
+fn stored_name(document: &Document) -> String {
     let title = document.title();
-    let kind = match document {
-        Document::Match(_) | Document::League(_) => "match",
-        Document::Players(_) => "players",
+    match FileKind::of(document) {
+        kind @ (FileKind::PlayersExport | FileKind::TeamExport) => format!(
+            "{} {} _ {} {} {:02}.{:02}.{}{}.csv",
+            title.teams[0].0,
+            title.score.0,
+            title.score.1,
+            title.teams[1].0,
+            title.date.day,
+            title.date.month,
+            title.date.year,
+            if kind == FileKind::TeamExport { "-2" } else { "" }
+        ),
+        FileKind::MatchReport => format!("{}_match.pdf", title_key(title)),
+        FileKind::PlayersReport => format!("{}_players.pdf", title_key(title)),
+    }
+}
+
+fn game_label(game: &Game) -> String {
+    format!("{} vs {} {}-{}", game.date, game.opponent.0, game.goals_for, game.goals_against)
+}
+
+fn waiting_for(files: &GameFiles, ours: bool) -> String {
+    match (files.has(FileKind::TeamExport), files.has(FileKind::PlayersReport)) {
+        (true, _) => "add its players CSV (the one with shifts)".to_owned(),
+        (false, true) if ours => "add its players CSV, or its match report".to_owned(),
+        _ => "add its players CSV".to_owned(),
+    }
+}
+
+/// The game `documents` make up for `team`.
+fn build(team: &TeamPrefix, title: &Title, files: &GameFiles, documents: &Documents) -> Result<Built, Error> {
+    let ours = match our_index(title, team) {
+        Ok(_) => true,
+        Err(Error::WrongTeam { both: false, .. }) => false,
+        Err(e) => return Err(e),
     };
-    format!(
-        "{}_{}_{}-{}_{}_{kind}.pdf",
-        title.date,
-        slug(&title.teams[0].0),
-        title.score.0,
-        title.score.1,
-        slug(&title.teams[1].0)
-    )
+    let match_report = match &documents.match_report {
+        Some(Document::Match(report)) => Some(report.as_ref()),
+        _ => None,
+    };
+    let players_report = match &documents.players_report {
+        Some(Document::Players(report)) => Some(report.as_ref()),
+        _ => None,
+    };
+    let Some(players) = &documents.players_export else {
+        return Ok(match (&documents.match_report, ours) {
+            (Some(Document::Match(report)), true) => Built::Ours(Box::new(reconcile(report, players_report)?)),
+            (Some(Document::League(report)), false) => Built::League(Box::new(reconcile_league(report)?)),
+            _ => Built::Waiting(waiting_for(files, ours)),
+        });
+    };
+    let export = EventGame { players, team: documents.team_export.as_ref() };
+    if !ours {
+        return Ok(Built::League(Box::new(build_league_game(&export)?)));
+    }
+    let mut game = build_game(&export, team)?;
+    add_reports(&mut game, match_report, players_report)?;
+    Ok(Built::Ours(Box::new(game)))
 }
 
 impl Store {
@@ -104,19 +238,27 @@ impl Store {
         self.dir.join("pdfs")
     }
 
-    fn game_dir(&self) -> PathBuf {
-        self.dir.join("games")
+    fn export_dir(&self) -> PathBuf {
+        self.dir.join("exports")
     }
 
-    fn league_dir(&self) -> PathBuf {
-        self.dir.join("league")
+    fn library_dir(&self) -> PathBuf {
+        self.dir.join("library")
     }
 
     fn settings_path(&self) -> PathBuf {
         self.dir.join("settings.json")
     }
 
-    /// Opens (creating if needed) the library, loading cached games and re-reading any PDF
+    fn file_path(&self, name: &str) -> PathBuf {
+        if Path::new(name).extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")) {
+            self.export_dir().join(name)
+        } else {
+            self.pdf_dir().join(name)
+        }
+    }
+
+    /// Opens (creating if needed) the library, loading cached games and re-reading any file
     /// that no current cached game accounts for. Nothing is read until a team is chosen.
     pub fn open(dir: &Path) -> Result<Self, Error> {
         let mut store = Self {
@@ -124,26 +266,50 @@ impl Store {
             team: None,
             rating_weights: RatingWeights::default(),
             player_targets: Vec::new(),
-            games: Vec::new(),
-            league: Vec::new(),
-            pending: Vec::new(),
+            entries: Vec::new(),
             problems: Vec::new(),
         };
         fs::create_dir_all(store.pdf_dir())?;
-        fs::create_dir_all(store.game_dir())?;
-        fs::create_dir_all(store.league_dir())?;
+        fs::create_dir_all(store.export_dir())?;
+        fs::create_dir_all(store.library_dir())?;
+        store.remove_old_caches()?;
         match fs::read(store.settings_path()) {
             Ok(bytes) => {
                 let settings = serde_json::from_slice::<Settings>(&bytes)?;
                 store.team = Some(settings.team);
                 store.rating_weights = settings.rating_weights;
-                store.player_targets = settings.player_targets;
+                store.player_targets = settings
+                    .player_targets
+                    .into_iter()
+                    .map(|t| PlayerTarget { player: t.player.canonical(), ..t })
+                    .collect();
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
         store.load()?;
         Ok(store)
+    }
+
+    /// Before version 16 games were cached in `games/` and `league/`; the files they were
+    /// built from are still in `pdfs/` and are re-read from there.
+    fn remove_old_caches(&self) -> Result<(), Error> {
+        for old in ["games", "league"] {
+            let dir = self.dir.join(old);
+            if !dir.is_dir() {
+                continue;
+            }
+            for entry in fs::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.extension().is_some_and(|e| e == "json") {
+                    fs::remove_file(path)?;
+                }
+            }
+            if fs::read_dir(&dir)?.next().is_none() {
+                fs::remove_dir(dir)?;
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -189,62 +355,46 @@ impl Store {
     pub fn set_team(&mut self, team: TeamPrefix) -> Result<(), Error> {
         self.save_settings(&team)?;
         self.team = Some(team);
-        self.games.clear();
-        self.league.clear();
-        self.pending.clear();
+        self.entries.clear();
         self.problems.clear();
         self.load()
     }
 
-    /// Keeps cached games built for the current team and parser, and re-reads the rest.
+    /// Keeps cached games built for the current team and reader, and re-reads the rest.
     fn load(&mut self) -> Result<(), Error> {
         let Some(team) = self.team.clone() else {
             return Ok(());
         };
-        for entry in fs::read_dir(self.game_dir())? {
+        for entry in fs::read_dir(self.library_dir())? {
             let path = entry?.path();
             if path.extension().is_some_and(|e| e == "json") {
                 let loaded = fs::read(&path)
                     .map_err(Error::from)
-                    .and_then(|bytes| serde_json::from_slice::<StoredGame>(&bytes).map_err(Error::from));
+                    .and_then(|bytes| serde_json::from_slice::<Entry>(&bytes).map_err(Error::from));
                 match loaded {
-                    Ok(stored) if stored.version == PARSER_VERSION && stored.team == team => {
-                        self.games.push(stored);
-                    }
+                    Ok(entry) if entry.version == PARSER_VERSION && entry.team == team => self.entries.push(entry),
                     _ => fs::remove_file(&path)?,
                 }
             }
         }
-        for entry in fs::read_dir(self.league_dir())? {
-            let path = entry?.path();
-            if path.extension().is_some_and(|e| e == "json") {
-                let loaded = fs::read(&path)
-                    .map_err(Error::from)
-                    .and_then(|bytes| serde_json::from_slice::<StoredLeagueGame>(&bytes).map_err(Error::from));
-                match loaded {
-                    Ok(stored) if stored.version == PARSER_VERSION && !stored.match_title.teams.iter().any(|t| team.matches(t)) => {
-                        self.league.push(stored);
-                    }
-                    _ => fs::remove_file(&path)?,
+        let mut orphans: Vec<(FileKind, String, Vec<u8>)> = Vec::new();
+        for dir in [self.export_dir(), self.pdf_dir()] {
+            for entry in fs::read_dir(dir)? {
+                let path = entry?.path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
+                if self.entries.iter().any(|e| e.files.names().any(|f| *f == name)) {
+                    continue;
+                }
+                let bytes = fs::read(&path)?;
+                match parse_upload(&bytes, &name, &team) {
+                    Ok(document) => orphans.push((FileKind::of(&document), name, bytes)),
+                    Err(e) => self.problems.push(format!("{name}: {e}")),
                 }
             }
         }
-        let mut orphans: Vec<PathBuf> = fs::read_dir(self.pdf_dir())?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "pdf"))
-            .filter(|p| {
-                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
-                let ours = self.games.iter().any(|g| g.match_file == name || g.players_file.as_deref() == Some(name.as_str()));
-                let league = self.league.iter().any(|g| g.match_file == name);
-                !ours && !league
-            })
-            .collect();
-        orphans.sort_by_key(|p| p.to_string_lossy().contains("_players"));
-        for path in orphans {
-            let bytes = fs::read(&path)?;
-            if let Err(e) = self.add_pdf(&bytes) {
-                let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        orphans.sort_by_key(|(kind, _, _)| *kind);
+        for (_, name, bytes) in orphans {
+            if let Err(e) = self.add_file(&bytes, &name) {
                 self.problems.push(format!("{name}: {e}"));
             }
         }
@@ -253,155 +403,124 @@ impl Store {
 
     #[must_use]
     pub fn games(&self) -> Vec<Game> {
-        let mut games: Vec<Game> = self.games.iter().map(|g| g.game.clone()).collect();
+        let mut games: Vec<Game> = self
+            .entries
+            .iter()
+            .filter_map(|e| match &e.built {
+                Built::Ours(game) => Some(game.as_ref().clone()),
+                Built::League(_) | Built::Waiting(_) => None,
+            })
+            .collect();
         games.sort_by_key(|g| g.date);
         games
     }
 
     #[must_use]
     pub fn league_games(&self) -> Vec<LeagueGame> {
-        let mut games: Vec<LeagueGame> = self.league.iter().map(|g| g.game.clone()).collect();
+        let mut games: Vec<LeagueGame> = self
+            .entries
+            .iter()
+            .filter_map(|e| match &e.built {
+                Built::League(game) => Some(game.as_ref().clone()),
+                Built::Ours(_) | Built::Waiting(_) => None,
+            })
+            .collect();
         games.sort_by_key(|g| g.date);
         games
     }
 
-    fn add_league_game(&mut self, report: &LeagueReport, file: String) -> Result<AddOutcome, Error> {
-        let game = reconcile_league(report)?;
-        let label = describe(&report.title);
-        let path = self.league_dir().join(format!("{}.json", game.id.0));
-        let stored = StoredLeagueGame { version: PARSER_VERSION, match_file: file, match_title: report.title.clone(), game };
-        fs::write(path, serde_json::to_vec(&stored)?)?;
-        self.league.retain(|g| g.game.id != stored.game.id);
-        self.league.push(stored);
-        Ok(AddOutcome::LeagueGameAdded(label))
-    }
-
-    /// Deletes a league game and its match report.
-    pub fn remove_league_game(&mut self, id: &GameId) -> Result<bool, Error> {
-        let Some(index) = self.league.iter().position(|g| &g.game.id == id) else {
-            return Ok(false);
-        };
-        let stored = self.league.remove(index);
-        let pdf = self.pdf_dir().join(&stored.match_file);
-        if pdf.exists() {
-            fs::remove_file(pdf)?;
-        }
-        let json = self.league_dir().join(format!("{}.json", id.0));
-        if json.exists() {
-            fs::remove_file(json)?;
-        }
-        Ok(true)
-    }
-
     #[must_use]
     pub fn pending_descriptions(&self) -> Vec<String> {
-        self.pending
+        self.entries
             .iter()
-            .map(|p| format!("{} (player report waiting for its match report)", describe(p.document.title())))
+            .filter_map(|e| match &e.built {
+                Built::Waiting(missing) => Some(format!("{}: {missing}", describe(&e.title))),
+                Built::Ours(_) | Built::League(_) => None,
+            })
             .collect()
     }
 
-    fn save_game(&mut self, stored: StoredGame) -> Result<(), Error> {
-        let path = self.game_dir().join(format!("{}.json", stored.game.id.0));
-        fs::write(path, serde_json::to_vec(&stored)?)?;
-        self.games.retain(|g| g.game.id != stored.game.id);
-        self.games.push(stored);
-        Ok(())
-    }
-
-    /// Parses an uploaded PDF, keeps it, and builds or updates its game when possible.
-    pub fn add_pdf(&mut self, bytes: &[u8]) -> Result<AddOutcome, Error> {
-        let team = self.team.clone().ok_or(Error::NoTeam)?;
-        let document = parse_document(bytes, &team)?;
-        let name = file_name(&document);
-        if let Document::League(report) = &document
-            && self.league.iter().any(|g| same_game(&g.match_title, &report.title))
-        {
-            return Ok(AddOutcome::AlreadyLoaded(describe(&report.title)));
-        }
-        fs::write(self.pdf_dir().join(&name), bytes)?;
-        match document {
-            Document::League(report) => self.add_league_game(&report, name),
-            Document::Match(report) => {
-                let partner_index = self
-                    .pending
-                    .iter()
-                    .position(|p| same_game(&report.title, p.document.title()));
-                let partner = partner_index.map(|i| self.pending.remove(i));
-                let players = partner.as_ref().and_then(|p| match &p.document {
-                    Document::Players(players) => Some(players.as_ref()),
-                    Document::Match(_) | Document::League(_) => None,
-                });
-                let existing_players_file = self
-                    .games
-                    .iter()
-                    .find(|g| same_game(&g.match_title, &report.title))
-                    .and_then(|g| g.players_file.clone());
-                let reloaded = match (players, &existing_players_file) {
-                    (None, Some(file)) => match parse_document(&fs::read(self.pdf_dir().join(file))?, &team)? {
-                        Document::Players(p) => Some(p),
-                        Document::Match(_) | Document::League(_) => None,
-                    },
-                    _ => None,
-                };
-                let players = players.or(reloaded.as_deref());
-                let game = reconcile(&report, players)?;
-                let label = format!("{} vs {} {}-{}", game.date, game.opponent.0, game.goals_for, game.goals_against);
-                let replaced = self.games.iter().any(|g| g.game.id == game.id);
-                let players_file = partner.map(|p| p.file).or(existing_players_file);
-                self.save_game(StoredGame {
-                    version: PARSER_VERSION,
-                    team,
-                    match_file: name,
-                    players_file,
-                    match_title: report.title.clone(),
-                    game,
-                })?;
-                Ok(if replaced { AddOutcome::GameUpdated(label) } else { AddOutcome::GameAdded(label) })
-            }
-            Document::Players(players) => {
-                let Some(stored) = self
-                    .games
-                    .iter()
-                    .find(|g| same_game(&g.match_title, &players.title))
-                    .cloned()
-                else {
-                    let message = describe(&players.title);
-                    self.pending.retain(|p| p.file != name);
-                    self.pending.push(Pending {
-                        file: name,
-                        document: Document::Players(players),
-                    });
-                    return Ok(AddOutcome::WaitingForMatchReport(message));
-                };
-                let Document::Match(report) = parse_document(&fs::read(self.pdf_dir().join(&stored.match_file))?, &team)? else {
-                    return Err(Error::Pdf("stored match report is not a match report".into()));
-                };
-                let game = reconcile(&report, Some(&players))?;
-                let label = format!("{} vs {} {}-{}", game.date, game.opponent.0, game.goals_for, game.goals_against);
-                self.save_game(StoredGame {
-                    players_file: Some(name),
-                    game,
-                    ..stored
-                })?;
-                Ok(AddOutcome::GameUpdated(label))
-            }
-        }
-    }
-
-    /// Deletes a game and its PDFs.
-    pub fn remove_game(&mut self, id: &GameId) -> Result<bool, Error> {
-        let Some(index) = self.games.iter().position(|g| &g.game.id == id) else {
-            return Ok(false);
+    fn read_documents(&self, team: &TeamPrefix, files: &GameFiles) -> Result<Documents, Error> {
+        let read = |name: &Option<String>| -> Result<Option<Document>, Error> {
+            name.as_ref().map(|n| parse_upload(&fs::read(self.file_path(n))?, n, team)).transpose()
         };
-        let stored = self.games.remove(index);
-        for file in std::iter::once(&stored.match_file).chain(stored.players_file.iter()) {
-            let path = self.pdf_dir().join(file);
+        let export = |document: Option<Document>| match document {
+            Some(Document::Events(file)) => Some(*file),
+            _ => None,
+        };
+        Ok(Documents {
+            players_export: export(read(&files.players_export)?),
+            team_export: export(read(&files.team_export)?),
+            match_report: read(&files.match_report)?,
+            players_report: read(&files.players_report)?,
+        })
+    }
+
+    fn save_entry(&mut self, entry: Entry, replacing: Option<usize>) -> Result<(), Error> {
+        if let Some(old) = replacing.map(|i| self.entries.remove(i))
+            && old.json_name() != entry.json_name()
+        {
+            let path = self.library_dir().join(old.json_name());
             if path.exists() {
                 fs::remove_file(path)?;
             }
         }
-        let json = self.game_dir().join(format!("{}.json", id.0));
+        fs::write(self.library_dir().join(entry.json_name()), serde_json::to_vec(&entry)?)?;
+        self.entries.push(entry);
+        Ok(())
+    }
+
+    /// Reads an uploaded file, keeps it, and builds or updates its game when it can.
+    pub fn add_file(&mut self, bytes: &[u8], file_name: &str) -> Result<AddOutcome, Error> {
+        let team = self.team.clone().ok_or(Error::NoTeam)?;
+        let document = parse_upload(bytes, file_name, &team)?;
+        let kind = FileKind::of(&document);
+        let index = self.entries.iter().position(|e| same_game(&e.title, document.title()));
+        let mut files = index.map(|i| self.entries[i].files.clone()).unwrap_or_default();
+        if files.has(kind) {
+            return Ok(AddOutcome::AlreadyLoaded(format!("{} for {}", kind.label(), describe(document.title()))));
+        }
+        let name = stored_name(&document);
+        *files.slot(kind) = Some(name.clone());
+        let title = match (kind, index) {
+            (FileKind::MatchReport | FileKind::PlayersReport, Some(i)) => self.entries[i].title.clone(),
+            _ => document.title().clone(),
+        };
+        let path = self.file_path(&name);
+        fs::write(&path, bytes)?;
+        let built = self
+            .read_documents(&team, &files)
+            .and_then(|documents| build(&team, &title, &files, &documents))
+            .inspect_err(|_| {
+                if let Err(e) = fs::remove_file(&path) {
+                    eprintln!("could not remove {name}: {e}");
+                }
+            })?;
+        let was_built = index.is_some_and(|i| !matches!(self.entries[i].built, Built::Waiting(_)));
+        let outcome = match &built {
+            Built::Ours(game) if was_built => AddOutcome::GameUpdated(game_label(game)),
+            Built::Ours(game) => AddOutcome::GameAdded(game_label(game)),
+            Built::League(_) if was_built => AddOutcome::LeagueGameUpdated(describe(&title)),
+            Built::League(_) => AddOutcome::LeagueGameAdded(describe(&title)),
+            Built::Waiting(missing) => AddOutcome::Waiting(format!("{}: {missing}", describe(&title))),
+        };
+        self.save_entry(Entry { version: PARSER_VERSION, team, title, files, built }, index)?;
+        Ok(outcome)
+    }
+
+    /// Deletes a game (ours or a league game) and its files.
+    pub fn remove_game(&mut self, id: &GameId) -> Result<bool, Error> {
+        let Some(index) = self.entries.iter().position(|e| e.game_id() == Some(id)) else {
+            return Ok(false);
+        };
+        let entry = self.entries.remove(index);
+        for name in entry.files.names() {
+            let path = self.file_path(name);
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
+        let json = self.library_dir().join(entry.json_name());
         if json.exists() {
             fs::remove_file(json)?;
         }
@@ -424,5 +543,107 @@ pub fn default_dir() -> PathBuf {
         PathBuf::from(data).join("hockey-stats")
     } else {
         home.join(".local").join("share").join("hockey-stats")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEADER: &str = "ID,start,end,duration,pos_x,pos_y,player,team,action,half";
+
+    fn players_csv(teams: [&str; 2]) -> String {
+        let mut lines = vec![HEADER.to_owned()];
+        for (team, names) in teams.iter().zip([["McDavid Connor", "Skinner Stuart"], ["Crosby Sidney", "Jarry Tristan"]]) {
+            for name in names {
+                lines.push(format!("0,0,1200,1200,,,{name},{team},All shifts,1"));
+            }
+        }
+        lines.push(format!("0,594,606,12,,,Jarry Tristan,{},Shots against,1", teams[1]));
+        lines.push(format!("0,594,606,12,,,Skinner Stuart,{},Shots against,1", teams[0]));
+        lines.join("\n")
+    }
+
+    fn team_csv(teams: [&str; 2]) -> String {
+        format!("{HEADER}\n0,10,22,12,,,,{},OZ play,1\n0,10,22,12,,,,{},OZ play,1", teams[0], teams[1])
+    }
+
+    fn library(name: &str) -> (PathBuf, Store) {
+        let dir = std::env::temp_dir().join(format!("hockey-store-{}-{name}", std::process::id()));
+        if dir.exists() {
+            fs::remove_dir_all(&dir).unwrap();
+        }
+        let mut store = Store::open(&dir).unwrap();
+        store.set_team(TeamPrefix::parse("Team One").unwrap()).unwrap();
+        (dir, store)
+    }
+
+    const OURS: [&str; 2] = ["Team One", "Team Two"];
+    const GAME: &str = "Team One 0 _ 0 Team Two 26.09.2026";
+
+    #[test]
+    fn the_team_csv_waits_for_the_players_csv() {
+        let (dir, mut store) = library("waits");
+
+        let first = store.add_file(team_csv(OURS).as_bytes(), &format!("{GAME}-2.csv")).unwrap();
+        let second = store.add_file(players_csv(OURS).as_bytes(), &format!("{GAME}.csv")).unwrap();
+
+        assert!(matches!(first, AddOutcome::Waiting(_)), "{first:?}");
+        assert!(matches!(second, AddOutcome::GameAdded(_)), "{second:?}");
+        assert_eq!(store.games().len(), 1);
+        assert!(store.pending_descriptions().is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_second_copy_of_a_file_is_skipped() {
+        let (dir, mut store) = library("copy");
+        store.add_file(players_csv(OURS).as_bytes(), &format!("{GAME}.csv")).unwrap();
+
+        let again = store.add_file(players_csv(OURS).as_bytes(), &format!("{GAME} (1).csv")).unwrap();
+
+        assert!(matches!(again, AddOutcome::AlreadyLoaded(_)), "{again:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn games_are_rebuilt_from_kept_files_when_the_cache_is_gone() {
+        let (dir, mut store) = library("rebuild");
+        store.add_file(players_csv(OURS).as_bytes(), &format!("{GAME}.csv")).unwrap();
+        store.add_file(team_csv(OURS).as_bytes(), &format!("{GAME}-2.csv")).unwrap();
+        fs::remove_dir_all(dir.join("library")).unwrap();
+
+        let reopened = Store::open(&dir).unwrap();
+
+        assert_eq!(reopened.games().len(), 1);
+        assert!(reopened.problems.is_empty(), "{:?}", reopened.problems);
+        assert!(!reopened.games()[0].warnings.iter().any(|w| w.contains("team file")));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn another_teams_game_goes_to_the_league() {
+        let (dir, mut store) = library("league");
+        let others = ["Team Three", "Team Four"];
+
+        let outcome = store.add_file(players_csv(others).as_bytes(), "Team Three 0 _ 0 Team Four 26.09.2026.csv").unwrap();
+
+        assert!(matches!(outcome, AddOutcome::LeagueGameAdded(_)), "{outcome:?}");
+        assert_eq!((store.games().len(), store.league_games().len()), (0, 1));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn removing_a_game_deletes_its_files() {
+        let (dir, mut store) = library("remove");
+        store.add_file(players_csv(OURS).as_bytes(), &format!("{GAME}.csv")).unwrap();
+        let id = store.games()[0].id.clone();
+
+        let removed = store.remove_game(&id).unwrap();
+
+        assert!(removed);
+        assert_eq!(fs::read_dir(dir.join("exports")).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(dir.join("library")).unwrap().count(), 0);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
