@@ -20,14 +20,17 @@ pub enum EventFileKind {
     Team,
 }
 
-/// A moment in the game video, to the millisecond. The rows describing one action (say
-/// "Shots", "Shots on goal" and "Goals") share it exactly.
+/// A moment in the game video, to the millisecond.
+///
+/// The rows describing one action (say "Shots", "Shots on goal" and "Goals") share it
+/// exactly. It can be negative: the clip around an action in the video's first seconds
+/// starts before the video does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VideoTime(u32);
+pub struct VideoTime(i32);
 
 impl VideoTime {
     pub const START: Self = Self(0);
-    pub const END: Self = Self(u32::MAX);
+    pub const END: Self = Self(i32::MAX);
 
     #[must_use]
     pub fn seconds(self) -> f64 {
@@ -38,17 +41,46 @@ impl VideoTime {
         Self(self.0 + (later.0 - self.0) / 2)
     }
 
-    /// Parses the export's non-negative decimal seconds, e.g. `"125"` or `"125.4"`.
+    fn checked_add(self, other: Self) -> Option<Self> {
+        self.0.checked_add(other.0).map(Self)
+    }
+
+    fn checked_sub(self, other: Self) -> Option<Self> {
+        self.0.checked_sub(other.0).map(Self)
+    }
+
+    /// Parses the export's decimal seconds, e.g. `"125"`, `"125.4"` or `"-3"`.
     pub(crate) fn parse(text: &str, what: &str) -> Result<Self, Error> {
         let bad = || Error::parse(SECTION, format!("{what} \"{text}\" is not a time in seconds"));
         let trimmed = text.trim();
-        let (whole, fraction) = trimmed.split_once('.').unwrap_or((trimmed, ""));
+        let (negative, magnitude) = trimmed.strip_prefix('-').map_or((false, trimmed), |rest| (true, rest));
+        let (whole, fraction) = magnitude.split_once('.').unwrap_or((magnitude, ""));
         if fraction.len() > 3 || !fraction.bytes().all(|b| b.is_ascii_digit()) {
             return Err(bad());
         }
-        let whole: u32 = whole.parse().map_err(|_| bad())?;
-        let millis: u32 = format!("{fraction:0<3}").parse().map_err(|_| bad())?;
-        whole.checked_mul(1000).and_then(|w| w.checked_add(millis)).map(Self).ok_or_else(bad)
+        let whole: i32 = whole.parse().map_err(|_| bad())?;
+        let millis: i32 = format!("{fraction:0<3}").parse().map_err(|_| bad())?;
+        let total = whole.checked_mul(1000).and_then(|w| w.checked_add(millis)).ok_or_else(bad)?;
+        Ok(Self(if negative { -total } else { total }))
+    }
+}
+
+/// A row's start and end. InStat sometimes leaves one of them out (seen on the first shifts
+/// of a game); the duration then gives it.
+fn span_times(start: &str, end: &str, duration: &str) -> Result<(VideoTime, VideoTime), Error> {
+    let missing = |what: &str| Error::parse(SECTION, format!("a row has no {what}, and no duration to work it out from"));
+    let length = || VideoTime::parse(duration, "duration");
+    match (start.trim().is_empty(), end.trim().is_empty()) {
+        (false, false) => Ok((VideoTime::parse(start, "start")?, VideoTime::parse(end, "end")?)),
+        (true, false) => {
+            let end = VideoTime::parse(end, "end")?;
+            Ok((end.checked_sub(length()?).ok_or_else(|| missing("start"))?, end))
+        }
+        (false, true) => {
+            let start = VideoTime::parse(start, "start")?;
+            Ok((start, start.checked_add(length()?).ok_or_else(|| missing("end"))?))
+        }
+        (true, true) => Err(missing("start or end")),
     }
 }
 
@@ -116,7 +148,7 @@ fn number(text: &str, what: &str) -> Result<f64, Error> {
 
 fn row(line: &str) -> Result<Row, Error> {
     let fields: Vec<&str> = line.split(',').collect();
-    let [_, start, end, _, x, y, player, team, name, period] = fields.as_slice() else {
+    let [_, start, end, duration, x, y, player, team, name, period] = fields.as_slice() else {
         return Err(Error::parse(SECTION, format!("expected 10 columns, found {}", fields.len())));
     };
     let position = match (x.trim(), y.trim()) {
@@ -127,7 +159,7 @@ fn row(line: &str) -> Result<Row, Error> {
         .trim()
         .parse()
         .map_err(|_| Error::parse(SECTION, format!("period \"{period}\" is not a number")))?;
-    let (start, end) = (VideoTime::parse(start, "start")?, VideoTime::parse(end, "end")?);
+    let (start, end) = span_times(start, end, duration)?;
     if end < start {
         return Err(Error::parse(SECTION, format!("\"{name}\" ends before it starts")));
     }
@@ -236,8 +268,25 @@ mod tests {
         assert_eq!(VideoTime::parse("125", "start").unwrap(), VideoTime(125_000));
         assert_eq!(VideoTime::parse("125.4", "start").unwrap(), VideoTime(125_400));
         assert_eq!(VideoTime::parse("0.125", "start").unwrap(), VideoTime(125));
-        assert!(VideoTime::parse("-1", "start").is_err());
+        assert_eq!(VideoTime::parse("-3", "start").unwrap(), VideoTime(-3000));
+        assert_eq!(VideoTime::parse("-0.5", "start").unwrap(), VideoTime(-500));
         assert!(VideoTime::parse("1.2345", "start").is_err());
+    }
+
+    #[test]
+    fn a_missing_start_is_worked_out_from_the_duration() {
+        let text = "ID,start,end,duration,pos_x,pos_y,player,team,action,half\n\
+            1,,1,1,30.48,12.96,Smith John,Team One,All shifts,1\n\
+            2,-5,7,12,54.73,12.91,Jones Bob,Team One,Goals,1\n\
+            3,,,,,,Brown Tim,Team Two,All shifts,1\n";
+        let rows: Vec<&str> = text.lines().skip(1).collect();
+
+        let shift = row(rows[0]).unwrap();
+        let goal = row(rows[1]).unwrap();
+
+        assert!(matches!(shift, Row::Span(Span { start: VideoTime(0), end: VideoTime(1000), .. })));
+        assert!(matches!(goal, Row::Action(Action { at: VideoTime(1000), .. })));
+        assert!(row(rows[2]).is_err());
     }
 
     #[test]
