@@ -304,6 +304,7 @@ pub fn analyse(all: &[Game], league: &[LeagueGame], request: &Request) -> Analys
     let (passing_report, pass_totals) = passing::passing(&context);
     let impact_outputs = impact::impact(&context);
     let mut pair_rows = pairs::pairs(&context, &pass_totals, &units_report.priors);
+    let goal_ratings = impact_outputs.goal_ratings;
     let ratings: HashMap<UnitKind, Ratings> = [
         (UnitKind::DefencePair, impact_outputs.defence_ratings),
         (UnitKind::ForwardLine, impact_outputs.forward_ratings),
@@ -313,7 +314,7 @@ pub fn analyse(all: &[Game], league: &[LeagueGame], request: &Request) -> Analys
     .filter_map(|(k, r)| Some((k, r?)))
     .collect();
     fill_pair_expectations(&context, &mut pair_rows, &ratings);
-    let lineup_report = lineup::lineup(&context, &ratings, &units_report);
+    let lineup_report = lineup::lineup(&context, &ratings, goal_ratings.as_ref(), &units_report);
 
     let significance::Significance { mut tests, power } =
         significance::significance(&context, &units_report, &pair_rows, &passing_report, &team_report);

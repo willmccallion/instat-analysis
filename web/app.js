@@ -125,6 +125,7 @@ const state = {
   leaguePlayer: null,
   goalie: null,
   unitTab: "defence_pairs",
+  lineObjective: "goal_differential",
   chemistryMetric: "toi",
   pair: null,
   gameFocus: null,
@@ -2536,66 +2537,154 @@ function formChangesCard(a) {
   ]);
 }
 
-function comboRow(c) {
-  return {
-    ...c,
-    names: c.players.map((p) => p.name).join(" · "),
-    tried: c.minutes_together > 0 ? `${fmt(c.minutes_together, 0)} min together` : "never together",
-  };
+const LINE_OBJECTIVES = {
+  goal_differential: {
+    label: "Goal differential", metric: "Goal diff/60", describe: "even-strength goals for minus goals against per 60 minutes",
+    value: (p) => (p.goals_for_per_60 === null || p.goals_against_per_60 === null ? null : p.goals_for_per_60 - p.goals_against_per_60),
+    format: (v) => signed(v, 2), chart: { reference: 0 },
+  },
+  goals_for: {
+    label: "Most goals for", metric: "Goals for/60", describe: "even-strength goals for per 60 minutes",
+    value: (p) => p.goals_for_per_60, format: (v) => fmt(v, 2), chart: {},
+  },
+  goals_against: {
+    label: "Fewest goals against", metric: "Goals against/60", describe: "even-strength goals against per 60 minutes (lower is better)",
+    value: (p) => p.goals_against_per_60, format: (v) => fmt(v, 2), chart: {},
+  },
+  shot_share: {
+    label: "Shot share", metric: "Predicted CF%", describe: "share of even-strength shot attempts",
+    value: (p) => p.shot_share_pct, format: (v) => pct(v, 1), chart: { min: 0, max: 100, reference: 50 },
+  },
+};
+
+const LINEUP_ROLES = { centre: "Centre", wing: "Wing", forward: "Forward", defence: "Defence" };
+
+function comboNames(c) {
+  return c.slots.map((s) => s.player.name).join(" · ");
 }
 
-function lineGroupCard(title, group, size, note) {
-  if (!group) return chartCard(title, "Needs the individual impact model for this position (it appears once the line tables have data).", (c) => c.replaceChildren(emptyNote("Not enough data yet.")), null);
-  const rows = group.best.map(comboRow);
-  return chartCard(title, `Predicted share of even-strength shot attempts for every possible ${size === 3 ? "line" : "pair"}, best first. Greyed bars have never played together, so their prediction is an extrapolation. ${note}`, (c) => hBarChart(c, rows.map((r) => ({
-    label: r.names, value: r.expected_pct, color: r.minutes_together > 0 ? css("--series-1") : css("--deemphasis"),
-    note: `${r.tried}${r.observed_pct !== null ? ` · actual ${pct(r.observed_pct, 0)}` : ""}`,
-  })), { min: 0, max: 100, reference: 50, valueFormat: (v) => pct(v, 0), labelWidth: 280, valueName: "predicted CF%" }), (c) => dataTable(c, [
-    { key: "names", label: size === 3 ? "Line" : "Pair", left: true, wrap: true },
-    { key: "expected_pct", label: "Predicted CF%", format: (v) => pct(v, 1), tone: "higher" },
-    { key: "minutes_together", label: "Min together", format: (v) => fmt(v, 1) },
-    { key: "observed_pct", label: "Actual CF%", format: (v) => pct(v, 0) },
-  ], rows, { sortKey: "expected_pct" }));
+function comboHistory(c) {
+  return c.observed ? `${fmt(c.observed.minutes, 0)} min together` : "never together";
 }
 
-function lineupCard(title, group, unitName) {
-  const lineup = group?.lineup;
-  if (!lineup) return null;
-  const rows = lineup.units.map((u, i) => ({ ...comboRow(u), slot: `${unitName} ${i + 1}`, share: lineup.minute_shares[i] }));
-  const table = el("div");
-  dataTable(table, [
-    { key: "slot", label: "", left: true },
-    { key: "names", label: "Players", left: true, wrap: true },
-    { key: "expected_pct", label: "Predicted CF%", format: (v) => pct(v, 1) },
-    { key: "share", label: "Ice time", value: (r) => 100 * r.share, format: (v) => pct(v, 0) },
-    { key: "tried", label: "", left: true },
-  ], rows);
-  const gain = lineup.current_pct === null ? null : lineup.expected_pct - lineup.current_pct;
-  return el("div", { class: "card" }, [
-    cardTitle(title),
-    el("p", { class: "desc", text: `The set of ${unitName.toLowerCase()}s with the best predicted shot share when they split the ice time the way the current top ${rows.length} do (best unit plays most)${group.needs_centre ? ", each line with a player who takes faceoffs" : ""}.` }),
-    tiles([
-      { label: "Predicted CF%", value: pct(lineup.expected_pct, 1), note: "this set of units" },
-      { label: "Current units", value: pct(lineup.current_pct, 1), note: "same model, current combinations" },
-      { label: "Difference", value: gain === null ? "—" : signed(gain, 1), note: "percentage points of shot share" },
-    ]),
-    table,
+function lineupSlot(slot) {
+  if (!slot) {
+    return el("div", { class: "lineup-slot open" }, [
+      el("span", { class: "lineup-number", text: "" }),
+      el("div", { class: "lineup-who" }, [el("div", { class: "lineup-name", text: "Open" }), el("div", { class: "lineup-role", text: "\u00a0" })]),
+    ]);
+  }
+  return el("div", { class: "lineup-slot", title: "Open player card", onclick: () => goToPlayer(slot.player.id) }, [
+    el("span", { class: "lineup-number", text: slot.player.jersey ?? "–" }),
+    el("div", { class: "lineup-who" }, [el("div", { class: "lineup-name", text: slot.player.name }), el("div", { class: "lineup-role", text: LINEUP_ROLES[slot.role] })]),
   ]);
+}
+
+function lineupRow(label, slots, size, stats) {
+  const filled = [...slots, ...Array(Math.max(0, size - slots.length)).fill(null)];
+  return el("div", { class: "lineup-row" }, [
+    el("div", { class: "lineup-label", text: label }),
+    el("div", { class: `lineup-slots size-${size}` }, filled.map(lineupSlot)),
+    el("div", { class: "lineup-stats" }, stats),
+  ]);
+}
+
+/** One section of the lineup card; short-handed groups show the leftovers on a partial unit. */
+function lineupSection(title, group, size, unitName, playersName, objective) {
+  if (!group) return el("div", { class: "lineup-section" }, [el("h4", { text: title }), emptyNote(`Needs the impact ratings for ${playersName} (they appear once there are shifts to learn from).`)]);
+  const lineup = group.lineup;
+  const units = lineup ? lineup.units : [];
+  const extras = lineup ? lineup.extras : [];
+  const rows = units.map((u, i) => lineupRow(`${unitName} ${i + 1}`, u.slots, size, [
+    el("div", { class: "lineup-metric", text: objective.format(objective.value(u.predicted)) }),
+    el("div", { class: "small muted", text: `${pct(100 * lineup.minute_shares[i], 0)} of ice time · ${comboHistory(u)}` }),
+  ]));
+  const short = units.length < group.full_units;
+  for (let i = units.length; i < group.full_units; i++) {
+    const leftovers = i === units.length ? extras.map((p) => ({ player: p, role: size === 3 ? "forward" : "defence" })) : [];
+    rows.push(lineupRow(`${unitName} ${i + 1}`, leftovers, size, [el("div", { class: "small muted", text: `Not enough rated ${playersName}` })]));
+  }
+  if (!short && extras.length) {
+    rows.push(el("div", { class: "lineup-extras" }, [el("span", { class: "lineup-label", text: "Extras" }), el("span", { text: extras.map((p) => `${p.jersey ?? ""} ${p.name}`.trim()).join(" · ") })]));
+  }
+  const rated = units.length * size + extras.length;
+  const note = short ? `${rated} rated ${playersName}, so ${units.length} full ${unitName.toLowerCase()}${units.length === 1 ? "" : "s"}${extras.length ? ` and the rest on a partial one (no prediction for it)` : ""}.` : null;
+  return el("div", { class: "lineup-section" }, [el("h4", { text: title }), note ? el("p", { class: "small muted", text: note }) : null, ...rows]);
+}
+
+function lineupTotals(group, label, objective) {
+  const lineup = group?.lineup;
+  if (!lineup) return { label, value: "—", note: "no full unit yet" };
+  const predicted = objective.value(lineup.predicted);
+  const current = lineup.current ? objective.value(lineup.current) : null;
+  return { label, value: objective.format(predicted), note: current === null ? "current units unknown" : `current units ${objective.format(current)}` };
+}
+
+function lineupCard(choice, objective) {
+  const centreNote = choice.forwards?.needs_centre ? " Every line has a player who takes faceoffs at centre." : "";
+  return el("div", { class: "card lineup-card" }, [
+    cardTitle("Lineup card"),
+    el("p", { class: "desc", text: `The lineup with the best predicted ${objective.describe}, each player used once, when the units split the ice time the way the current top units do (best unit plays most).${centreNote}` }),
+    tiles([
+      lineupTotals(choice.forwards, `Forwards · ${objective.metric}`, objective),
+      lineupTotals(choice.defence, `Defence · ${objective.metric}`, objective),
+    ]),
+    lineupSection("Forwards", choice.forwards, 3, "Line", "forwards", objective),
+    lineupSection("Defence", choice.defence, 2, "Pair", "defencemen", objective),
+  ]);
+}
+
+function lineGroupCard(title, group, size, objective) {
+  const unit = size === 3 ? "line" : "pair";
+  if (!group) return chartCard(title, "Needs the individual impact model for this position (it appears once the line tables have data).", (c) => c.replaceChildren(emptyNote("Not enough data yet.")), null);
+  const rows = group.best.map((c) => ({
+    ...c,
+    names: comboNames(c),
+    value: objective.value(c.predicted),
+    goals_for: c.predicted.goals_for_per_60,
+    goals_against: c.predicted.goals_against_per_60,
+    shot_share: c.predicted.shot_share_pct,
+    minutes: c.observed ? c.observed.minutes : 0,
+    actual_shot_share: c.observed ? c.observed.shot_share_pct : null,
+    actual_goals: c.observed ? `${c.observed.goals_for}–${c.observed.goals_against}` : "",
+  }));
+  return chartCard(title, `Predicted ${objective.describe} for every possible ${unit}, best first. Greyed bars have never played together, so their prediction is an extrapolation.`, (c) => hBarChart(c, rows.map((r) => ({
+    label: r.names, value: r.value, color: r.observed ? css("--series-1") : css("--deemphasis"),
+    note: `${comboHistory(r)}${r.observed ? ` · actual goals ${r.actual_goals}` : ""}`,
+  })), { ...objective.chart, valueFormat: objective.format, labelWidth: 280, valueName: objective.metric.toLowerCase() }), (c) => dataTable(c, [
+    { key: "names", label: size === 3 ? "Line" : "Pair", left: true, wrap: true },
+    { key: "goals_for", label: "Goals for/60", format: (v) => fmt(v, 2), tone: "higher" },
+    { key: "goals_against", label: "Goals against/60", format: (v) => fmt(v, 2), tone: "lower" },
+    { key: "shot_share", label: "Predicted CF%", format: (v) => pct(v, 1), tone: "higher" },
+    { key: "minutes", label: "Min together", format: (v) => fmt(v, 1) },
+    { key: "actual_goals", label: "Actual goals", left: true },
+    { key: "actual_shot_share", label: "Actual CF%", format: (v) => pct(v, 0) },
+  ], rows));
 }
 
 function viewLineBuilder() {
   const a = state.analysis;
   const L = a.lineup;
-  const model = a.impact.corsi_forwards;
-  const early = !model || !model.lambda_from_cv;
-  const warning = early ? el("div", { class: "warning-box", text: `Early days: with ${L.games} game${L.games === 1 ? "" : "s"} the individual ratings behind these predictions aren't cross-validated yet (that starts at 3 games), so treat this as a sketch. Predictions add up each player's own effect; they can't see chemistry, and lines that never played together are extrapolations.` }) : el("p", { class: "small muted", text: "Predictions add up each player's own effect from the individual impact model; they can't see chemistry, and lines that never played together are extrapolations. Pair chemistry shows where combinations beat or miss their prediction." });
-  const defenceNote = L.defence && !L.defence.lineup ? " A full set of 3 pairs needs 6 defencemen with ratings." : "";
-  return page("Line builder", "Every possible forward line and defence pair ranked by the shot share the individual impact ratings predict, and the best full set of lines.",
+  const choice = L.choices.find((c) => c.objective === state.lineObjective) || L.choices[0];
+  const objective = LINE_OBJECTIVES[choice.objective];
+  const usesGoals = choice.objective !== "shot_share";
+  const model = usesGoals ? a.impact.goals : a.impact.corsi_forwards;
+  const caveat = usesGoals
+    ? "Goal predictions rest on few goals, so the ratings behind them are pulled hard toward average and move as games are added; shot share is steadier."
+    : "Predictions add up each player's own effect from the individual impact model.";
+  const warning = !model || !model.lambda_from_cv
+    ? el("div", { class: "warning-box", text: `Early days: with ${L.games} game${L.games === 1 ? "" : "s"} the individual ratings behind these predictions aren't cross-validated yet (that starts at 3 games), so treat this as a sketch. ${caveat} They can't see chemistry, and units that never played together are extrapolations.` })
+    : el("p", { class: "small muted", text: `${caveat} They can't see chemistry, and units that never played together are extrapolations. Pair chemistry shows where combinations beat or miss their prediction.` });
+  const picker = el("div", { class: "segmented", style: "flex-wrap:wrap" }, L.choices.map((c) => el("button", {
+    class: c === choice ? "on" : "", text: LINE_OBJECTIVES[c.objective].label, onclick: () => { state.lineObjective = c.objective; render(); },
+  })));
+  return page("Line builder", "The best full lineup from the players we've logged, each player used once, and every possible line and pair ranked.",
+    el("div", { class: "lineup-picker" }, [el("span", { class: "small muted", text: "Pick lines for" }), picker]),
     warning,
-    el("div", { class: "grid two" }, [lineupCard("Best forward lines", L.forwards, "Line"), lineupCard("Best defence pairs", L.defence, "Pair")].filter(Boolean)),
+    lineupCard(choice, objective),
     el("div", { class: "grid two", style: "margin-top:16px" }, [
-      lineGroupCard("Forward lines", L.forwards, 3, ""),
-      lineGroupCard("Defence pairs", L.defence, 2, defenceNote),
+      lineGroupCard("Forward lines", choice.forwards, 3, objective),
+      lineGroupCard("Defence pairs", choice.defence, 2, objective),
     ]));
 }
 
@@ -2958,7 +3047,7 @@ function viewHelp() {
     ["League", "Optional CSV exports of games between two other teams and our opponents' side of our own games make up the league average; our team never counts toward it. Us vs the league compares our per-game numbers with the league or any one team, with a rank among all teams. Our games vs the league shows each game against a typical league team-game. Players vs the league gives every stat as a percentile among league skaters at the same position (xG and passes are compared among our players only, so they're left out), and each game graded against league player-games. Duplicate uploads of the same game are skipped automatically."],
     ["Passing network layouts", "Pull together (the default) is a force-directed layout like Obsidian's graph view: every player pushes the others away and each passing link pulls its two players together, harder the more passes they share, so players who pass to each other a lot end up close and passing groups form clusters. Drag a player to move them; double-click to let them go. Circle puts every player around a ring, ordered by passing group."],
     ["Passing network measures", "PageRank: where the puck ends up flowing, counting passes from busy passers more (the scores add to 100%). Connector score (betweenness): the share of the quickest passing routes between two teammates that run through a player, where a link with more passes is quicker. Passing groups come from Louvain community detection: groups who pass among themselves more than their volume predicts; modularity above about 0.3 means clear cliques."],
-    ["Line builder", "Uses the individual impact ratings (ridge Poisson models of shot attempts for and against) to predict every possible line and pair's shot share, then searches every way of splitting the roster into lines for the best set, with the current ice-time split and a faceoff taker on each line when there are enough. Predictions can't see chemistry, and combinations that never played together are extrapolations."],
+    ["Line builder", "Uses the individual impact ratings (ridge Poisson models of even-strength goals and of shot attempts, for and against) to predict every possible line and pair with average teammates around it. Then it finds the lineup, each player used at most once, with the best ice-time-weighted total for the chosen goal: goal differential (the default), most goals for, fewest goals against or shot share. The search is exact: it takes units best first and drops any partial lineup that can no longer beat the best one found. Ice time follows the current top units' split, the best unit plays most, and each line gets a faceoff taker when there are enough. With fewer than 12 forwards or 6 defencemen logged it builds as many full units as it can. Predictions can't see chemistry, and combinations that never played together are extrapolations."],
     ["What InStat rewards", "A ridge regression of each player-game's InStat Index on that game's numbers (goals, assists, shots, +/-, ice time, shot attempts on ice, battles, recoveries, losses, entries, faceoffs, hits, blocks, penalties, position) over every skater in the games, both teams, with the penalty chosen by 5-fold cross-validation. Gaps compare each of our players' Index with what their own numbers predict."],
     ["Real changes in level", "For each player's InStat Index history (loaded games plus InStat's recent-games table), the single split into before and after that separates the levels most, and a permutation test: shuffle the games 999 times and see how often a split that clear appears by chance."],
     ["Unusual games", "Once there are 5 games, each game's team stats (shot, xG and scoring-chance shares, faceoffs, battles, possession, hits, power plays) become standard scores against the games in scope. Unusualness is their average square (about 1 is typical); look-alikes are the earlier games with the closest profile."],
