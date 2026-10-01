@@ -383,6 +383,7 @@ mod tests {
             charted_shots: Vec::new(),
             charted_shots_against: Vec::new(),
             faceoff_spots: Vec::new(),
+            goal_plays: Vec::new(),
             opponent_skaters: Vec::new(),
             length: Seconds(3600.0),
             warnings: Vec::new(),

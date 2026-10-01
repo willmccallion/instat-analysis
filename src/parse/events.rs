@@ -26,6 +26,7 @@ pub enum EventFileKind {
 pub struct VideoTime(u32);
 
 impl VideoTime {
+    pub const START: Self = Self(0);
     pub const END: Self = Self(u32::MAX);
 
     #[must_use]

@@ -2,6 +2,7 @@
 
 pub mod changes;
 pub mod common;
+pub mod goal_plays;
 pub mod goalies;
 pub mod impact;
 pub mod instat;
@@ -32,7 +33,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Date, Game, GameId, LeagueGame, PlayerId, Seconds, Strength, Team, TeamStatRow, UnitKind, UnitStats};
+use crate::model::{Date, Game, GameId, GoalPlay, LeagueGame, PlayerId, Seconds, Strength, Team, TeamStatRow, UnitKind, UnitStats};
 use common::{PlayerRef, TestRow, adjust_families};
 use impact::Ratings;
 use pairs::PairRow;
@@ -135,6 +136,7 @@ pub struct GameTimeline {
     pub matchups: matchups::GameMatchups,
     pub shots: Vec<shots::ShotDot>,
     pub shots_against: Vec<shots::ShotAgainstDot>,
+    pub goal_plays: Vec<GoalPlay>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -154,6 +156,7 @@ pub struct Analysis {
     pub league: league::LeagueReport,
     pub similarity: similarity::SimilarityReport,
     pub style: style::StyleReport,
+    pub goal_plays: goal_plays::GoalPlaysReport,
     pub players: Vec<players::PlayerSeason>,
     pub rankings: rankings::RankingsReport,
     pub goalies: Vec<goalies::GoalieSeason>,
@@ -210,6 +213,7 @@ fn timeline(context: &Context<'_>, game: &Game) -> GameTimeline {
         matchups: matchups::game_matchups(game, roster),
         shots: shots::shot_dots(context, &[game], |_| true),
         shots_against: shots::shots_against(context, &[game]),
+        goal_plays: game.goal_plays.clone(),
     }
 }
 
@@ -334,6 +338,7 @@ pub fn analyse(all: &[Game], league: &[LeagueGame], request: &Request) -> Analys
         focus: focus_id,
         request: request.clone(),
         style: style::style(&context, &team_report),
+        goal_plays: goal_plays::goal_plays(&context),
         luck: luck::luck(&context),
         timing: timing_report,
         usage: usage_report,

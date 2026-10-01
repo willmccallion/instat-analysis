@@ -1,6 +1,6 @@
 "use strict";
 
-const { el, css, fmt, pct, signed, clock, minutes, SERIES, Tooltip, term, hBarChart, contributionChart, beeswarmChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, forceNetworkChart, scatterChart, percentileBars, zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, inkOn } = window.Charts;
+const { el, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, term, hBarChart, contributionChart, beeswarmChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, forceNetworkChart, scatterChart, percentileBars, zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, playPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, inkOn } = window.Charts;
 
 // Plain-English definitions; any label matching a key explains itself on hover or tap.
 const PER_60 = "per 60 minutes of ice time, so players with different ice time compare fairly";
@@ -1030,7 +1030,7 @@ function viewRankings() {
 
 // ---------- Single game ----------
 
-const GAME_TABS = [["overview", "Overview"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
+const GAME_TABS = [["overview", "Overview"], ["plays", "Goal plays"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
 
 function viewGame() {
   const a = state.analysis;
@@ -1044,7 +1044,7 @@ function viewGame() {
     queueMicrotask(refresh);
   }
   const [tabs, current] = pageTabs("gameTab", GAME_TABS);
-  const body = { overview: gameOverview, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
+  const body = { overview: gameOverview, plays: gamePlays, shots: gameShots, matchups: gameMatchups, stats: gameTeamStats }[current](a, timeline);
   return page("Single game", "Pick a game to see its shifts, goals and how each player compared with their usual.",
     el("div", { style: "margin-bottom:14px" }, [select]), tabs, ...[].concat(body));
 }
@@ -1082,6 +1082,85 @@ function gameOverview(a, timeline) {
   const luck = a.luck.games.find((g) => g.game === timeline.game);
   const why = luck ? chartCard(`Why it ended ${signed(luck.goals_for - luck.goals_against, 0)}`, "The goal differential built up from shot volume, chance quality, our finishing and our goaltending, biggest first.", (c) => splitChart(c, luck.split), null) : null;
   return [luck ? el("div", { class: "grid two", style: "margin-bottom:16px" }, [deservedCard(luck), why]) : null, compareCard, el("div", { style: "margin-top:16px" }, [shiftCard]), badges];
+}
+
+const GOAL_ORIGINS = {
+  Faceoff: ["Off a faceoff", "Scored within 10 seconds of the faceoff."],
+  Turnover: ["Off a turnover", "Scored within 10 seconds of winning the puck back in the attacking zone."],
+  Rush: ["Off the rush", "Scored within 10 seconds of entering the zone."],
+  Sustained: ["Sustained pressure", "Scored after more than 10 seconds in the zone."],
+};
+
+/** One goal's place in the game: period, clock and who scored. */
+function goalLabel(play, timeline) {
+  const goal = timeline.goals.find((g) => Math.abs(g.time - play.time) < 0.5);
+  const score = goal ? ` · ${goal.score[0]}–${goal.score[1]}` : "";
+  return `${play.scored_by === "Us" ? "Our goal" : "Their goal"} ${gameClock(play.time)}${score}`;
+}
+
+function gamePlays(a, timeline) {
+  const plays = timeline.goal_plays;
+  if (!plays.length) return emptyNote("No goals in this game.");
+  const index = Math.min(state.playGoal ?? 0, plays.length - 1);
+  const play = plays[index];
+  const lastMinute = state.playWindow === "minute";
+  const events = play.events.filter((e) => !lastMinute || play.time - e.time <= 60);
+  let step = events.length;
+  let timer = null;
+  const picker = el("div", { class: "pill-row", style: "margin-bottom:12px" }, plays.map((p, i) => el("button", {
+    class: `small ${i === index ? "primary" : ""}`,
+    text: `${goalLabel(p, timeline)} · ${GOAL_ORIGINS[p.origin][0].toLowerCase()}`,
+    onclick: () => { state.playGoal = i; render(); },
+  })));
+  const scorerPasses = play.events.filter((e) => e.team === play.scored_by && e.kind === "Pass" && play.time - e.time <= 20).length;
+  const facts = [
+    GOAL_ORIGINS[play.origin][1],
+    play.rebound ? "A rebound: the scoring team had a shot on goal in the 3 seconds before." : null,
+    `${fmt(play.time - play.start, 0)} seconds from the ${play.events[0]?.kind === "Faceoff" ? "faceoff" : "start of the period"} to the goal; ${scorerPasses} completed pass${scorerPasses === 1 ? "" : "es"} by the scoring team in the last 20 seconds.`,
+  ].filter(Boolean);
+  const rink = el("div");
+  const position = el("span", { class: "small muted" });
+  const list = el("div");
+  const draw = () => {
+    playPlot(rink, events, { upto: step, goalTime: play.time, onPick: (i) => { stop(); step = i + 1; draw(); } });
+    position.textContent = step === events.length ? `all ${events.length} actions` : `action ${step} of ${events.length}`;
+    dataTable(list, [
+      { key: "n", label: "#", value: (e) => events.indexOf(e) + 1 },
+      { key: "before", label: "Before goal", value: (e) => play.time - e.time, format: (v) => (v < 0.5 ? "goal" : `${fmt(v, 0)} s`) },
+      { key: "team", label: "", left: true, value: (e) => (e.team === "Us" ? "Us" : "Them") },
+      { key: "name", label: "Player", left: true, value: (e) => e.name || "" },
+      { key: "detail", label: "What happened", left: true },
+    ], events.slice(0, step), { sortKey: "n", descending: false, onRow: (e) => { stop(); step = events.indexOf(e) + 1; draw(); } });
+  };
+  const stop = () => { if (timer) clearInterval(timer); timer = null; };
+  const play_ = () => {
+    stop();
+    step = 1;
+    draw();
+    timer = setInterval(() => {
+      if (step >= events.length || !document.body.contains(rink)) { stop(); return; }
+      step += 1;
+      draw();
+    }, 900);
+  };
+  const controls = el("div", { class: "pill-row", style: "align-items:center;margin-bottom:8px" }, [
+    el("button", { class: "small", text: "▶ Play", onclick: play_ }),
+    el("button", { class: "small", text: "◀", "aria-label": "previous action", onclick: () => { stop(); step = Math.max(1, step - 1); draw(); } }),
+    el("button", { class: "small", text: "▶", "aria-label": "next action", onclick: () => { stop(); step = Math.min(events.length, step + 1); draw(); } }),
+    el("button", { class: "small", text: "Show all", onclick: () => { stop(); step = events.length; draw(); } }),
+    el("button", { class: `small ${lastMinute ? "" : "primary"}`, text: "From the faceoff", onclick: () => { state.playWindow = "faceoff"; render(); } }),
+    el("button", { class: `small ${lastMinute ? "primary" : ""}`, text: "Last minute", onclick: () => { state.playWindow = "minute"; render(); } }),
+    position,
+  ]);
+  const card = el("div", { class: "card" }, [
+    cardTitle(goalLabel(play, timeline)),
+    el("ul", { class: "small notes" }, facts.map((f) => el("li", { text: f }))),
+    controls, rink,
+    el("p", { class: "small muted", text: "Every action InStat logged for both teams, in order. A faceoff or puck battle is shown once, from the winner's side. Click a dot or a row to stop there." }),
+    list,
+  ]);
+  requestAnimationFrame(draw);
+  return [picker, card];
 }
 
 function periodName(period) {
@@ -2214,6 +2293,7 @@ function viewPlay() {
   const games = Math.max(1, a.games.filter((g) => g.in_scope).length);
   const events = a.players.flatMap((p) => p.totals.rink_events);
   return page("Possession & shots", "How we attack, enter the zone and manage the puck, compared with our opponents.",
+    goalOriginsCard(a.goal_plays),
     el("div", { class: "grid two" }, [
       t.charted_shots.length ? chartCard("Every shot attempt we took", "Where the event export places each attempt (on net, missed or blocked), over the games in scope. Hover a dot for the shooter; goals are marked.", (c) => shotPlot(c, t.charted_shots, { sizeByXg: true, tip: (x) => shotTip(x, { game: a.games.filter((g) => g.in_scope).length > 1 }) }), (c) => shootersTable(c, t.charted_shots)) : null,
       t.charted_shots_against.length ? shotsAgainstCard("Every shot attempt against us", "Where opponents shot on our net, over the games in scope; our net at the top. Goals against are red. The table splits attempts by distance.", t.charted_shots_against, a.games.filter((g) => g.in_scope).length > 1) : null,
@@ -2231,6 +2311,28 @@ function viewPlay() {
     entriesByPlayer(a),
     el("div", { class: "grid two", style: "margin-top:16px" }, a.style.groups.filter((g) => g.items.length).map(comparisonCard)),
     note);
+}
+
+/** How goals for and against came about over the games in scope; null without goals. */
+function goalOriginsCard(g) {
+  if (!g.goals.ours && !g.goals.theirs) return null;
+  const series = [{ name: "Us", color: css("--series-1") }, { name: "Them", color: css("--series-2") }];
+  const groups = g.origins.map((o) => ({ label: GOAL_ORIGINS[o.origin][0], values: [o.goals.ours, o.goals.theirs] }));
+  const both = (pair, format) => `us ${pair[0] === null ? "—" : format(pair[0])}, them ${pair[1] === null ? "—" : format(pair[1])}`;
+  const notes = [
+    `Rebounds: us ${g.rebounds.ours}, them ${g.rebounds.theirs}. Power-play goals: us ${g.power_play.ours}, them ${g.power_play.theirs}.`,
+    `Seconds from the faceoff to the goal, on average: ${both(g.build_up, (v) => fmt(v, 0))}.`,
+    `Completed passes by the scorers in the last 20 seconds, on average: ${both(g.passes, (v) => fmt(v, 1))}.`,
+    "Open a game's Goal plays tab to step through each one.",
+  ];
+  return el("div", { style: "margin-bottom:16px" }, [chartCard("How the goals came about", "Every goal for and against, by what happened in the 10 seconds before it: right off a faceoff, after winning the puck back in the zone, off a zone entry, or after longer pressure.", (c) => {
+    groupedColumns(c, groups, series);
+    c.append(el("ul", { class: "small muted notes" }, notes.map((n) => el("li", { text: n }))));
+  }, (c) => dataTable(c, [
+    { key: "label", label: "", left: true },
+    { key: "ours", label: "Us", value: (r) => r.values[0] },
+    { key: "theirs", label: "Them", value: (r) => r.values[1] },
+  ], groups))]);
 }
 
 const FOCUS_TEXT = { WorkOn: ["bad", "▼", "Work on"], Watch: ["info", "●", "Keep an eye on"], Strength: ["good", "▲", "Strengths"] };
@@ -2869,6 +2971,7 @@ function viewHelp() {
     ["Puck battles by area", "InStat splits every one-on-one puck battle by where it happened: in front of each net, behind each net, the corners, along each blue line, and the neutral zone. The map shows the share we won in each area; corners are one area drawn top and bottom."],
     ["Faceoffs at every dot", "From the faceoff rink on InStat's team stats page: our wins and losses at each of the nine dots (two in each end, four in the neutral zone, centre ice). The app checks the dots against the zone totals in InStat's faceoff table and leaves them out, with a warning, if they don't match."],
     ["Player ratings", "Each stat is compared with every skater at the same position in the games in scope, ours and the opponents' (in standard deviations, after pulling low-ice-time players toward the average). 50 is the average skater in those games, so the team's own average shows how it stacks up. xG (from the optional Player report) and passes are compared among our players only. Stats are grouped into Offence, Defence and Puck play; within each part a stat counts by its weight, and the parts are combined by their weights. The Recommended weights favour stats most tied to goals for and against; coaches can pick a preset or set any weight from 0 (left out) to 3 under Rankings → Customise the ranking, and reset to the recommended weights at any time."],
+    ["Goal plays", "For every goal, each action InStat logged for both teams from the last faceoff (or the start of the period) to the goal: passes, entries, battles, shots, recoveries and turnovers, with where each happened. A faceoff or puck battle is shown once, from the winner's side. Each goal is sorted by what happened in the 10 seconds before it: right off a faceoff, after winning the puck back in the attacking zone (a turnover), off a zone entry (the rush), or after longer pressure; a rebound is a goal within 3 seconds of a shot on goal by the same team."],
     ["Matchups", "Every one-on-one puck battle between one of our skaters and one of theirs, paired by the moment InStat logged it for both. Opponents are shown by name; bars show battles won minus lost, so one battle never looks like a 100% record."],
     ["Goalie breakdowns", "From the goalie's Player-report page: save % by distance, zone, shot type, screened or clear view, where on the net the shot was headed (seen from the shooter), and where the puck met the goalie (the goalie's own left and right). Colours compare each part with the goalie's overall save %. Rebound control splits every save by what happened to the puck next."],
     ["Possession & shots", "InStat's team counts (attacks, zone entries, puck losses, takeaways, icings, offsides) shown as our share of the total against the opponent. Positional attacks are set up in their zone; counter-attacks come off a quick transition."],

@@ -5,6 +5,8 @@
 //! shifts (players are on the ice only while it runs). Positions are converted to the app's
 //! rink feet in the acting team's frame.
 
+mod plays;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::error::Error;
@@ -995,6 +997,7 @@ pub fn build_game(game: &EventGame<'_>, team: &TeamPrefix) -> Result<Game, Error
             .collect(),
         charted_shots_against: opponent_shots(&them),
         faceoff_spots: faceoff_spots(&us),
+        goal_plays: plays::goal_plays(game, our_name, &clock, &ids),
         opponent_skaters: listed_skaters(&them),
         summary,
         opponent_summary,
@@ -1026,6 +1029,7 @@ pub fn build_league_game(game: &EventGame<'_>) -> Result<LeagueGame, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{GoalOrigin, PlayKind};
     use crate::parse::events::parse;
 
     const OURS: [&str; 6] = ["McDavid Connor", "Draisaitl Leon", "Hyman Zach", "Bouchard Evan", "Ekholm Mattias", "Skinner Stuart"];
@@ -1129,6 +1133,50 @@ mod tests {
         ]);
 
         assert_eq!(game.faceoff_spots, vec![SpotFaceoffs { spot: FaceoffSpot::TheirZoneRight, won: 0, lost: 1 }]);
+    }
+
+    #[test]
+    fn a_goal_soon_after_a_faceoff_comes_off_the_draw() {
+        let at = Some((51.51, 6.25));
+        let mut rows = vec![
+            action(194, at, OURS[0], "Team One", "Faceoffs"),
+            action(194, at, OURS[0], "Team One", "Faceoffs won"),
+            action(194, at, THEIRS[0], "Team Two", "Faceoffs"),
+            action(194, at, THEIRS[0], "Team Two", "Faceoffs lost"),
+        ];
+        rows.extend(goal_and_attempts());
+
+        let play = &game(&rows).goal_plays[0];
+
+        assert_eq!((play.scored_by, play.origin, play.start), (Team::Us, GoalOrigin::Faceoff, Seconds(194.0)));
+        let faceoffs: Vec<&str> = play.events.iter().filter(|e| e.kind == PlayKind::Faceoff).map(|e| e.detail.as_str()).collect();
+        assert_eq!(faceoffs, ["Faceoff won against Sidney Crosby"]);
+    }
+
+    #[test]
+    fn a_goal_soon_after_entering_the_zone_comes_off_the_rush() {
+        let mut rows = vec![action(193, Some((38.0, 12.0)), OURS[1], "Team One", "Entries"), action(193, Some((38.0, 12.0)), OURS[1], "Team One", "Entries via stickhandling")];
+        rows.extend(goal_and_attempts());
+
+        let play = &game(&rows).goal_plays[0];
+
+        assert_eq!(play.origin, GoalOrigin::Rush);
+        assert!(play.events.iter().any(|e| e.detail == "Carried in" && e.name.as_deref() == Some("Leon Draisaitl")));
+    }
+
+    #[test]
+    fn their_actions_are_placed_from_our_end() {
+        let rows = vec![
+            action(150, Some((54.56, 12.96)), THEIRS[0], "Team Two", "Shots"),
+            action(150, Some((54.56, 12.96)), THEIRS[0], "Team Two", "Shots on goal"),
+            action(150, Some((54.56, 12.96)), THEIRS[0], "Team Two", "Goals"),
+        ];
+
+        let play = &game(&rows).goal_plays[0];
+
+        assert_eq!(play.scored_by, Team::Them);
+        let at = play.events[0].at.unwrap();
+        assert!((at.along.0 + 79.0).abs() < 0.5, "{at:?}");
     }
 
     #[test]

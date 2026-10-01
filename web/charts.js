@@ -1525,6 +1525,49 @@ function rinkPlot(container, events, styles, options = {}) {
   ]));
 }
 
+/**
+ * A goal's build-up on a full rink (our net on the left): every placed action numbered in
+ * order and joined by a faint line, ours and theirs in the two team colours, the goal ringed.
+ * events: [{at, team, kind, detail, name, time}]; options.upto shows the first n only,
+ * options.goalTime times each action against the goal, options.onPick(index) on click.
+ */
+function playPlot(container, events, options = {}) {
+  const { root } = fullRink(container, options);
+  const shown = events.slice(0, options.upto ?? events.length);
+  const placed = shown.map((event, index) => ({ event, index })).filter(({ event }) => event.at);
+  const color = (team) => css(team === "Us" ? "--series-1" : "--series-2");
+  if (placed.length > 1) {
+    root.append(svg("polyline", {
+      points: placed.map(({ event }) => `${event.at.along},${event.at.across}`).join(" "),
+      fill: "none", stroke: css("--text-muted"), "stroke-width": 0.45, "stroke-dasharray": "1.4 1.1", "pointer-events": "none",
+    }));
+  }
+  placed.forEach(({ event, index }, order) => {
+    const [x, y] = [event.at.along, event.at.across];
+    const current = order === placed.length - 1;
+    const fill = color(event.team);
+    const r = event.kind === "Goal" ? 3.1 : 2.5;
+    const mark = svg("g", { class: "mark", style: options.onPick ? "cursor:pointer" : "" }, [
+      current ? svg("circle", { cx: x, cy: y, r: r + 1.6, fill: "none", stroke: fill, "stroke-width": 0.6 }) : null,
+      svg("circle", { cx: x, cy: y, r, fill, stroke: event.kind === "Goal" ? css("--text-primary") : css("--surface-1"), "stroke-width": event.kind === "Goal" ? 0.8 : 0.4, opacity: current ? 1 : 0.85 }),
+      svg("text", { x, y: y + 0.95, "text-anchor": "middle", style: `font-size:2.7px;font-weight:700;fill:${inkOn(fill)}`, "pointer-events": "none", text: String(index + 1) }),
+    ]);
+    const before = options.goalTime === undefined ? null : options.goalTime - event.time;
+    attachTooltip(mark, `${index + 1}. ${event.detail}`, () => [
+      { value: event.name || (event.team === "Us" ? "Us" : "Them"), name: event.team === "Us" ? "us" : "them" },
+      before === null ? null : { value: before < 0.5 ? "the goal" : `${fmt(before, 0)} s before the goal`, name: "" },
+    ].filter(Boolean));
+    if (options.onPick) mark.addEventListener("click", () => options.onPick(index));
+    root.append(mark);
+  });
+  container.replaceChildren(root);
+  container.append(el("div", { class: "legend" }, [
+    el("span", {}, [el("span", { class: "key", style: `background:${color("Us")};border-radius:50%` }), "Us"]),
+    el("span", {}, [el("span", { class: "key", style: `background:${color("Them")};border-radius:50%` }), "Them"]),
+    el("span", { class: "muted", text: "numbers are the order of play · our net on the left" }),
+  ]));
+}
+
 // Full rink in a 300×130 box, our net on the left; corners are one area drawn top and bottom.
 const BATTLE_AREA_SHAPES = {
   BehindOwnGoal: [[[0, 0], [22, 0], [22, 130], [0, 130]]],
@@ -1723,6 +1766,6 @@ function chartCard(title, description, drawChart, drawTable, options = {}) {
 window.Charts = {
   el, svg, css, fmt, pct, signed, clock, minutes, gameClock, SERIES, Tooltip, attachTooltip, setGlossary, definition, term, explain,
   hBarChart, contributionChart, beeswarmChart, lineChart, groupedColumns, heatmap, shiftChart, networkChart, forceNetworkChart, scatterChart, percentileBars,
-  zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
+  zoneMap, shotMap, shotZoneName, shotPlot, shotDistance, densityMap, rinkPlot, playPlot, faceoffMap, faceoffSpotName, netMap, netAreaName, battleMap, battleAreaName, dataTable, chartCard, sequentialColor, divergingColor, inkOn,
 };
 })();

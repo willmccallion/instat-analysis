@@ -259,6 +259,69 @@ pub struct Goal {
     pub on_ice: Vec<PlayerId>,
 }
 
+/// What a player did at one moment of a goal's build-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PlayKind {
+    Faceoff,
+    Pass,
+    PassMissed,
+    Entry,
+    Breakout,
+    DumpIn,
+    DumpOut,
+    Recovery,
+    Loss,
+    Battle,
+    Hit,
+    Block,
+    Shot,
+    Goal,
+    Penalty,
+}
+
+/// One action in the build-up to a goal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlayEvent {
+    pub time: Seconds,
+    pub team: Team,
+    /// Set when the player is one of ours.
+    pub player: Option<PlayerId>,
+    /// The player's name as shown, for either team.
+    pub name: Option<String>,
+    pub kind: PlayKind,
+    /// What happened in words, e.g. "Faceoff won" or "Pass into the slot".
+    pub detail: String,
+    /// Where it happened, seen from our end (our net at −89 ft, across toward our right).
+    pub at: Option<RinkPoint>,
+}
+
+/// How a goal came about, from the scoring team's side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GoalOrigin {
+    /// Scored soon after a faceoff.
+    Faceoff,
+    /// Soon after winning the puck back in the attacking zone.
+    Turnover,
+    /// Soon after carrying, passing or dumping the puck into the zone.
+    Rush,
+    /// After a longer spell in the zone.
+    Sustained,
+}
+
+/// The run of play from the last faceoff to a goal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GoalPlay {
+    /// The goal's time, matching its [`Goal`].
+    pub time: Seconds,
+    pub scored_by: Team,
+    pub origin: GoalOrigin,
+    /// The scoring team had a shot on goal just before.
+    pub rebound: bool,
+    /// When the play began: the last faceoff, or the start of the period.
+    pub start: Seconds,
+    pub events: Vec<PlayEvent>,
+}
+
 impl Goal {
     #[must_use]
     pub fn period(&self) -> u32 {
@@ -1152,6 +1215,8 @@ pub struct Game {
     pub charted_shots_against: Vec<OpponentShot>,
     #[serde(default)]
     pub faceoff_spots: Vec<SpotFaceoffs>,
+    /// Every goal's build-up, in goal order.
+    pub goal_plays: Vec<GoalPlay>,
     #[serde(default)]
     pub opponent_skaters: Vec<OpponentSkater>,
     /// Regulation plus any overtime.
