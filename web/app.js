@@ -407,7 +407,7 @@ function tiles(items) {
   ])));
 }
 
-// ---------- Games & uploads ----------
+// Games & uploads
 
 function viewGames() {
   const a = state.analysis;
@@ -649,7 +649,7 @@ function showClosed() {
   document.body.replaceChildren(el("div", { class: "empty", text: "Hockey Stats has closed. Double-click the app to open it again." }));
 }
 
-// ---------- Overview ----------
+// Overview
 
 
 
@@ -784,7 +784,7 @@ function viewSummary() {
     more("More team numbers", extra));
 }
 
-// ---------- Rankings ----------
+// Rankings
 
 function termList(labels) {
   return labels.flatMap((label, i) => (i ? [", ", term(label)] : [term(label)]));
@@ -1040,7 +1040,7 @@ function viewRankings() {
     more("How the rating is built, stat by stat", el("p", { class: "small muted", text: "Each stat is compared with every skater at the same position in the same games, ours and the opponents' (in standard deviations; positive is always good), after pulling low-ice-time players toward the average. xG (from the optional Player report) and passes are compared among our players only. Within Offence, Defence and Puck play each stat counts by its weight, and the three parts are combined by their weights (see Customise the ranking)." }), breakdown));
 }
 
-// ---------- Single game ----------
+// Single game
 
 const GAME_TABS = [["overview", "Overview"], ["plays", "Goal plays"], ["shots", "Shots"], ["matchups", "Matchups"], ["stats", "Team stats"]];
 
@@ -1354,7 +1354,7 @@ function gameTeamStats(a, timeline) {
   return card;
 }
 
-// ---------- Lines & pairs ----------
+// Lines & pairs
 
 const UNIT_TABS = [
   ["defence_pairs", "Defence pairs"],
@@ -1421,7 +1421,7 @@ function viewLines() {
   return page("Lines & pairs", "Every combination InStat tracked, pooled over the games in scope.", tabs, chart, tableCard);
 }
 
-// ---------- Pair chemistry ----------
+// Pair chemistry
 
 const CHEMISTRY_METRICS = {
   toi: { label: "Even-strength minutes together", scale: "sequential", value: (p) => p.together.toi / 60, text: (v) => fmt(v, 0) },
@@ -1523,7 +1523,7 @@ function pairExplorer(a, players) {
   return card;
 }
 
-// ---------- Passing ----------
+// Passing
 
 function viewPassing() {
   const a = state.analysis;
@@ -1575,7 +1575,7 @@ function viewPassing() {
   return page("Passing network", "InStat's pass-distribution tables, pooled over the games in scope.", summary, layoutToggle, network, groupNote, el("div", { class: "grid two", style: "margin-top:16px" }, [hubs, matrix]));
 }
 
-// ---------- Players ----------
+// Players
 
 function viewPlayers() {
   const a = state.analysis;
@@ -1953,7 +1953,7 @@ function playerNumbers(a, s) {
   return card;
 }
 
-// ---------- Goalies ----------
+// Goalies
 
 const GOALIE_TABS = [["overview", "Overview"], ["saved", "Goals saved"], ["net", "Net & body"], ["location", "Shot location"], ["types", "Shot types & situations"], ["numbers", "All numbers"]];
 
@@ -2143,7 +2143,7 @@ function viewGoalies() {
   ])));
 }
 
-// ---------- Team ----------
+// Team
 
 function periodTable(c) {
   dataTable(c, [
@@ -2408,7 +2408,7 @@ function practiceSummary(a) {
   ]);
 }
 
-// ---------- Impact ----------
+// Impact
 
 function viewImpact() {
   const a = state.analysis;
@@ -2434,7 +2434,7 @@ function viewImpact() {
   return page("Individual impact", "Plus/minus-style numbers are unfair to players stuck on weak lines. These models credit each player only for the difference they make once their linemates are accounted for.", el("div", { class: "grid two" }, cards));
 }
 
-// ---------- Profiles ----------
+// Profiles
 
 function viewProfiles() {
   const a = state.analysis;
@@ -2456,7 +2456,7 @@ function viewProfiles() {
   return page("Player styles", "Groups players by how they play, not how well — useful for building balanced lines.", ...parts);
 }
 
-// ---------- Advanced ----------
+// Advanced
 
 function viewAdvanced() {
   const a = state.analysis;
@@ -2544,7 +2544,7 @@ function viewAdvanced() {
   return page("Advanced statistics", "Every test behind the verdicts, with adjusted p-values (Benjamini–Hochberg within each family, so testing many pairs doesn't manufacture false positives).", ...sections, powerCard, modelCard, opponentCard);
 }
 
-// ---------- Help ----------
+// Help
 
 /** Players whose InStat Index level really shifted, from the changepoint test. */
 function formChangesCard(a) {
@@ -3104,7 +3104,7 @@ function viewHelp() {
   return page("How to read this", "Short explanations of every number in the report. Anywhere in the app, a stat name with a dotted underline explains itself: hover over it, tap it, or tab to it.", el("dl", { class: "explain" }, terms.flatMap(([t, d]) => [el("dt", { text: t }), el("dd", { text: d })])));
 }
 
-// ---------- Render ----------
+// Render
 
 function render() {
   renderSidebar();
